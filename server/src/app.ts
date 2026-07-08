@@ -1,8 +1,34 @@
-import express, { Express, NextFunction, Request, Response } from 'express'
+import express, {
+  Express,
+  NextFunction,
+  Request,
+  Response,
+  Router,
+} from 'express'
 import cors from 'cors'
 import helmet from 'helmet'
-import { router } from './routes.js'
+import { createAuthRouter, type AuthDependencies } from './auth/index.js'
+import { createRouter } from './routes.js'
 import { AppConfig, loadConfig } from './config.js'
+
+const APP_NAME = 'routini'
+const APP_VERSION = '0.1.0'
+
+export interface CreateAppOptions {
+  /**
+   * Runtime configuration. Defaults to `loadConfig()` so callers that don't
+   * need to override anything can just call `createApp()`.
+   */
+  config?: AppConfig
+  /**
+   * Auth dependencies (config + user store). When present, `createApp` mounts
+   * the auth router at `/api/auth` and the (auth-protected) main router at
+   * `/api`. When absent — for example, in a bare skeleton test — a minimal
+   * public `/api/version` router is mounted instead. This keeps the app
+   * self-describing and callable in isolation.
+   */
+  authDeps?: AuthDependencies
+}
 
 /**
  * Build a fully wired Express application.
@@ -11,9 +37,11 @@ import { AppConfig, loadConfig } from './config.js'
  * `app.listen`) so tests can mount the app in-process with supertest and
  * multiple isolated instances can coexist. Accepts an optional config
  * override to make security-relevant defaults (CORS allowlist, etc.)
- * trivially exercisable in tests.
+ * trivially exercisable in tests, and an optional set of auth dependencies
+ * so the bootstrap in `index.ts` can inject a real user store.
  */
-export function createApp(config: AppConfig = loadConfig()): Express {
+export function createApp(options: CreateAppOptions = {}): Express {
+  const config = options.config ?? loadConfig()
   const app = express()
 
   // Security headers. Helmet's defaults set X-Content-Type-Options,
@@ -40,13 +68,13 @@ export function createApp(config: AppConfig = loadConfig()): Express {
         callback(new Error(`Origin not allowed: ${origin}`))
       },
       credentials: true,
-    })
+    }),
   )
 
-  // `express.json` gets a modest limit to avoid trivial DoS via oversized
-  // payloads on unauthenticated endpoints during the skeleton phase; the
-  // auth layer will refine this later.
-  app.use(express.json({ limit: '1mb' }))
+  // `express.json` gets a modest limit to keep unauthenticated endpoints
+  // resistant to trivial DoS via oversized payloads. Individual routers can
+  // opt in to a larger limit if a specific workload requires it.
+  app.use(express.json({ limit: '100kb' }))
 
   // Health check lives outside `/api` so infrastructure probes (LB, k8s)
   // can hit it without knowledge of API versioning.
@@ -54,7 +82,15 @@ export function createApp(config: AppConfig = loadConfig()): Express {
     res.json({ status: 'ok', timestamp: new Date().toISOString() })
   })
 
-  app.use('/api', router)
+  if (options.authDeps) {
+    app.use('/api/auth', createAuthRouter(options.authDeps))
+    app.use('/api', createRouter(options.authDeps))
+  } else {
+    // Skeleton mode: no user store wired in yet. Expose only the public
+    // version endpoint so unauthenticated clients (e.g. the login page) can
+    // still perform a feature/version check.
+    app.use('/api', buildSkeletonRouter())
+  }
 
   // 404 handler — must come after all routes.
   app.use((_req: Request, res: Response) => {
@@ -77,4 +113,17 @@ export function createApp(config: AppConfig = loadConfig()): Express {
   })
 
   return app
+}
+
+/**
+ * Minimal router used when `createApp` is called without auth dependencies —
+ * for example, in the initial skeleton test that just verifies the factory
+ * boots and exposes a version endpoint.
+ */
+function buildSkeletonRouter(): Router {
+  const router = Router()
+  router.get('/version', (_req: Request, res: Response) => {
+    res.json({ version: APP_VERSION, name: APP_NAME })
+  })
+  return router
 }

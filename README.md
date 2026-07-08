@@ -343,7 +343,7 @@ Docker task runners, AI credential storage) build on:
 - **CORS** uses an explicit allowlist — no wildcards. Requests from
   origins outside `ALLOWED_ORIGINS` are rejected with `403`. Same-origin
   and server-to-server requests (no `Origin` header) pass through.
-- **JSON body limit** of `1mb` on all endpoints guards against trivial
+- **JSON body limit** of `100kb` on all endpoints guards against trivial
   payload-DoS on unauthenticated routes.
 - **Error handler** logs the underlying cause server-side but only sends
   a generic message to the client — no stack traces or internal state
@@ -353,14 +353,19 @@ Docker task runners, AI credential storage) build on:
 
 ## Architecture notes
 
-- `createApp(config?)` in `server/src/app.ts` returns a fully wired
-  Express app. `index.ts` only handles process concerns (config load,
-  `listen`). This split keeps the app trivially testable via supertest
-  and lets tests override the CORS allowlist per-case.
+- `createApp(options?)` in `server/src/app.ts` returns a fully wired
+  Express app. It accepts `{ config, authDeps }` — when `authDeps` is
+  supplied (the production wiring in `index.ts`), the auth router and
+  the item router are mounted; when omitted (the skeleton smoke tests),
+  only the public `/api/version` endpoint is mounted. `index.ts` only
+  handles process concerns (config load, auth bootstrap, `listen`).
+  This split keeps the app trivially testable via supertest and lets
+  tests override the CORS allowlist per-case.
 - Environment parsing lives in `server/src/config.ts` behind a single
   `loadConfig()` factory so `process.env` reads have one seam.
-- Input validation is centralized in small type guards in `routes.ts`
-  (`parseId`, `isValidName`) rather than duplicated per handler.
+- Input validation for the item routes is centralized in `routes.ts`
+  (id parsing, name length/whitespace guards) rather than duplicated
+  per handler.
 
 ## License
 

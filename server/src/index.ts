@@ -1,14 +1,8 @@
-import express from 'express'
-import cors from 'cors'
-import { createAuthRouter, loadAuthConfig, UserStore } from './auth/index.js'
-import { createRouter } from './routes.js'
+import { createApp } from './app.js'
+import { loadAuthConfig, UserStore } from './auth/index.js'
+import { loadConfig } from './config.js'
 
 const config = loadConfig()
-const app = createApp(config)
-
-// Middleware
-app.use(cors())
-app.use(express.json({ limit: '100kb' }))
 
 // Auth: build shared dependencies once and reuse them across routers.
 const authConfig = loadAuthConfig()
@@ -19,7 +13,8 @@ const users = new UserStore(
 /**
  * Bootstrap the user store: load any persisted state, then seed the default
  * admin only if the store is otherwise empty. We surface a hard failure via
- * exitCode so ops sees the crash and doesn't run with an unusable auth state.
+ * `process.exitCode` so ops sees the crash and doesn't run with an unusable
+ * auth state.
  */
 async function bootstrapAuth(): Promise<void> {
   try {
@@ -46,22 +41,14 @@ async function bootstrapAuth(): Promise<void> {
 
 const authDeps = { config: authConfig, users }
 const authReady = bootstrapAuth()
-
-// API routes
-app.use('/api/auth', createAuthRouter(authDeps))
-app.use('/api', createRouter(authDeps))
-
-// Health check
-app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() })
-})
+const app = createApp({ config, authDeps })
 
 // Start the server unless this module is being imported by tests.
 const isMain = import.meta.url === `file://${process.argv[1]}`
 if (isMain) {
   authReady.then(() => {
-    app.listen(PORT, () => {
-      console.log(`Server running on http://localhost:${PORT}`)
+    app.listen(config.port, () => {
+      console.log(`Server running on http://localhost:${config.port}`)
     })
   })
 }

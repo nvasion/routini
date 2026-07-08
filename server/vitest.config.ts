@@ -22,9 +22,18 @@ export default defineConfig({
       resolve(workspaceRoot, 'tests/**/*.test.ts'),
     ],
     environment: 'node',
+    // scrypt password hashing (used by the auth tests) is intentionally slow
+    // for security. Several failed logins in sequence can push a single test
+    // past vitest's 5s default. 15s comfortably covers that without hiding
+    // real hangs — if a test needs more, it should say so explicitly.
+    testTimeout: 15_000,
     server: {
       deps: {
-        external: [/express/, /cors/],
+        // Externalize CJS runtime packages so vite hands them to Node's own
+        // resolver. Vite's SSR wrapping otherwise mangles internal relative
+        // requires (e.g. express's `require('./lib/express')`, supertest's
+        // `require('./lib/test.js')`).
+        external: [/express/, /cors/, /supertest/, /superagent/],
       },
     },
   },
