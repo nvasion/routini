@@ -1,5 +1,7 @@
 import { Router, type Request, type Response } from 'express'
 import { csrfProtect, requireAuth, type AuthDependencies } from './auth/index.js'
+import { TaskStore, createTasksRouter, createRunsRouter } from './tasks/index.js'
+import type { TaskRouterOptions } from './tasks/index.js'
 
 interface Item {
   id: number
@@ -9,12 +11,28 @@ interface Item {
 
 const MAX_ITEM_NAME_LENGTH = 200
 
+export interface RouterOptions extends TaskRouterOptions {
+  /**
+   * Optional pre-constructed task store. When omitted a fresh in-memory
+   * store is created per router instance (suitable for most scenarios).
+   * Inject an explicit store in tests that need to inspect or pre-populate
+   * task data.
+   */
+  tasks?: TaskStore
+}
+
 /**
  * Build the main API router. The auth dependencies are injected so tests can
  * supply an isolated user store / config per suite.
  */
-export function createRouter(deps: AuthDependencies): Router {
+export function createRouter(deps: AuthDependencies, options: RouterOptions = {}): Router {
   const router = Router()
+  // WARNING: a new in-memory TaskStore is created when `options.tasks` is
+  // omitted. Each distinct router instance gets its own independent store —
+  // avoid creating multiple router instances (e.g. in hot-reload or test
+  // setups) without injecting a shared store, or task data will not be shared
+  // between them. In tests always pass `tasks: taskStore` explicitly.
+  const taskStore = options.tasks ?? new TaskStore()
 
   // In-memory storage for demo purposes. Swap for a real store when needed.
   const items: Item[] = [
@@ -31,6 +49,17 @@ export function createRouter(deps: AuthDependencies): Router {
 
   // Everything else in this router requires an authenticated user.
   router.use(requireAuth(deps))
+
+  // Task CRUD + execution triggers (auth-protected; csrf applied per-handler)
+  router.use(
+    '/tasks',
+    createTasksRouter(taskStore, {
+      executor: options.executor,
+      executeRateLimiter: options.executeRateLimiter,
+    }),
+  )
+  // Run-level read endpoints (auth-protected, read-only so no csrf needed)
+  router.use('/runs', createRunsRouter(taskStore))
 
   // State-changing endpoints must be application/json — see csrfProtect for
   // the rationale. Reads (GET) are unaffected.
