@@ -1,26 +1,31 @@
-import { defineConfig } from 'vitest/config'
-import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { defineConfig } from 'vitest/config'
 
 const here = dirname(fileURLToPath(import.meta.url))
-const serverNodeModules = resolve(here, 'node_modules')
+const workspaceRoot = resolve(here, '..')
 
+/**
+ * Test suites live at the workspace root under `tests/`, but the runtime
+ * dependencies (express, cors) are installed under `server/node_modules`.
+ * We keep vitest's project root at the server package so vite's resolver
+ * finds them, and use absolute globs to discover the workspace-level tests.
+ *
+ * We explicitly externalize the runtime CJS packages so vite hands them to
+ * Node's own resolver — vite's SSR wrapping otherwise mangles express's
+ * internal `require('./lib/express')` relative resolution.
+ */
 export default defineConfig({
   test: {
+    include: [
+      resolve(here, 'src/**/*.test.ts'),
+      resolve(workspaceRoot, 'tests/**/*.test.ts'),
+    ],
     environment: 'node',
-    // The project keeps top-level integration tests under /tests (see CLAUDE.md
-    // project structure) while unit tests can live next to server sources.
-    include: ['../tests/**/*.test.ts', 'src/**/*.test.ts'],
-    // Use forks so each test file runs in a real Node process, letting
-    // Node's own resolver handle CJS packages cleanly.
-    pool: 'forks',
-  },
-  resolve: {
-    // Test files under /workspace/tests can't reach server/node_modules
-    // via the default upward lookup. Alias the packages they need so
-    // Vite resolves them to the server's installed copy.
-    alias: {
-      supertest: resolve(serverNodeModules, 'supertest/index.js'),
+    server: {
+      deps: {
+        external: [/express/, /cors/],
+      },
     },
   },
 })
