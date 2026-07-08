@@ -18,12 +18,15 @@ describe('API Routes', () => {
   })
 
   it('items endpoint format', () => {
-    // This documents the expected response format
+    // Documents the expected /api/items response shape using a real array so
+    // Array.isArray actually validates the structure (an asymmetric matcher
+    // like `expect.any(Array)` is not itself an array).
     const expectedResponse = {
-      items: expect.any(Array),
-      count: expect.any(Number)
+      items: [] as unknown[],
+      count: 0,
     }
     expect(Array.isArray(expectedResponse.items)).toBe(true)
+    expect(typeof expectedResponse.count).toBe('number')
   })
 
   it('version endpoint format', () => {

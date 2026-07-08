@@ -1,0 +1,138 @@
+import { useEffect, useState, type FormEvent } from 'react'
+import { useAuth } from '../auth/AuthContext'
+
+interface Item {
+  id: number
+  name: string
+  createdAt: string
+}
+
+interface ItemsResponse {
+  items: Item[]
+  count: number
+}
+
+async function apiFetch(input: RequestInfo, init: RequestInit = {}): Promise<Response> {
+  return fetch(input, { credentials: 'include', ...init })
+}
+
+export function Dashboard() {
+  const { user, logout } = useAuth()
+  const [items, setItems] = useState<Item[]>([])
+  const [newItemName, setNewItemName] = useState('')
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const response = await apiFetch('/api/items')
+        if (!response.ok) {
+          throw new Error(`Failed to fetch items (${response.status})`)
+        }
+        const data = (await response.json()) as ItemsResponse
+        if (!cancelled) setItems(data.items)
+      } catch (err) {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : 'Failed to fetch items')
+        }
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const addItem = async (event: FormEvent) => {
+    event.preventDefault()
+    const name = newItemName.trim()
+    if (!name) return
+    try {
+      const response = await apiFetch('/api/items', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      })
+      if (!response.ok) {
+        throw new Error(`Failed to add item (${response.status})`)
+      }
+      const created = (await response.json()) as Item
+      setItems((prev) => [...prev, created])
+      setNewItemName('')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to add item')
+    }
+  }
+
+  const deleteItem = async (id: number) => {
+    try {
+      const response = await apiFetch(`/api/items/${id}`, {
+        method: 'DELETE',
+        // Content-Type: application/json satisfies the server's CSRF middleware
+        // even for bodyless DELETE requests.
+        headers: { 'Content-Type': 'application/json' },
+      })
+      if (!response.ok) {
+        throw new Error(`Failed to delete item (${response.status})`)
+      }
+      setItems((prev) => prev.filter((item) => item.id !== id))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to delete item')
+    }
+  }
+
+  return (
+    <div className="app">
+      <header className="header">
+        <div className="header-inner">
+          <div>
+            <h1>routini</h1>
+            <p>Signed in as {user?.username}</p>
+          </div>
+          <button type="button" className="logout-btn" onClick={logout}>
+            Log out
+          </button>
+        </div>
+      </header>
+
+      <main className="main">
+        {error && <p className="error">{error}</p>}
+
+        <form onSubmit={addItem} className="form">
+          <input
+            type="text"
+            value={newItemName}
+            onChange={(e) => setNewItemName(e.target.value)}
+            placeholder="Enter item name"
+            className="input"
+          />
+          <button type="submit" className="button">Add Item</button>
+        </form>
+
+        {loading ? (
+          <p>Loading…</p>
+        ) : items.length === 0 ? (
+          <p className="empty">No items yet. Add one above!</p>
+        ) : (
+          <ul className="list">
+            {items.map((item) => (
+              <li key={item.id} className="list-item">
+                <span>{item.name}</span>
+                <button
+                  onClick={() => deleteItem(item.id)}
+                  className="delete-btn"
+                  type="button"
+                >
+                  Delete
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </main>
+    </div>
+  )
+}
