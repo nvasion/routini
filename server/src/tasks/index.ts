@@ -12,6 +12,28 @@ export type { TaskRouterOptions } from './routes.js'
 export { defaultExecutor, launchExecution } from './executor.js'
 export type { TaskExecutor } from './executor.js'
 export {
+  createDockerExecutor,
+  DEFAULT_DOCKER_CONFIG,
+  DEFAULT_DOCKER_LIMITS,
+  DockerExecutionError,
+  defaultRunOptionsFromTask,
+  readDockerLimitsFromEnv,
+  resolveDockerConnection,
+  validateImageName,
+} from './docker.js'
+export type {
+  DockerClient,
+  DockerContainer,
+  DockerContainerCreateOptions,
+  DockerErrorCode,
+  DockerExecutorConfig,
+  DockerHostConfig,
+  DockerMount,
+  DockerResourceLimits,
+  DockerRunOptions,
+  SecretMount,
+} from './docker.js'
+export {
   validateCreateTask,
   validateUpdateTask,
   validateUrl,

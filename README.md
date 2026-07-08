@@ -28,6 +28,13 @@ routini/
 │   ├── src/
 │   │   ├── index.ts           # Server entry point + wiring
 │   │   ├── routes.ts          # /api item routes (auth-protected)
+│   │   ├── tasks/             # Task domain
+│   │   │   ├── docker.ts      # Docker executor (ephemeral containers)
+│   │   │   ├── executor.ts    # TaskExecutor contract + launcher
+│   │   │   ├── routes.ts      # /api/tasks CRUD + runs
+│   │   │   ├── store.ts       # In-memory TaskStore
+│   │   │   ├── types.ts       # Task domain types
+│   │   │   └── validation.ts  # Input validation for task routes
 │   │   └── auth/              # Authentication module
 │   │       ├── index.ts       # Public exports
 │   │       ├── config.ts      # Auth config loaded from env
@@ -350,6 +357,273 @@ Docker task runners, AI credential storage) build on:
   leak across the wire.
 - **`.gitignore`** blocks `node_modules/`, npm caches, `dist/`/`build/`,
   and every `.env*` variant so credentials never accidentally enter git.
+
+## Developmental task execution (Docker)
+
+Developmental tasks execute inside ephemeral Docker containers via the
+[`dockerode`](https://github.com/apocas/dockerode) SDK. The executor lives at
+`server/src/tasks/docker.ts` and is factory-built via `createDockerExecutor()`
+so tests inject fake clients and production code passes a real daemon
+connection. All error surface is expressed through the typed
+[`DockerExecutionError`](server/src/tasks/docker.ts) class — callers key on
+`err.code` (e.g. `TIMEOUT`, `NON_ZERO_EXIT`, `INVALID_IMAGE`) rather than
+parsing message text.
+
+### Factory usage
+
+```typescript
+import Docker from 'dockerode'
+import {
+  createDockerExecutor,
+  readDockerLimitsFromEnv,
+  resolveDockerConnection,
+} from './tasks/index.js'
+
+// Resolve daemon endpoint from the environment (throws if unconfigured — see
+// "Docker daemon connection" below).
+const client = new Docker(resolveDockerConnection(process.env))
+
+const executor = createDockerExecutor({
+  client,
+  // Resource limits are env-driven; the factory validates them at construction.
+  limits: readDockerLimitsFromEnv(process.env),
+})
+
+// Then wire the executor into launchExecution() from tasks/executor.ts.
+```
+
+Tests exercise the executor by passing a hand-rolled fake client (see
+`tests/tasks.docker.test.ts`), keeping the daemon out of the loop.
+
+### Security defaults
+
+Every container spun up by the executor gets the following configuration
+locked in by `DEFAULT_DOCKER_CONFIG`. Overriding any of these values requires
+an explicit code change so it shows up in review.
+
+| Field                        | Value                     | Why                                            |
+|------------------------------|---------------------------|------------------------------------------------|
+| `User`                       | `"1000:1000"`             | Never run as root inside the container.        |
+| `HostConfig.CapDrop`         | `["ALL"]`                 | Drop every Linux capability.                   |
+| `HostConfig.CapAdd`          | `[]`                      | Add none back.                                 |
+| `HostConfig.Privileged`      | `false`                   | Explicitly disable privileged mode.            |
+| `HostConfig.ReadonlyRootfs`  | `true`                    | Root filesystem is read-only.                  |
+| `HostConfig.NetworkMode`     | `"none"`                  | No network by default (see *Network access*).  |
+| `NetworkDisabled`            | `true`                    | Belt-and-braces: no NICs attached either.      |
+| `HostConfig.SecurityOpt`     | `["no-new-privileges"]`   | Block setuid escalation.                       |
+| `HostConfig.PidsLimit`       | `128`                     | Cap fork-bomb blast radius.                    |
+| `HostConfig.Memory`          | `512 MiB`                 | Hard memory limit.                             |
+| `HostConfig.MemorySwap`      | `512 MiB` (== Memory)     | No swap beyond `Memory`.                       |
+| `HostConfig.NanoCpus`        | `1 000 000 000` (1 vCPU)  | 1 vCPU cap.                                    |
+| `HostConfig.AutoRemove`      | `false`                   | We remove explicitly in `finally` — see below. |
+| `HostConfig.Tmpfs["/tmp"]`   | `rw,noexec,nosuid,nodev,size=64 MiB` | Writable scratch dir (see below).   |
+
+`AutoRemove` is deliberately **off**: relying on the daemon to auto-remove a
+container races the executor's explicit cleanup and hides removal errors from
+the logs. The executor calls `container.remove({ force: true, v: true })` in
+a `finally` block so removal happens whether the container succeeds, fails,
+or is killed by the wall-clock timeout — see *Lifecycle guarantees* below.
+
+The numeric ceilings (memory, CPU, PIDs, timeout, tmpfs size) are exported as
+constants in `DEFAULT_DOCKER_LIMITS` and mirrored into `DEFAULT_DOCKER_CONFIG`
+so a policy change happens in exactly one place. They can be tuned per
+deployment via env vars — see *Resource limits*.
+
+### Writable paths under `ReadonlyRootfs`
+
+`ReadonlyRootfs: true` blocks writes anywhere on the container's root
+filesystem. Because most AI agents (and `git`) expect a writable `/tmp`, the
+executor mounts a small size-capped tmpfs at `/tmp` (`64 MiB`, `noexec`,
+`nosuid`, `nodev`). Data written there vanishes when the container is
+removed. Agents that need to write elsewhere should stage into `/tmp` and
+have the executor caller supply a bind-mounted volume via the
+`DockerRunOptions.workingDir` and — in a later PRD task — a caller-provided
+work volume; the executor does not open host bind mounts by default.
+
+### Secrets handling
+
+Credentials (git tokens, SSH keys, AI-provider API keys) MUST be passed via
+the executor's `secretFiles` mechanism, **not** as environment variables.
+Environment variables are visible to any host user who can run
+`docker inspect` on the running container and can leak via daemon crash
+dumps. `secretFiles` mounts each secret as a per-container tmpfs entry with
+`0400` permissions, stages the content on start, and lets the daemon reap
+the memory when the container is removed. Callers are responsible for
+supplying already-decrypted content (typically pulled from a KMS or Docker
+Swarm secrets store); the executor never touches host disk to persist secret
+material.
+
+The executor validates secret mount targets against a path-safety guard
+(absolute path, no `.` / `..` segments, no null bytes) before touching the
+daemon. Content is shell-escaped when it is written into the container's
+init wrapper, so a token containing `; rm -rf /` cannot break out of the
+staging step.
+
+### Network access & git operations
+
+Default containers have **no network** (`NetworkMode: "none"`,
+`NetworkDisabled: true`). The developmental-task PRD requires
+`git clone`/`git push`, which do need network — the executor exposes a
+per-run `networkMode` override in `DockerRunOptions` to reconcile the two:
+
+- **Recommended pattern:** the deployment creates a dedicated Docker bridge
+  network (e.g. `routini-egress`) with `iptables` / `nftables` rules that
+  allowlist exactly the ports the agent needs (`22/tcp` for SSH, `443/tcp`
+  for HTTPS) to exactly the destinations it needs (git host, package
+  registries). The task passes `networkMode: 'routini-egress'` for that
+  developmental task only.
+- **Alternative pattern:** run a git-sync sidecar in the routine's outer
+  scope that stages the repo into a volume, then attach the agent container
+  read-only to that volume with `networkMode: 'none'`. This keeps the agent
+  fully isolated from the network at the cost of doubling the container
+  count.
+- Any non-`"none"` network mode is logged as a `warn` entry in the run so
+  it appears in the audit trail. Deployments that want to hard-forbid the
+  relaxation can override `resolveRunOptions` to strip `networkMode` before
+  it reaches the executor.
+
+Do **not** simply flip `NetworkMode` to `"bridge"` — that gives the
+container unrestricted egress, and a compromised agent gets outbound access
+to the internet.
+
+### Image-name validation
+
+Image references are checked against a strict allowlist regex before they
+reach the Docker daemon. The pattern accepts an optional registry host
+(`host[:port]/`), one or more lowercase path segments separated by `/`, and
+an optional `:tag` or `@sha256:<64 hex>` suffix. It refuses:
+
+- shell metacharacters (`;`, `|`, `&`, backticks, `$`)
+- whitespace, control characters, and newlines
+- `..` segments and absolute paths
+- uppercase letters in path segments (Docker rejects these too)
+- references longer than 255 bytes
+
+If validation fails the executor throws `DockerExecutionError` with
+`code === 'INVALID_IMAGE'` immediately — no `docker pull` is ever attempted.
+
+### Resource limits
+
+Numeric ceilings are exported as `DEFAULT_DOCKER_LIMITS` and can be tuned per
+deployment. `readDockerLimitsFromEnv(process.env)` reads:
+
+| Variable                    | Effect                                                  |
+|-----------------------------|---------------------------------------------------------|
+| `DOCKER_MEMORY_LIMIT`       | Bytes; sets both `Memory` and (if unset) `MemorySwap`.  |
+| `DOCKER_MEMORY_SWAP_LIMIT`  | Bytes; overrides swap independently. Must be ≥ memory.  |
+| `DOCKER_CPU_NANOS`          | Nano-CPUs; `1_000_000_000` = 1 vCPU.                    |
+| `DOCKER_PIDS_LIMIT`         | Max PIDs inside container.                              |
+| `DOCKER_TIMEOUT_MS`         | Wall-clock deadline (ms). Default 15 minutes.           |
+| `DOCKER_TMPFS_SIZE_BYTES`   | Size cap for the `/tmp` tmpfs mount.                    |
+
+Anything that isn't a positive integer (or that leaves swap below memory)
+throws `DockerExecutionError` with `code === 'INVALID_LIMITS'` — a
+misconfigured env var stops startup rather than silently falling back to the
+default. Callers can lower the timeout per run via
+`DockerRunOptions.timeoutMs` but not raise it above whatever the production
+deployment configures — deployments SHOULD front the executor with a
+queue-level ceiling.
+
+### Retry policy
+
+Only *daemon connection* operations retry:
+
+| Operation           | Retryable? | Backoff                             |
+|---------------------|-----------|--------------------------------------|
+| `createContainer`   | Yes       | Exponential: 200 → 400 → 800 ms      |
+| `container.start`   | Yes       | Same as above                        |
+| `container.wait`    | No        | Wait completes once, timeout applies |
+| Non-zero exit code  | No        | Fails the run immediately            |
+
+`createMaxAttempts` (default `3`) and `createRetryBaseMs` (default `200`) are
+configurable on the factory. Workload errors — anything the user script did,
+including a non-zero exit code — are never retried; re-running a failing
+script wastes cycles and can be destructive.
+
+### Lifecycle guarantees
+
+- `container.remove({ force: true, v: true })` runs in a `finally` block.
+  Whether the container succeeds, exits non-zero, hits the wall-clock
+  deadline, or fails to start, the cleanup path executes.
+- **Timeout behavior:** the executor `Promise.race`s `container.wait()`
+  against a `setTimeout(timeoutMs)`. If the timer wins we mark the run as
+  timed out and fall through to the `finally` block. `remove({ force: true })`
+  sends SIGKILL to the still-running container and reaps it, so the timeout
+  path never leaks a running container. If cleanup itself fails the executor
+  logs the removal error and re-throws the original workload error (rather
+  than the cleanup error) so operators diagnose the actual root cause.
+- Errors are wrapped by `DockerExecutionError`, which carries a typed `code`
+  (`CREATE_FAILED`, `START_FAILED`, `TIMEOUT`, `NON_ZERO_EXIT`,
+  `INVALID_IMAGE`, `INSECURE_CONNECTION`, etc.) plus a `cause` for
+  observability. The wire response to clients stays generic — `Task
+  execution failed. Check server logs for details.` — to avoid leaking
+  daemon internals through the API.
+
+### Docker daemon connection
+
+`resolveDockerConnection(env)` is **fail-secure**: if no explicit connection
+is configured, it throws `DockerExecutionError` with
+`code === 'INSECURE_CONNECTION'` rather than silently falling back to the
+host Docker socket. Environment drift or a missing CI variable therefore
+stops the server at startup instead of exposing the daemon to any process
+that compromises the Node app.
+
+Order of precedence:
+
+1. `DOCKER_HOST` — accepts `tcp://host:port`, `unix:///path/to/sock`, or
+   `ssh://user@host`. `DOCKER_TLS_VERIFY=1` upgrades a `tcp://` URL to
+   `https://`; `DOCKER_CERT_PATH=/path/to/certs` surfaces the standard
+   `ca.pem` / `cert.pem` / `key.pem` triplet so `dockerode` can authenticate.
+2. `DOCKER_SOCKET_PATH` — an explicit Unix socket path (useful when the
+   daemon is exposed on a non-standard socket).
+3. `DOCKER_ALLOW_DEFAULT_SOCKET=1` — **explicit opt-in** to fall back to
+   `/var/run/docker.sock`. Intended for local development on a dev
+   workstation; production deployments MUST NOT set this.
+4. Otherwise: `resolveDockerConnection` throws.
+
+The Docker socket is effectively root-equivalent on the host — compromising
+the Node process gains an attacker full daemon control. Point at a remote
+daemon with TLS (`DOCKER_HOST=tcp://…:2376`, `DOCKER_TLS_VERIFY=1`, and
+`DOCKER_CERT_PATH=…`), or run the executor behind a Kubernetes / Nomad
+orchestrator that exposes a scoped, authenticated API instead.
+
+### Environment variables (summary)
+
+| Variable                       | Required? | Description                                              |
+|--------------------------------|-----------|----------------------------------------------------------|
+| `DOCKER_HOST`                  | Preferred | Full daemon URL (`tcp://…`, `unix://…`, `ssh://…`).       |
+| `DOCKER_TLS_VERIFY`            | Optional  | Set to `1` when using TLS with `DOCKER_HOST=tcp://…`.     |
+| `DOCKER_CERT_PATH`             | Optional  | Directory holding `ca.pem` / `cert.pem` / `key.pem`.      |
+| `DOCKER_SOCKET_PATH`           | Alternate | Explicit Unix socket path if not using `DOCKER_HOST`.     |
+| `DOCKER_ALLOW_DEFAULT_SOCKET`  | Dev only  | Set to `1` to opt in to `/var/run/docker.sock`.           |
+| `DOCKER_MEMORY_LIMIT`          | Optional  | Container memory ceiling (bytes).                         |
+| `DOCKER_MEMORY_SWAP_LIMIT`     | Optional  | Container memory+swap ceiling (bytes).                    |
+| `DOCKER_CPU_NANOS`             | Optional  | CPU ceiling in nano-CPUs.                                 |
+| `DOCKER_PIDS_LIMIT`            | Optional  | Container PID ceiling.                                    |
+| `DOCKER_TIMEOUT_MS`            | Optional  | Wall-clock deadline for a run (ms).                       |
+| `DOCKER_TMPFS_SIZE_BYTES`      | Optional  | `/tmp` tmpfs size cap (bytes).                            |
+
+### Test coverage
+
+`tests/tasks.docker.test.ts` exercises the executor without touching a real
+daemon (a fake `DockerClient` is injected via the factory). Coverage
+includes: image-name allowlist (positive + rejection matrix), security
+defaults propagation, resource-limit injection, tmpfs mount presence,
+network-mode override with audit logging, secret-mount tmpfs staging + path
+traversal rejection + shell-escape, retry with exponential backoff, workload
+errors NOT retried, wall-clock timeout with guaranteed cleanup, cleanup
+failure never masking the primary error, fail-secure daemon connection
+resolution, and the `DockerExecutionError` code taxonomy.
+
+### Dependency pinning
+
+`dockerode` is pinned with the **tilde** range (`~5.0.1`) in
+`server/package.json` so patch fixes (5.0.2, 5.0.3, …) flow in automatically
+but minor upgrades — where Docker SDK behavior can change — require an
+explicit bump. Type definitions are added as a dev dependency
+(`@types/dockerode`). Run `npm audit` after each dockerode bump to catch
+supply-chain regressions in its transitive dependencies (which pull in gRPC
+for streaming Docker events).
 
 ## Architecture notes
 
