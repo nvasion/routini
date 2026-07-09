@@ -1,26 +1,10 @@
-:root {
-  /**
-   * PRD-mandated palette.
-   * All colors are declared as 8-digit hex (#rrggbbaa) so the format is
-   * consistent across opaque and translucent tokens — mixed rgba()/hex was
-   * called out in review as a maintainability foot-gun.
-   */
-  --color-black: #000000ff;
-  --color-red: #ff0000ff;
-  --color-orange: #ffa500ff;
-  --color-surface: #1a1a1aff;
-  --color-surface-2: #242424ff;
-  --color-border: #333333ff;
-  --color-text: #f5f5f5ff;
-  --color-muted: #f5f5f5b3; /* text at 70% alpha */
-  --color-danger-bg: #ff00001f; /* red at 12% alpha */
-  --color-danger-fg: #ffb3b3ff;
-  --color-orange-hover: #ffb733ff;
-  --color-red-hover: #cc0000ff;
-  --focus-ring-orange: #ffa50040; /* orange at ~25% alpha */
-  --login-glow: #ffa50026; /* orange at ~15% alpha */
-  --login-shadow: #00000080;
-}
+/**
+ * Component-level styles. Palette tokens (`--color-*`, `--focus-ring-*`,
+ * `--login-*`) live in `./theme.css` — the single source of truth for the
+ * red / orange / black theme. Do not hardcode palette hex values here; add a
+ * token to `theme.css` and reference it via `var(--…)` instead.
+ */
+@import './theme.css';
 
 body {
   background: var(--color-black);

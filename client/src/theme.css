@@ -1,0 +1,37 @@
+/**
+ * routini theme tokens — the single source of truth for the app palette.
+ *
+ * The PRD mandates a red / orange / black theme with these exact base colors:
+ *   red    → #FF0000
+ *   orange → #FFA500
+ *   black  → #000000
+ *
+ * Every token below is declared as 8-digit hex (#rrggbbaa) so opaque and
+ * translucent colors share one format — mixed rgba()/hex was flagged in
+ * review as a maintainability foot-gun. Downstream stylesheets consume these
+ * as CSS custom properties (`var(--color-red)`) so a palette change happens
+ * in exactly one file. No component-level stylesheet should hardcode a
+ * palette hex value — add a new token here instead.
+ */
+:root {
+  /* Core PRD palette — these three MUST stay #FF0000 / #FFA500 / #000000. */
+  --color-black: #000000ff;
+  --color-red: #ff0000ff;
+  --color-orange: #ffa500ff;
+
+  /* Surface / text tokens derived from black. */
+  --color-surface: #1a1a1aff;
+  --color-surface-2: #242424ff;
+  --color-border: #333333ff;
+  --color-text: #f5f5f5ff;
+  --color-muted: #f5f5f5b3; /* text at 70% alpha */
+
+  /* Feedback / interaction tokens derived from red and orange. */
+  --color-danger-bg: #ff00001f; /* red at 12% alpha */
+  --color-danger-fg: #ffb3b3ff;
+  --color-orange-hover: #ffb733ff;
+  --color-red-hover: #cc0000ff;
+  --focus-ring-orange: #ffa50040; /* orange at ~25% alpha */
+  --login-glow: #ffa50026; /* orange at ~15% alpha */
+  --login-shadow: #00000080;
+}

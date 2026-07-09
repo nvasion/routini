@@ -71,7 +71,9 @@ routini/
 │   ├── src/
 │   │   ├── main.tsx           # Client entry point
 │   │   ├── App.tsx            # AuthProvider + shell
-│   │   ├── App.css            # Red / orange / black theme
+│   │   ├── App.css            # Component styles (consumes theme.css tokens)
+│   │   ├── theme.css          # Single source of truth for the red/orange/black palette
+│   │   ├── index.css          # CSS reset + base body (consumes theme.css tokens)
 │   │   ├── auth/
 │   │   │   ├── AuthContext.tsx  # useAuth() hook
 │   │   │   └── authApi.ts       # login/logout/session fetches
@@ -338,16 +340,38 @@ Test coverage includes:
 
 ## Theme
 
-The UI uses the routini palette:
+The UI uses the PRD-mandated red / orange / black palette:
 
-- `--color-red: #ff0000ff`
-- `--color-orange: #ffa500ff`
-- `--color-black: #000000ff`
+- `--color-red: #ff0000ff` (PRD `#FF0000`)
+- `--color-orange: #ffa500ff` (PRD `#FFA500`)
+- `--color-black: #000000ff` (PRD `#000000`)
 
-All theme tokens are declared as **8-digit hex** (`#rrggbbaa`) in
-`client/src/App.css` — one consistent format for opaque and translucent
-colors alike — and applied to buttons, headers, borders, focus rings, and the
-login card accent.
+All palette tokens live in **one file** — `client/src/theme.css` — and every
+other stylesheet (`index.css`, `App.css`) imports it with
+`@import './theme.css';`. Every token is declared as **8-digit hex**
+(`#rrggbbaa`) so opaque and translucent colors share one consistent format.
+Tokens are applied to buttons, headers, borders, focus rings, form inputs,
+the login card accent, the settings page, and the header navigation — no
+component uses raw hex.
+
+### Adding or changing a color
+
+1. Add the token to `client/src/theme.css` (never inline a hex literal in a
+   component stylesheet or TSX file).
+2. Reference it as `var(--your-token)` from `App.css` / `index.css`.
+3. `tests/client.theme.test.ts` enforces this contract:
+   - The three PRD colors must exist as `--color-red`, `--color-orange`,
+     `--color-black`.
+   - Every declared token uses `#rrggbbaa` shape (no 3/6-digit hex, no
+     `rgba()`).
+   - **No other CSS or TSX file may declare a palette hex literal** — the
+     test walks `client/src/**` and fails with the offender's path if it
+     finds one.
+   - `index.css` and `App.css` must both `@import './theme.css';`.
+   - Key surfaces (`.header`, `.button`, `.delete-btn`, `.login-card`,
+     `.login-submit`, `.nav-btn-active`, `.settings-heading`) must reference
+     a palette token, so a refactor cannot silently drop the accent from a
+     marquee component.
 
 ## API surface
 
