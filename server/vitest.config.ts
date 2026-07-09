@@ -16,6 +16,14 @@ const workspaceRoot = resolve(here, '..')
  * internal `require('./lib/express')` relative resolution.
  */
 export default defineConfig({
+  resolve: {
+    alias: {
+      // React is installed in client/node_modules. Tests that import client-side
+      // hook modules (e.g. useTaskEvents) need this alias so Vite can resolve
+      // React without adding it as a server-side dependency.
+      react: resolve(workspaceRoot, 'client/node_modules/react'),
+    },
+  },
   test: {
     include: [
       resolve(here, 'src/**/*.test.ts'),
