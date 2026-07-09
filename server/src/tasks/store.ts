@@ -19,6 +19,7 @@
  */
 
 import { randomUUID } from 'node:crypto'
+import type { TaskEventPublisher } from './events.js'
 import type {
   AgentName,
   CreateDailyTaskInput,
@@ -47,6 +48,24 @@ export interface UpdateTaskResult {
   task: Task
 }
 
+export interface TaskStoreOptions {
+  /**
+   * Optional event bus to publish task / run mutations onto. When present the
+   * store emits `task-created`, `task-deleted`, `task-status`, `run-created`,
+   * `run-status`, and `run-log` events so downstream consumers (SSE handler,
+   * metrics) can react without polling.
+   *
+   * Typed as `TaskEventPublisher` (not the concrete `TaskRunEventBus`) so a
+   * distributed transport — Redis Pub/Sub, NATS, etc. — can be dropped in
+   * without changing the store. The default in-process `TaskRunEventBus`
+   * satisfies this interface out of the box.
+   *
+   * When omitted the store is silent — existing single-process consumers keep
+   * working unchanged.
+   */
+  bus?: TaskEventPublisher
+}
+
 // ---------------------------------------------------------------------------
 // TaskStore
 // ---------------------------------------------------------------------------
@@ -54,12 +73,17 @@ export interface UpdateTaskResult {
 export class TaskStore {
   private readonly tasks = new Map<string, Task>()
   private readonly runs = new Map<string, TaskRun>()
+  private readonly bus: TaskEventPublisher | undefined
 
   /**
    * Run IDs per task — maintained separately so listing runs for a task is
    * O(runs) rather than a full scan of the runs map.
    */
   private readonly taskRunIds = new Map<string, string[]>()
+
+  constructor(options: TaskStoreOptions = {}) {
+    this.bus = options.bus
+  }
 
   // -------------------------------------------------------------------------
   // Task CRUD
@@ -81,6 +105,7 @@ export class TaskStore {
     }
     this.tasks.set(task.id, task)
     this.taskRunIds.set(task.id, [])
+    this.bus?.emit({ type: 'task-created', taskId: task.id, taskType: 'daily' })
     return task
   }
 
@@ -100,6 +125,11 @@ export class TaskStore {
     }
     this.tasks.set(task.id, task)
     this.taskRunIds.set(task.id, [])
+    this.bus?.emit({
+      type: 'task-created',
+      taskId: task.id,
+      taskType: 'developmental',
+    })
     return task
   }
 
@@ -117,6 +147,7 @@ export class TaskStore {
     }
     this.tasks.set(task.id, task)
     this.taskRunIds.set(task.id, [])
+    this.bus?.emit({ type: 'task-created', taskId: task.id, taskType: 'routine' })
     return task
   }
 
@@ -195,12 +226,17 @@ export class TaskStore {
 
   /**
    * Update only the status field of any task (used by the executor).
+   * Emits a `task-status` event only when the status actually changed so the
+   * SSE stream doesn't fire spurious no-op events.
    */
   updateTaskStatus(id: string, status: TaskStatus): Task | undefined {
     const existing = this.tasks.get(id)
     if (!existing) return undefined
     const updated = { ...existing, status, updatedAt: new Date().toISOString() }
     this.tasks.set(id, updated)
+    if (existing.status !== status) {
+      this.bus?.emit({ type: 'task-status', taskId: id, status })
+    }
     return updated
   }
 
@@ -216,6 +252,7 @@ export class TaskStore {
       this.runs.delete(runId)
     }
     this.taskRunIds.delete(id)
+    this.bus?.emit({ type: 'task-deleted', taskId: id })
     return true
   }
 
@@ -240,6 +277,7 @@ export class TaskStore {
     const ids = this.taskRunIds.get(taskId) ?? []
     ids.push(run.id)
     this.taskRunIds.set(taskId, ids)
+    this.bus?.emit({ type: 'run-created', taskId, runId: run.id })
     return run
   }
 
@@ -255,6 +293,19 @@ export class TaskStore {
     if (!run) return undefined
     const updated: TaskRun = { ...run, ...patch }
     this.runs.set(runId, updated)
+    // Emit a status event only if the status actually changed — otherwise
+    // patches that only set completedAt / error still surface via the log
+    // stream and shouldn't spam the SSE feed.
+    if (patch.status !== undefined && patch.status !== run.status) {
+      this.bus?.emit({
+        type: 'run-status',
+        taskId: run.taskId,
+        runId,
+        status: patch.status,
+        ...(patch.completedAt !== undefined && { completedAt: patch.completedAt }),
+        ...(patch.error !== undefined && { error: patch.error }),
+      })
+    }
     return updated
   }
 
@@ -263,6 +314,12 @@ export class TaskStore {
     if (!run) return undefined
     const updated: TaskRun = { ...run, logs: [...run.logs, entry] }
     this.runs.set(runId, updated)
+    this.bus?.emit({
+      type: 'run-log',
+      taskId: run.taskId,
+      runId,
+      log: entry,
+    })
     return updated
   }
 

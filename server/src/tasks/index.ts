@@ -6,19 +6,30 @@
  */
 
 export { TaskStore } from './store.js'
-export type { UpdateTaskResult } from './store.js'
+export type { UpdateTaskResult, TaskStoreOptions } from './store.js'
 export { createTasksRouter, createRunsRouter } from './routes.js'
 export type { TaskRouterOptions } from './routes.js'
+export { createTaskEventsRouter } from './sse.js'
+export type { SseRouterOptions } from './sse.js'
+export {
+  TaskRunEventBus,
+  InProcessTaskRunEventBus,
+  defaultRunBus,
+} from './events.js'
+export type {
+  TaskRunEvent,
+  TaskEventPublisher,
+  TaskEventSubscriber,
+  TaskRunEventTransport,
+} from './events.js'
+export type { WireEvent } from './wireEvents.js'
 export {
   defaultExecutor,
   launchExecution,
   createDispatchExecutor,
-  TaskRunEventBus,
-  defaultRunBus,
 } from './executor.js'
 export type {
   TaskExecutor,
-  TaskRunEvent,
   LaunchOptions,
   ExecutorMap,
 } from './executor.js'

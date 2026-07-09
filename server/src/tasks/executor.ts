@@ -22,19 +22,32 @@
  * Callers that do not want retry semantics pass `maxAttempts: 1`.
  *
  * ─────────────────────────────────────────────────────────────────────────
- * Event bus
+ * Event transport
  * ─────────────────────────────────────────────────────────────────────────
  *
- * `TaskRunEventBus` is a small in-process pub/sub for run status changes.
- * The current API layer polls the store; a future SSE / WebSocket layer
- * will subscribe to the bus and stream updates in real time. Wiring
- * events now means the migration is a router change, not an executor
- * refactor.
+ * The retry loop publishes attempt-level events via the pluggable
+ * `TaskEventPublisher` interface (see `events.ts`). In development / tests
+ * the default is `InProcessTaskRunEventBus`; production deployments that
+ * scale horizontally swap in a distributed adapter (Redis Pub/Sub, NATS)
+ * that satisfies the same interface. Neither the SSE handler nor this file
+ * depends on the concrete class, so the swap is a single-line change at
+ * the composition root.
  */
 
-import { EventEmitter } from 'node:events'
 import type { Task, TaskRun } from './types.js'
 import type { TaskStore } from './store.js'
+import {
+  TaskRunEventBus,
+  defaultRunBus,
+  type TaskEventPublisher,
+  type TaskRunEvent,
+} from './events.js'
+
+// Re-export shared event surface so existing callers keep working; the
+// concrete definitions moved to events.ts to break a would-be cycle between
+// executor.ts and store.ts (both now emit).
+export { TaskRunEventBus, defaultRunBus }
+export type { TaskEventPublisher, TaskRunEvent }
 
 // ---------------------------------------------------------------------------
 // Types
@@ -47,38 +60,6 @@ import type { TaskStore } from './store.js'
  * caught by `launchExecution` and written to the run as a failure.
  */
 export type TaskExecutor = (task: Task, run: TaskRun, store: TaskStore) => Promise<void>
-
-/** Event payloads emitted by the run bus. */
-export interface TaskRunEvent {
-  type: 'attempt-start' | 'attempt-succeeded' | 'attempt-failed' | 'run-abandoned'
-  taskId: string
-  runId: string
-  attempt: number
-  maxAttempts: number
-  /** Sanitised error message when `type === 'attempt-failed'` or `'run-abandoned'`. */
-  errorMessage?: string
-}
-
-/**
- * Pub/sub for run status transitions. Kept as its own class (rather than a
- * bare EventEmitter) so consumers can rely on a typed `emit`/`on` shape
- * without leaking every EventEmitter method into the public API.
- */
-export class TaskRunEventBus {
-  private readonly emitter = new EventEmitter()
-
-  on(listener: (event: TaskRunEvent) => void): () => void {
-    this.emitter.on('event', listener)
-    return () => this.emitter.off('event', listener)
-  }
-
-  emit(event: TaskRunEvent): void {
-    this.emitter.emit('event', event)
-  }
-}
-
-/** Process-wide default bus. Callers can inject their own for isolation. */
-export const defaultRunBus = new TaskRunEventBus()
 
 // ---------------------------------------------------------------------------
 // Dispatcher — routes by task type
@@ -164,8 +145,13 @@ export interface LaunchOptions {
    * don't slow down the suite. Defaults to `setTimeout` promisified.
    */
   delay?: (ms: number) => Promise<void>
-  /** Event bus to publish run transitions on. Defaults to `defaultRunBus`. */
-  bus?: TaskRunEventBus
+  /**
+   * Publisher for run transitions. Typed against the interface (not the
+   * concrete `TaskRunEventBus`) so a distributed transport drops in at the
+   * composition root without touching the retry loop. Defaults to
+   * `defaultRunBus`.
+   */
+  bus?: TaskEventPublisher
 }
 
 const DEFAULT_MAX_ATTEMPTS = 3
@@ -229,7 +215,7 @@ async function executeWithRetry(
     maxAttempts: number
     baseBackoffMs: number
     delay: (ms: number) => Promise<void>
-    bus: TaskRunEventBus
+    bus: TaskEventPublisher
   },
 ): Promise<void> {
   let currentRun: TaskRun = firstRun

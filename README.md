@@ -293,6 +293,7 @@ touching the routes.
 | DELETE | `/api/items/:id`     | ✓    | Delete an item                           |
 | GET    | `/api/settings/ai`   | ✓    | Read the caller's AI provider settings   |
 | PUT    | `/api/settings/ai`   | ✓    | Update AI provider settings (partial)    |
+| GET    | `/api/tasks/stream`  | ✓    | SSE stream of task/run events (this user) |
 
 ## Testing
 
@@ -337,6 +338,27 @@ Test coverage includes:
 - AI settings integration tests exercising `/api/settings/ai` end-to-end
   (auth 401, CSRF 415, defaults on GET, full/partial PUT, `null` clearing,
   per-user isolation, plaintext key never leaks over the wire)
+- Task event bus + store emission (`tests/tasks.events.test.ts`) — listener
+  fan-out, unsubscribe, listener-error isolation, no-op-when-unchanged
+  status filtering, and silent-when-bus-omitted defaults
+- SSE stream integration (`tests/tasks.sse.test.ts`) — 401 without auth,
+  cookie-based session accepted, `text/event-stream` content-type + `no-cache`
+  headers, initial `connected` comment, heartbeat cadence, subscriber cleanup
+  on client disconnect, per-user event ownership filtering (including no
+  `task-deleted` leaks for never-seen tasks), in-order log delivery,
+  attempt-level internals not forwarded to the wire, and the per-user
+  concurrent-connection cap
+- SSE wire contract (`tests/tasks.wireContract.test.ts`) — enforces
+  byte-for-byte parity between the server-side canonical wire types
+  (`server/src/tasks/wireEvents.ts`) and the client mirror
+  (`client/src/hooks/taskEventWire.ts`), and asserts that every required
+  event type literal remains present in both files
+- `useTaskEvents` hook (`tests/client.useTaskEvents.test.ts`) — happy-path
+  dispatch, missing-handler no-op, JSON parse-error isolation (warns and
+  moves on rather than killing the subscription), empty-`data` frame
+  survival, hook module re-exports the wire type aliases, and exhaustive
+  wire-union coverage via a switch that fails to type-check if a new
+  event is added without a matching hook alias
 
 ## Theme
 
@@ -626,14 +648,154 @@ takes a `maxAttempts` / `baseBackoffMs` override for tests. The task
 status is only marked `failed` after the final attempt fails — earlier
 failures show up as failed runs but leave the task recoverable.
 
-### Real-time updates — event bus
+### Real-time updates — event transport + SSE stream
 
-`TaskRunEventBus` in `executor.ts` is an in-process pub/sub the executor
-publishes on for every attempt transition (`attempt-start`,
-`attempt-succeeded`, `attempt-failed`, `run-abandoned`). The current API
-still uses polling — a future SSE/WebSocket endpoint will subscribe to
-this bus and stream updates so the PRD's "within 5 s" real-time
-requirement is met without further executor refactoring.
+Task/run state transitions travel over a pluggable pub/sub `bus`. The
+publisher and subscriber sides are separate interfaces defined in
+`server/src/tasks/events.ts`:
+
+```typescript
+interface TaskEventPublisher {
+  emit(event: TaskRunEvent): void
+}
+interface TaskEventSubscriber {
+  on(listener: (event: TaskRunEvent) => void): () => void
+  listenerCount(): number
+}
+type TaskRunEventTransport = TaskEventPublisher & TaskEventSubscriber
+```
+
+- **`InProcessTaskRunEventBus`** (aliased as `TaskRunEventBus` for
+  backwards compatibility) is the default implementation — a lightweight
+  wrapper around Node's `EventEmitter`. It is fine for a single-process
+  deployment and every test in this repo.
+- **Distributed adapters** (Redis Pub/Sub, NATS, SQS-fanout) implement
+  the same `TaskRunEventTransport` shape and drop in at the composition
+  root without touching the store, executor, or SSE handler. See the
+  `RedisTaskRunEventBus` sketch in `events.ts` for a concrete example.
+
+Two publishers write to the transport:
+
+- **Executor** publishes attempt-level events for every retry transition
+  (`attempt-start`, `attempt-succeeded`, `attempt-failed`,
+  `run-abandoned`) — useful for metrics and internal orchestration.
+- **Store** publishes user-visible mutations (`task-created`,
+  `task-deleted`, `task-status`, `run-created`, `run-status`, `run-log`) —
+  these are what the SSE stream forwards to the client.
+
+The SSE endpoint lives at **`GET /api/tasks/stream`**
+(`server/src/tasks/sse.ts`). It satisfies the PRD's "task status updates
+appear within 5 seconds of change" requirement — in practice clients see
+events within a single event loop tick under the in-process transport,
+and within one Redis round-trip under a distributed transport.
+
+#### Horizontal scaling (PRD NFR)
+
+The PRD requires that worker nodes can be added horizontally
+(Kubernetes / Docker Swarm). The default in-process bus is a
+**single-process** transport — a run executed on pod A would not reach
+an SSE client whose stream is held by pod B. Multi-replica deployments
+MUST:
+
+1. Construct a distributed transport (Redis Pub/Sub is the recommended
+   starting point) that satisfies `TaskRunEventTransport`.
+2. Inject it into `createRouter(deps, { runBus: distributedBus, … })`
+   at process start. The store, executor, and SSE handler all depend on
+   the interface — no other change is required.
+
+A minimal Redis adapter is roughly:
+
+```typescript
+class RedisTaskRunEventBus implements TaskRunEventTransport {
+  private readonly local = new EventEmitter()
+  constructor(
+    private readonly pub: Redis,
+    private readonly sub: Redis,
+    private readonly channel = 'routini:task-events',
+  ) {
+    void this.sub.subscribe(this.channel)
+    this.sub.on('message', (_ch, msg) => {
+      const event = JSON.parse(msg) as TaskRunEvent
+      for (const l of this.local.listeners('event')) (l as (e: TaskRunEvent) => void)(event)
+    })
+  }
+  emit(event: TaskRunEvent) { void this.pub.publish(this.channel, JSON.stringify(event)) }
+  on(l: (e: TaskRunEvent) => void) { this.local.on('event', l); return () => this.local.off('event', l) }
+  listenerCount() { return this.local.listenerCount('event') }
+}
+```
+
+Until a distributed transport is wired up, operators running more than
+one replica should pin SSE connections to the pod that owns the task
+(sticky-session load balancing) — see the auth deployment notes above
+for the same trade-off applied to session revocation.
+
+#### Wire format contract
+
+The SSE frame types live in **one** canonical file
+(`server/src/tasks/wireEvents.ts`) and are mirrored on the client
+(`client/src/hooks/taskEventWire.ts`). A filesystem contract test
+(`tests/tasks.wireContract.test.ts`) enforces byte-for-byte parity
+between the marked blocks in the two files so the wire cannot drift.
+Every frame is a standard SSE event with a `type` field and a JSON
+`data` payload:
+
+```
+retry: 5000
+
+event: task-status
+data: {"type":"task-status","taskId":"…","status":"running"}
+
+event: run-log
+data: {"type":"run-log","taskId":"…","runId":"…","log":{"timestamp":"…","message":"…","level":"info"}}
+```
+
+The `retry:` field is emitted on connect (default 5000 ms) so the
+browser's `EventSource` reconnect cadence is explicit and tunable per
+deployment (`sseOptions.retryMs`) — helpful for controlling reconnect
+load during a rolling deploy.
+
+**Security and isolation**:
+
+- Auth is enforced by the parent router's `requireAuth` middleware — same
+  cookie / bearer as every other `/api/*` route.
+- Every event is filtered by ownership: the handler resolves `taskId` to the
+  owning user via the store and drops events for other users. `task-deleted`
+  events are only forwarded for task ids the caller has already seen on the
+  stream, so a snooping client cannot enumerate other users' task ids.
+- Concurrent connections per user are capped (default 4) to prevent a single
+  account from monopolising sockets. A hit returns `429`.
+- A per-connection in-flight byte ceiling (default 1 MiB) sheds slow
+  consumers with a `stream-overrun` control comment instead of buffering
+  unbounded logs.
+- A heartbeat comment (`: keepalive`, every 15 s) keeps NAT / proxy idle
+  timers happy.
+
+**Client usage** — see `client/src/hooks/useTaskEvents.ts`:
+
+```typescript
+import { useTaskEvents } from './hooks/useTaskEvents'
+
+useTaskEvents({
+  onTaskStatus: (e) => updateTaskStatus(e.taskId, e.status),
+  onRunLog: (e) => appendLog(e.runId, e.log),
+})
+```
+
+The hook opens an `EventSource` (which handles reconnect + `Last-Event-Id`
+resume automatically), dispatches per-type events, and closes on unmount.
+It's a no-op when `EventSource` is unavailable so it is safe to render in
+SSR / test contexts. Reconnect uses the server-side `retry:` cadence
+(5 s default). Note that `EventSource` does not expose the HTTP status
+code on reconnect failures — a persistent 401 (session expired) or 429
+(connection cap) surfaces as repeated `onError` invocations, and
+callers that need to react (e.g. redirect to `/login`) should treat
+that as a signal to re-check auth out-of-band.
+
+**Why SSE over WebSocket?** Traffic is server → client only, so the extra
+bidirectional plumbing of WebSocket buys nothing. SSE rides on plain HTTP
+and inherits the app's helmet headers, CORS allowlist, and cookie-based
+auth without a second transport.
 
 ## Developmental task execution (Docker)
 
