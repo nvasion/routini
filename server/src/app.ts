@@ -11,6 +11,8 @@ import { createAuthRouter, type AuthDependencies } from './auth/index.js'
 import { createRouter } from './routes.js'
 import { AppConfig, loadConfig } from './config.js'
 import type { Notifier, TaskNotifierOptions } from './notifications/index.js'
+import type { TaskExecutor } from './tasks/index.js'
+import type { AiSettingsStore } from './aiSettings/index.js'
 
 const APP_NAME = 'routini'
 const APP_VERSION = '0.1.0'
@@ -37,6 +39,20 @@ export interface CreateAppOptions {
   notifier?: Notifier
   /** Extra options forwarded to `TaskNotifier` (e.g. `defaultToEmail`). */
   notifierOptions?: TaskNotifierOptions
+  /**
+   * Optional task executor injected into the task router. When omitted the
+   * router uses the `defaultExecutor` (no-op stub). Production wiring in
+   * `index.ts` constructs a dispatch executor that routes developmental tasks
+   * to the Docker-backed executor and daily tasks to the real SSH/email/HTTP
+   * handlers; pass it here so the full stack is in one place.
+   */
+  executor?: TaskExecutor
+  /**
+   * Optional AI settings store. When provided alongside `executor`, the
+   * developmental executor can retrieve per-user API keys for agent auth.
+   * Defaults to a fresh in-memory store inside `createRouter` when omitted.
+   */
+  aiSettings?: AiSettingsStore
 }
 
 /**
@@ -98,6 +114,8 @@ export function createApp(options: CreateAppOptions = {}): Express {
       createRouter(options.authDeps, {
         notifier: options.notifier,
         notifierOptions: options.notifierOptions,
+        executor: options.executor,
+        aiSettings: options.aiSettings,
       }),
     )
   } else {

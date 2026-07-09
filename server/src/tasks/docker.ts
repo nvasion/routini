@@ -103,6 +103,10 @@ export type DockerErrorCode =
   | 'INSECURE_CONNECTION'
   | 'INVALID_CONNECTION'
   | 'INVALID_SECRET_MOUNT'
+  /** Decryption of per-user AI credentials failed at run time. */
+  | 'CREDENTIALS_ERROR'
+  /** The repository URL is malformed or contains unsafe characters. */
+  | 'INVALID_REPO_URL'
 
 /**
  * Typed error class for the Docker executor. Callers should key logic on
@@ -382,6 +386,25 @@ export function validateImageName(name: unknown): name is string {
   if (/[\x00-\x1f\x7f]/.test(name)) return false
   if (name.includes('..')) return false
   return IMAGE_NAME_PATTERN.test(name)
+}
+
+/**
+ * Docker network-name allowlist. Docker requires names to begin with an
+ * alphanumeric character and contain only alphanumeric characters, underscores,
+ * hyphens, or dots — the same alphabet as image path segments. We also reject
+ * names longer than 255 characters and the special value `'none'` is accepted
+ * as-is (it is the documented way to disable networking in Docker).
+ *
+ * All shell metacharacters (`;`, `|`, `&`, backticks, `$`, whitespace, …) are
+ * rejected so the value cannot escape a `docker network inspect` invocation or
+ * equivalent daemon RPC argument.
+ */
+export function validateDockerNetworkName(name: unknown): name is string {
+  if (typeof name !== 'string') return false
+  if (name === 'none') return true
+  if (name.length === 0 || name.length > 255) return false
+  if (/[\x00-\x1f\x7f]/.test(name)) return false
+  return /^[a-zA-Z0-9][a-zA-Z0-9_\-\.]*$/.test(name)
 }
 
 /**

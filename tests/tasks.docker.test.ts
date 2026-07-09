@@ -26,6 +26,7 @@ import {
   readDockerLimitsFromEnv,
   resolveDockerConnection,
   validateImageName,
+  validateDockerNetworkName,
 } from '../server/src/tasks/docker.js'
 import type {
   DockerClient,
@@ -1034,4 +1035,54 @@ describe('createDockerExecutor — resource limits', () => {
       }),
     ).toThrow(/memorySwapBytes/)
   })
+})
+
+// ---------------------------------------------------------------------------
+// validateDockerNetworkName
+// ---------------------------------------------------------------------------
+
+describe('validateDockerNetworkName', () => {
+  // Valid names
+  const validNames = [
+    'none',
+    'bridge',
+    'routini-egress',
+    'my_network',
+    'net.v2',
+    'abc123',
+    'A',
+    '0',
+    'my_egress.net-v2',
+    'a'.repeat(255),
+  ]
+  for (const name of validNames) {
+    it(`accepts valid name: ${JSON.stringify(name)}`, () => {
+      expect(validateDockerNetworkName(name)).toBe(true)
+    })
+  }
+
+  // Invalid names
+  const invalidNames: Array<[string, unknown]> = [
+    ['empty string', ''],
+    ['starts with dash', '-net'],
+    ['starts with dot', '.net'],
+    ['contains space', 'my network'],
+    ['contains semicolon', 'net;evil'],
+    ['contains pipe', 'net|evil'],
+    ['contains dollar', 'net$evil'],
+    ['contains backtick', 'net`cmd`'],
+    ['contains null byte', 'net\x00evil'],
+    ['contains newline', 'net\nevil'],
+    ['contains tab', 'net\tevil'],
+    ['too long (256 chars)', 'a'.repeat(256)],
+    ['non-string (number)', 42],
+    ['non-string (null)', null],
+    ['non-string (undefined)', undefined],
+    ['non-string (object)', {}],
+  ]
+  for (const [label, name] of invalidNames) {
+    it(`rejects invalid name: ${label}`, () => {
+      expect(validateDockerNetworkName(name)).toBe(false)
+    })
+  }
 })

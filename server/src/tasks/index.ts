@@ -70,6 +70,7 @@ export {
   readDockerLimitsFromEnv,
   resolveDockerConnection,
   validateImageName,
+  validateDockerNetworkName,
 } from './docker.js'
 export type {
   DockerClient,
@@ -83,6 +84,11 @@ export type {
   DockerRunOptions,
   SecretMount,
 } from './docker.js'
+export {
+  createDevelopmentalExecutor,
+  buildDevelopmentalRunOptions,
+} from './developmental/service.js'
+export type { DevelopmentalExecutorConfig } from './developmental/service.js'
 export {
   validateCreateTask,
   validateUpdateTask,

@@ -1,3 +1,4 @@
+import Docker from 'dockerode'
 import { createApp } from './app.js'
 import { loadAuthConfig, UserStore } from './auth/index.js'
 import { loadConfig } from './config.js'
@@ -6,6 +7,20 @@ import {
   loadNotificationConfig,
   validateNotificationConfig,
 } from './notifications/index.js'
+import {
+  AiSettingsStore,
+  resolveAiEncryptor,
+} from './aiSettings/index.js'
+import {
+  createDailyExecutor,
+  createDevelopmentalExecutor,
+  createDispatchExecutor,
+  readDockerLimitsFromEnv,
+  resolveDockerConnection,
+  DockerExecutionError,
+  redactCommonSecrets,
+} from './tasks/index.js'
+import type { TaskExecutor } from './tasks/index.js'
 
 const config = loadConfig()
 
@@ -56,6 +71,66 @@ if (notifier) {
   console.log(`[notifications] email notifications enabled via ${notificationConfig.provider}`)
 }
 
+// AI settings — shared store so all routers see the same per-user settings.
+const aiSettingsStore = new AiSettingsStore({ encryptor: resolveAiEncryptor() })
+
+/**
+ * Attempt to build a dispatch executor that routes task types to their
+ * concrete handlers. Developmental tasks use the Docker-backed executor when
+ * a Docker daemon connection is configured; all task types fall back to the
+ * default (no-op) executor when not wired.
+ *
+ * Docker connection is fail-secure: if no daemon connection env var is set
+ * (DOCKER_HOST, DOCKER_SOCKET_PATH, DOCKER_ALLOW_DEFAULT_SOCKET) the Docker
+ * executor is silently disabled and developmental tasks use the stub. This
+ * prevents an accidental startup failure just because Docker isn't available
+ * in all environments (e.g. local dev without Docker).
+ *
+ * Production deployments MUST set DOCKER_HOST (or the other env vars) to
+ * enable the real developmental task executor.
+ */
+function buildExecutor(): TaskExecutor | undefined {
+  // Daily executor handles SSH, email, and HTTP tasks.
+  const dailyExecutor = createDailyExecutor()
+
+  // Developmental executor: requires a Docker daemon connection.
+  let developmentalExecutor: TaskExecutor | undefined
+  try {
+    const dockerConn = resolveDockerConnection(process.env as Record<string, string | undefined>)
+    const dockerClient = new Docker(dockerConn)
+    developmentalExecutor = createDevelopmentalExecutor({
+      client: dockerClient,
+      aiSettings: aiSettingsStore,
+      limits: readDockerLimitsFromEnv(process.env as Record<string, string | undefined>),
+    })
+    console.log('[tasks] Docker developmental executor enabled')
+  } catch (err) {
+    if (err instanceof DockerExecutionError && err.code === 'INSECURE_CONNECTION') {
+      // No Docker daemon configured — not an error in dev environments.
+      console.warn(
+        '[tasks] Docker not configured — developmental tasks will use the stub executor. ' +
+          'Set DOCKER_HOST or DOCKER_ALLOW_DEFAULT_SOCKET=1 to enable the real executor.',
+      )
+    } else {
+      // Any other error (invalid limits, bad DOCKER_HOST, bad network name, …)
+      // is a fatal misconfiguration. Sanitize the message before logging so we
+      // never inadvertently echo credential material that may appear in error
+      // strings from the Docker SDK or the encryptor. Mark the process as
+      // unhealthy so the container orchestrator restarts it.
+      const rawMsg = err instanceof Error ? err.message : String(err)
+      const safeMsg = redactCommonSecrets(rawMsg)
+      console.error('[tasks] Fatal: failed to initialise Docker executor:', safeMsg)
+      process.exitCode = 1
+    }
+  }
+
+  return createDispatchExecutor({
+    daily: dailyExecutor,
+    developmental: developmentalExecutor,
+  })
+}
+
+const executor = buildExecutor()
 const authDeps = { config: authConfig, users }
 const authReady = bootstrapAuth()
 const app = createApp({
@@ -63,6 +138,8 @@ const app = createApp({
   authDeps,
   notifier,
   notifierOptions: { defaultToEmail: notificationConfig.defaultToEmail },
+  executor,
+  aiSettings: aiSettingsStore,
 })
 
 // Start the server unless this module is being imported by tests.
