@@ -13,6 +13,11 @@ Subsequent PRD tasks (auth, task CRUD, Docker orchestration, routine
 builder, AI settings, theming, notifications, real-time updates) build
 on top of this foundation.
 
+The AI Settings page and its `/api/settings/ai` API — provider selection,
+API-key storage encrypted at rest with AES-256-GCM, default agent, and
+model parameters — are wired up as of the AI settings milestone (see
+*AI Settings* below).
+
 - Express.js backend with TypeScript
 - React frontend with Vite
 - Hot module replacement for both client and server
@@ -28,6 +33,13 @@ routini/
 │   ├── src/
 │   │   ├── index.ts           # Server entry point + wiring
 │   │   ├── routes.ts          # /api item routes (auth-protected)
+│   │   ├── aiSettings/        # Per-user AI provider settings
+│   │   │   ├── config.ts      # Env-driven encryption-key bootstrap
+│   │   │   ├── encryption.ts  # AES-256-GCM Encryptor (at-rest key sealing)
+│   │   │   ├── routes.ts      # /api/settings/ai GET/PUT
+│   │   │   ├── store.ts       # In-memory AiSettingsStore
+│   │   │   ├── types.ts       # AiProvider, AiSettingsView, ...
+│   │   │   └── validation.ts  # Input validation for PUT bodies
 │   │   ├── tasks/             # Task domain
 │   │   │   ├── docker.ts      # Docker executor (ephemeral containers)
 │   │   │   ├── executor.ts    # TaskExecutor contract, retry loop, event bus
@@ -63,9 +75,14 @@ routini/
 │   │   ├── auth/
 │   │   │   ├── AuthContext.tsx  # useAuth() hook
 │   │   │   └── authApi.ts       # login/logout/session fetches
+│   │   ├── settings/
+│   │   │   └── aiSettingsApi.ts # /api/settings/ai typed fetch client
+│   │   ├── components/
+│   │   │   └── AppHeader.tsx    # Shared nav header (Dashboard / AI Settings / Log out)
 │   │   └── pages/
 │   │       ├── Login.tsx        # Login form
-│   │       └── Dashboard.tsx    # Item list (auth required)
+│   │       ├── Dashboard.tsx    # Item list (auth required)
+│   │       └── AiSettings.tsx   # AI Settings page (provider / API key / defaults)
 │   └── package.json
 ├── tests/                     # Vitest tests
 ├── Makefile                   # Build commands
@@ -120,8 +137,9 @@ cd server && npm test
 ## Configuration
 
 The auth module reads configuration from environment variables. Sensible defaults
-are used in development; production requires `JWT_SECRET` **and** a non-default
-`DEFAULT_ADMIN_PASSWORD` to be set — the server refuses to start otherwise.
+are used in development; production requires `JWT_SECRET`, a non-default
+`DEFAULT_ADMIN_PASSWORD`, **and** an `AI_SETTINGS_ENCRYPTION_KEY` to be set — the
+server refuses to start otherwise.
 
 | Variable                          | Default             | Description                                                                                          |
 |-----------------------------------|---------------------|------------------------------------------------------------------------------------------------------|
@@ -132,6 +150,7 @@ are used in development; production requires `JWT_SECRET` **and** a non-default
 | `USER_STORE_PATH`                 | (in-memory)         | Absolute path to a JSON file. When set, users + sessions survive restarts.                           |
 | `LOGIN_RATE_LIMIT_MAX`            | `10`                | Max failed login attempts per (client IP, username) inside the window.                               |
 | `LOGIN_RATE_LIMIT_WINDOW_SECONDS` | `60`                | Sliding window for the login rate limiter.                                                           |
+| `AI_SETTINGS_ENCRYPTION_KEY`      | (dev ephemeral)     | Base64-encoded 32-byte key for AES-256-GCM sealing of stored AI provider API keys. **Required in production.** Generate with `openssl rand -base64 32`. |
 | `NODE_ENV`                        | `development`       | When `production`, the auth cookie is emitted with `Secure`.                                         |
 
 Generate a production `JWT_SECRET` with, for example, `openssl rand -base64 48`
@@ -270,6 +289,8 @@ touching the routes.
 | GET    | `/api/items/:id`     | ✓    | Get a single item                        |
 | POST   | `/api/items`         | ✓    | Create an item                           |
 | DELETE | `/api/items/:id`     | ✓    | Delete an item                           |
+| GET    | `/api/settings/ai`   | ✓    | Read the caller's AI provider settings   |
+| PUT    | `/api/settings/ai`   | ✓    | Update AI provider settings (partial)    |
 
 ## Testing
 
@@ -299,6 +320,21 @@ Test coverage includes:
   Express app, plus server-side session revocation (stolen-cookie invalidation
   after logout), login rate-limiting (429 + `Retry-After`), and the CSRF
   Content-Type check on `POST /api/auth/logout`
+- AI settings AES-256-GCM helper (round-trip, per-record IV uniqueness,
+  ciphertext / IV / tag tamper detection, wrong-key rejection, wrong-length
+  key rejection, key copying so caller-buffer zeroing is safe, unicode +
+  empty-plaintext round-trip)
+- AI settings store (per-user isolation, redaction of the API key from all
+  responses, partial update / explicit-clear semantics, plaintext round-trip
+  via the internal `getApiKeyPlaintext` accessor)
+- AI settings validation (enum providers, agents, numeric range on
+  temperature / maxTokens, oversized key/model rejection, unknown-field
+  rejection, aggregate error reporting)
+- AI settings encryption-key bootstrap (`resolveAiEncryptor`) — production
+  fail-fast on missing/malformed keys, dev fallback + `console.warn`
+- AI settings integration tests exercising `/api/settings/ai` end-to-end
+  (auth 401, CSRF 415, defaults on GET, full/partial PUT, `null` clearing,
+  per-user isolation, plaintext key never leaks over the wire)
 
 ## Theme
 
@@ -318,14 +354,16 @@ login card accent.
 The initial skeleton exposes a small demonstration surface that will be
 replaced by the task-CRUD API in a later PRD step.
 
-| Method | Endpoint          | Description                                 |
-| ------ | ----------------- | ------------------------------------------- |
-| GET    | `/health`         | Liveness probe (JSON with ISO timestamp)    |
-| GET    | `/api/version`    | Application name and version                |
-| GET    | `/api/items`      | List demo items                             |
-| GET    | `/api/items/:id`  | Fetch a single item (400 on invalid id)     |
-| POST   | `/api/items`      | Create an item (`name`: non-empty ≤200 chr) |
-| DELETE | `/api/items/:id`  | Delete an item                              |
+| Method | Endpoint            | Description                                 |
+| ------ | ------------------- | ------------------------------------------- |
+| GET    | `/health`           | Liveness probe (JSON with ISO timestamp)    |
+| GET    | `/api/version`      | Application name and version                |
+| GET    | `/api/items`        | List demo items                             |
+| GET    | `/api/items/:id`    | Fetch a single item (400 on invalid id)     |
+| POST   | `/api/items`        | Create an item (`name`: non-empty ≤200 chr) |
+| DELETE | `/api/items/:id`    | Delete an item                              |
+| GET    | `/api/settings/ai`  | Read the caller's AI provider settings      |
+| PUT    | `/api/settings/ai`  | Update AI provider settings (partial patch) |
 
 All error responses have the shape `{ "error": string }`. The centralized
 error handler in `server/src/app.ts` never leaks stack traces or internal
@@ -392,6 +430,96 @@ implementation. Any persistent replacement **MUST**:
 The route layer (`sanitizeTask` in `tasks/routes.ts`) already strips
 credentials from every API response regardless of the storage backend, so
 this constraint applies only to the storage adapter itself.
+
+## AI Settings
+
+The AI Settings page (`client/src/pages/AiSettings.tsx`) lets a signed-in
+user configure the AI provider that developmental tasks call, store the
+provider's API key, pick a default agent for new developmental tasks, and
+tune model parameters (model, temperature, maxTokens).
+
+### API surface
+
+| Method | Endpoint             | Auth | Description                                   |
+|--------|----------------------|------|-----------------------------------------------|
+| GET    | `/api/settings/ai`   | ✓    | Read the caller's redacted settings view      |
+| PUT    | `/api/settings/ai`   | ✓    | Partial update — only supplied fields change  |
+
+Both endpoints require an authenticated user (per-user isolation: the
+`userId` is taken from the verified JWT, never from the request body).
+`PUT` additionally requires `Content-Type: application/json` — same CSRF
+Content-Type guard used everywhere else in the app.
+
+### Update semantics
+
+The `PUT` body is a **partial patch**:
+
+- Omit a field → leave its current value alone.
+- Send `null` → clear the value.
+- Send a non-null value → replace.
+
+The `apiKey` field is **write-only**: it is never included in any GET or
+PUT response. The response instead carries a `hasApiKey: boolean` flag so
+the UI can render "Configured" vs. "Not configured" without ever holding
+the plaintext key in the browser.
+
+### Redaction
+
+`AiSettingsStore` never returns the plaintext key from the redacted
+`AiSettingsView`. The only public accessor for the plaintext is
+`getApiKeyPlaintext(userId)`, intended solely for server-side outbound
+calls the developmental-task runner makes on behalf of the user. Route
+handlers do not call it — only the executor pipeline should.
+
+### Encryption at rest
+
+API keys are sealed with **AES-256-GCM** (authenticated encryption)
+before being stored, using a per-record random 12-byte IV. Tampering
+with the ciphertext, IV, or auth tag is rejected on decrypt with a
+`EncryptionError` — the store never silently returns garbage plaintext.
+
+- **Production** requires `AI_SETTINGS_ENCRYPTION_KEY` — a base64-encoded
+  32-byte key sourced from a KMS or secret manager. Missing or malformed
+  keys stop the server at startup rather than silently generating an
+  ephemeral one.
+- **Development** falls back to a per-process random key with a loud
+  `console.warn`. Restarts invalidate every stored API key on the
+  fallback path — do not use it outside local dev.
+
+Generate a production key with, for example:
+
+```bash
+openssl rand -base64 32
+# or
+node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+```
+
+Key rotation is **out of scope for the MVP** — the current store
+encrypts and decrypts under one key. A production adapter that persists
+records to a database should tag each ciphertext with a key id so
+multiple key generations can coexist during a rotation window.
+
+### Validation
+
+`validateUpdateAiSettings` enforces:
+
+- `provider` and `defaultAgent`: enum-only (`opencode`, `claude-code`,
+  `omnimancer`) or `null`.
+- `apiKey`: non-empty string ≤ 4096 chars, or `null` to clear.
+- `model`: non-empty string ≤ 200 chars, or `null`.
+- `temperature`: finite number in `[0, 2]`, or `null`.
+- `maxTokens`: integer in `[1, 200_000]`, or `null`.
+- Unknown top-level fields (e.g. `apikey` typo) are rejected so a client
+  mistake surfaces as a 400 rather than silently no-op'ing.
+
+### Storage & scalability
+
+Per the same trade-off as the other stores (auth, tasks), the AI
+settings store is currently **in-memory only**. Multi-replica
+deployments should either pin sessions to a single replica or introduce
+a shared store (PostgreSQL or Redis) that implements the same
+`AiSettingsStore` shape and reuses the `Encryptor` primitive for the
+encrypted-at-rest column.
 
 ## Daily task handlers
 

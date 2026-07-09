@@ -2,6 +2,11 @@ import { Router, type Request, type Response } from 'express'
 import { csrfProtect, requireAuth, type AuthDependencies } from './auth/index.js'
 import { TaskStore, createTasksRouter, createRunsRouter } from './tasks/index.js'
 import type { TaskRouterOptions } from './tasks/index.js'
+import {
+  AiSettingsStore,
+  createAiSettingsRouter,
+  resolveAiEncryptor,
+} from './aiSettings/index.js'
 
 interface Item {
   id: number
@@ -19,6 +24,17 @@ export interface RouterOptions extends TaskRouterOptions {
    * task data.
    */
   tasks?: TaskStore
+  /**
+   * Optional pre-constructed AI settings store. When omitted a fresh
+   * in-memory store is created — with an ephemeral, per-process encryption
+   * key in non-production environments and a KMS-backed key
+   * (`AI_SETTINGS_ENCRYPTION_KEY`) in production.
+   *
+   * Inject an explicit store in tests to (a) seed initial state, (b) reuse
+   * a stable encryption key across requests, and (c) avoid the console
+   * warning `resolveAiEncryptor` emits on the ephemeral-key path.
+   */
+  aiSettings?: AiSettingsStore
 }
 
 /**
@@ -33,6 +49,13 @@ export function createRouter(deps: AuthDependencies, options: RouterOptions = {}
   // setups) without injecting a shared store, or task data will not be shared
   // between them. In tests always pass `tasks: taskStore` explicitly.
   const taskStore = options.tasks ?? new TaskStore()
+  // Same warning applies to the AI settings store: without an explicit
+  // instance, hot-reloads produce multiple independent stores. Production
+  // wiring (`server/src/index.ts`) constructs a single store and passes it
+  // through so all routers share it.
+  const aiSettingsStore =
+    options.aiSettings ??
+    new AiSettingsStore({ encryptor: resolveAiEncryptor() })
 
   // In-memory storage for demo purposes. Swap for a real store when needed.
   const items: Item[] = [
@@ -61,6 +84,9 @@ export function createRouter(deps: AuthDependencies, options: RouterOptions = {}
   )
   // Run-level read endpoints (auth-protected, read-only so no csrf needed)
   router.use('/runs', createRunsRouter(taskStore))
+
+  // AI settings (auth-protected; PUT is CSRF-guarded inside the sub-router)
+  router.use('/settings/ai', createAiSettingsRouter(aiSettingsStore))
 
   // State-changing endpoints must be application/json — see csrfProtect for
   // the rationale. Reads (GET) are unaffected.

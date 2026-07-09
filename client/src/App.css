@@ -275,3 +275,145 @@ body {
   opacity: 0.6;
   cursor: not-allowed;
 }
+
+/* --- Header navigation --- */
+
+.header-nav {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.nav-btn {
+  padding: 0.5rem 1rem;
+  background: transparent;
+  color: var(--color-muted);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+.nav-btn:hover {
+  color: var(--color-text);
+  border-color: var(--color-orange);
+}
+
+.nav-btn-active {
+  color: var(--color-black);
+  background: var(--color-orange);
+  border-color: var(--color-orange);
+}
+
+.nav-btn-active:hover {
+  color: var(--color-black);
+  background: var(--color-orange-hover);
+}
+
+/* --- Settings page --- */
+
+.settings-heading {
+  margin: 0 0 0.25rem 0;
+  color: var(--color-orange);
+  letter-spacing: 0.02em;
+}
+
+.settings-subtitle {
+  margin: 0 0 1.5rem 0;
+  color: var(--color-muted);
+}
+
+.settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.settings-label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  color: var(--color-muted);
+  font-size: 0.9rem;
+  font-weight: 500;
+}
+
+.settings-input {
+  padding: 0.7rem;
+  background: var(--color-surface-2);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  font-size: 1rem;
+}
+
+.settings-input:focus {
+  outline: none;
+  border-color: var(--color-orange);
+  box-shadow: 0 0 0 2px var(--focus-ring-orange);
+}
+
+.settings-badge {
+  display: inline-block;
+  padding: 0.15rem 0.5rem;
+  margin-left: 0.5rem;
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-border);
+  color: var(--color-muted);
+  border-radius: 12px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.settings-badge-set {
+  background: var(--color-orange);
+  color: var(--color-black);
+  border-color: var(--color-orange);
+}
+
+.settings-actions {
+  display: flex;
+  gap: 0.75rem;
+  margin-top: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.settings-secondary-btn {
+  padding: 0.6rem 1rem;
+  background: transparent;
+  color: var(--color-orange);
+  border: 1px solid var(--color-orange);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  font-weight: 600;
+  align-self: flex-start;
+}
+
+.settings-secondary-btn:hover:not(:disabled) {
+  background: var(--color-orange);
+  color: var(--color-black);
+}
+
+.settings-secondary-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.settings-success {
+  background: var(--color-surface);
+  color: var(--color-orange);
+  border-left: 3px solid var(--color-orange);
+  border-radius: 4px;
+  padding: 0.6rem 0.8rem;
+  margin-bottom: 1rem;
+}
+
+.error-details {
+  margin: 0.5rem 0 0 0;
+  padding-left: 1.25rem;
+}
