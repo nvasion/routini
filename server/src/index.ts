@@ -1,6 +1,11 @@
 import { createApp } from './app.js'
 import { loadAuthConfig, UserStore } from './auth/index.js'
 import { loadConfig } from './config.js'
+import {
+  createNotifier,
+  loadNotificationConfig,
+  validateNotificationConfig,
+} from './notifications/index.js'
 
 const config = loadConfig()
 
@@ -39,9 +44,26 @@ async function bootstrapAuth(): Promise<void> {
   }
 }
 
+// Notification service — enabled when NOTIFY_PROVIDER env var is set.
+const notificationConfig = loadNotificationConfig()
+const notificationErrors = validateNotificationConfig(notificationConfig)
+if (notificationErrors.length > 0) {
+  console.error('Notification config errors (notifications disabled):', notificationErrors)
+}
+const notifier =
+  notificationErrors.length === 0 ? createNotifier(notificationConfig) : undefined
+if (notifier) {
+  console.log(`[notifications] email notifications enabled via ${notificationConfig.provider}`)
+}
+
 const authDeps = { config: authConfig, users }
 const authReady = bootstrapAuth()
-const app = createApp({ config, authDeps })
+const app = createApp({
+  config,
+  authDeps,
+  notifier,
+  notifierOptions: { defaultToEmail: notificationConfig.defaultToEmail },
+})
 
 // Start the server unless this module is being imported by tests.
 const isMain = import.meta.url === `file://${process.argv[1]}`

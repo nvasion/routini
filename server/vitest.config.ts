@@ -33,7 +33,7 @@ export default defineConfig({
         // resolver. Vite's SSR wrapping otherwise mangles internal relative
         // requires (e.g. express's `require('./lib/express')`, supertest's
         // `require('./lib/test.js')`).
-        external: [/express/, /cors/, /supertest/, /superagent/],
+        external: [/express/, /cors/, /supertest/, /superagent/, /@sendgrid/, /nodemailer/],
       },
     },
   },

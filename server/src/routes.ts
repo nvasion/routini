@@ -17,6 +17,8 @@ import {
   createAiSettingsRouter,
   resolveAiEncryptor,
 } from './aiSettings/index.js'
+import { TaskNotifier, type TaskNotifierOptions } from './notifications/index.js'
+import type { Notifier } from './notifications/index.js'
 
 interface Item {
   id: number
@@ -58,6 +60,15 @@ export interface RouterOptions extends TaskRouterOptions {
   runBus?: TaskRunEventTransport
   /** Overrides passed straight through to the SSE endpoint. */
   sseOptions?: SseRouterOptions
+  /**
+   * Optional notification transport. When provided, task outcome events
+   * (`succeeded`, `failed`) are sent to the task owner's email address.
+   * Build with `createNotifier(loadNotificationConfig())` at startup.
+   * When omitted, notifications are silently disabled.
+   */
+  notifier?: Notifier
+  /** Extra options forwarded to `TaskNotifier` (e.g. `defaultToEmail`). */
+  notifierOptions?: TaskNotifierOptions
 }
 
 /**
@@ -89,6 +100,22 @@ export function createRouter(deps: AuthDependencies, options: RouterOptions = {}
   const aiSettingsStore =
     options.aiSettings ??
     new AiSettingsStore({ encryptor: resolveAiEncryptor() })
+
+  // Wire up task outcome email notifications when a notifier is provided.
+  // The TaskNotifier subscribes to the runBus and sends emails on terminal
+  // task status transitions (succeeded / failed). The returned unsubscribe
+  // function is currently not wired to a graceful-shutdown hook because the
+  // server does not yet have a shutdown lifecycle. In production, call it
+  // inside your SIGTERM handler to avoid listener leaks.
+  if (options.notifier) {
+    const taskNotifier = new TaskNotifier(
+      options.notifier,
+      taskStore,
+      deps.users,
+      options.notifierOptions ?? { defaultToEmail: undefined },
+    )
+    taskNotifier.start(runBus)
+  }
 
   // In-memory storage for demo purposes. Swap for a real store when needed.
   const items: Item[] = [

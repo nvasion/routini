@@ -10,6 +10,7 @@ import helmet from 'helmet'
 import { createAuthRouter, type AuthDependencies } from './auth/index.js'
 import { createRouter } from './routes.js'
 import { AppConfig, loadConfig } from './config.js'
+import type { Notifier, TaskNotifierOptions } from './notifications/index.js'
 
 const APP_NAME = 'routini'
 const APP_VERSION = '0.1.0'
@@ -28,6 +29,14 @@ export interface CreateAppOptions {
    * self-describing and callable in isolation.
    */
   authDeps?: AuthDependencies
+  /**
+   * Optional email notifier. When provided, task outcome events
+   * (`succeeded`, `failed`) are delivered to the task owner. Build with
+   * `createNotifier(loadNotificationConfig())` at startup.
+   */
+  notifier?: Notifier
+  /** Extra options forwarded to `TaskNotifier` (e.g. `defaultToEmail`). */
+  notifierOptions?: TaskNotifierOptions
 }
 
 /**
@@ -84,7 +93,13 @@ export function createApp(options: CreateAppOptions = {}): Express {
 
   if (options.authDeps) {
     app.use('/api/auth', createAuthRouter(options.authDeps))
-    app.use('/api', createRouter(options.authDeps))
+    app.use(
+      '/api',
+      createRouter(options.authDeps, {
+        notifier: options.notifier,
+        notifierOptions: options.notifierOptions,
+      }),
+    )
   } else {
     // Skeleton mode: no user store wired in yet. Expose only the public
     // version endpoint so unauthenticated clients (e.g. the login page) can
