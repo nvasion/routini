@@ -9,8 +9,47 @@ export { TaskStore } from './store.js'
 export type { UpdateTaskResult } from './store.js'
 export { createTasksRouter, createRunsRouter } from './routes.js'
 export type { TaskRouterOptions } from './routes.js'
-export { defaultExecutor, launchExecution } from './executor.js'
-export type { TaskExecutor } from './executor.js'
+export {
+  defaultExecutor,
+  launchExecution,
+  createDispatchExecutor,
+  TaskRunEventBus,
+  defaultRunBus,
+} from './executor.js'
+export type {
+  TaskExecutor,
+  TaskRunEvent,
+  LaunchOptions,
+  ExecutorMap,
+} from './executor.js'
+export { createDailyExecutor } from './daily/executor.js'
+export type { DailyHandlers, DailyExecutorOptions } from './daily/executor.js'
+export { runSsh } from './daily/sshHandler.js'
+export type { SshRunResult, SshRunOptions } from './daily/sshHandler.js'
+export { checkEmail } from './daily/emailHandler.js'
+export type {
+  EmailCheckResult,
+  EmailCheckOptions,
+  TlsLikeSocket,
+} from './daily/emailHandler.js'
+export { fetchDashboard } from './daily/dashboardHandler.js'
+export type {
+  DashboardFetchResult,
+  DashboardFetchOptions,
+} from './daily/dashboardHandler.js'
+export {
+  resolveHostnameSafe,
+  UnsafeHostError,
+  defaultLookup,
+} from './daily/dns.js'
+export type { SafeAddress, LookupFn } from './daily/dns.js'
+export {
+  sanitizeError,
+  redactCredentials,
+  redactCommonSecrets,
+  REDACTED,
+} from './daily/sanitizeError.js'
+export type { SanitizeErrorOptions } from './daily/sanitizeError.js'
 export {
   createDockerExecutor,
   DEFAULT_DOCKER_CONFIG,

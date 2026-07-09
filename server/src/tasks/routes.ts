@@ -37,7 +37,11 @@ import {
   type TaskType,
 } from './types.js'
 import { validateCreateTask, validateUpdateTask } from './validation.js'
-import { launchExecution, type TaskExecutor } from './executor.js'
+import {
+  launchExecution,
+  type LaunchOptions,
+  type TaskExecutor,
+} from './executor.js'
 
 // ---------------------------------------------------------------------------
 // Shared helpers
@@ -97,6 +101,13 @@ export interface TaskRouterOptions {
    *   new RateLimiter({ maxAttempts: 10_000, windowSeconds: 60 })
    */
   executeRateLimiter?: RateLimiter
+  /**
+   * Retry / backoff overrides passed straight through to `launchExecution`.
+   * Tests supply `{ maxAttempts: 1 }` to skip the retry loop, and
+   * `{ delay: () => Promise.resolve() }` to eliminate real-time waits when
+   * exercising the retry path.
+   */
+  launchOptions?: LaunchOptions
 }
 
 // ---------------------------------------------------------------------------
@@ -288,7 +299,7 @@ export function createTasksRouter(
 
     // Kick off execution in the background; response returns immediately.
     // Pass the full (unsanitized) task so the executor can access credentials.
-    launchExecution(task, run, store, options.executor)
+    launchExecution(task, run, store, options.executor, options.launchOptions)
 
     res.status(202).json(run)
   })

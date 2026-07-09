@@ -56,6 +56,7 @@ export function createRouter(deps: AuthDependencies, options: RouterOptions = {}
     createTasksRouter(taskStore, {
       executor: options.executor,
       executeRateLimiter: options.executeRateLimiter,
+      launchOptions: options.launchOptions,
     }),
   )
   // Run-level read endpoints (auth-protected, read-only so no csrf needed)

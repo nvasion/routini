@@ -30,11 +30,18 @@ routini/
 │   │   ├── routes.ts          # /api item routes (auth-protected)
 │   │   ├── tasks/             # Task domain
 │   │   │   ├── docker.ts      # Docker executor (ephemeral containers)
-│   │   │   ├── executor.ts    # TaskExecutor contract + launcher
+│   │   │   ├── executor.ts    # TaskExecutor contract, retry loop, event bus
 │   │   │   ├── routes.ts      # /api/tasks CRUD + runs
 │   │   │   ├── store.ts       # In-memory TaskStore
 │   │   │   ├── types.ts       # Task domain types
-│   │   │   └── validation.ts  # Input validation for task routes
+│   │   │   ├── validation.ts  # Input validation for task routes
+│   │   │   └── daily/         # Daily task handlers
+│   │   │       ├── dashboardHandler.ts  # HTTP dashboard fetch (SSRF-guarded)
+│   │   │       ├── dns.ts               # SSRF-safe DNS resolver
+│   │   │       ├── emailHandler.ts      # IMAP (IMAPS/TLS) mailbox check
+│   │   │       ├── executor.ts          # Daily-task dispatcher
+│   │   │       ├── sanitizeError.ts     # Credential-scrubbing wrapper
+│   │   │       └── sshHandler.ts        # SSH exec via ssh2
 │   │   └── auth/              # Authentication module
 │   │       ├── index.ts       # Public exports
 │   │       ├── config.ts      # Auth config loaded from env
@@ -121,7 +128,7 @@ are used in development; production requires `JWT_SECRET` **and** a non-default
 | `JWT_SECRET`                      | (dev fallback)      | HMAC secret for signing tokens. **Required in production**, ≥ 32 chars.                              |
 | `JWT_TTL_SECONDS`                 | `3600` (1 hour)     | Token / cookie lifetime. Capped at 24 hours. Kept short deliberately — see *Session lifetime* below. |
 | `DEFAULT_ADMIN_USERNAME`          | `admin`             | Seeded on server start when the user store is empty.                                                 |
-| `DEFAULT_ADMIN_PASSWORD`          | `changeme` (dev)    | Seeded admin password. **Must be overridden in production or the server refuses to start.**          |
+| `DEFAULT_ADMIN_PASSWORD`          | dev-only literal    | Seeded admin password. **Must be overridden in production or the server refuses to start.** Do not copy the dev default into a real deployment — pick a fresh secret per environment. |
 | `USER_STORE_PATH`                 | (in-memory)         | Absolute path to a JSON file. When set, users + sessions survive restarts.                           |
 | `LOGIN_RATE_LIMIT_MAX`            | `10`                | Max failed login attempts per (client IP, username) inside the window.                               |
 | `LOGIN_RATE_LIMIT_WINDOW_SECONDS` | `60`                | Sliding window for the login rate limiter.                                                           |
@@ -357,6 +364,124 @@ Docker task runners, AI credential storage) build on:
   leak across the wire.
 - **`.gitignore`** blocks `node_modules/`, npm caches, `dist/`/`build/`,
   and every `.env*` variant so credentials never accidentally enter git.
+
+## Task persistence and scalability — known limitations
+
+The task store (`server/src/tasks/store.ts`) is currently **in-memory
+only**. This is deliberate scope for the MVP — the same reasoning as the
+auth module (see *Deployment scope and known limitations* above) — but it
+does not meet the PRD's horizontal-scalability NFR by itself. Operators
+running multiple replicas must either:
+
+- **Pin sessions to a single replica** so a task created on pod A is
+  polled on pod A (sticky-session load balancing).
+- **Introduce a shared store** (PostgreSQL or Redis) that implements the
+  same `TaskStore` shape. The class is already the seam — a replacement
+  drops in behind `createTasksRouter(store, …)` without touching route
+  code.
+
+Secrets on stored tasks (`SshConfig.password`, `SshConfig.privateKey`,
+`EmailConfig.password`) live only in the process heap in the current
+implementation. Any persistent replacement **MUST**:
+
+1. Encrypt those fields with AES-256-GCM (or equivalent) before writing.
+2. Source the encryption key from a KMS / secrets manager, not the same
+   store.
+3. Redact them from query logs and audit trails.
+
+The route layer (`sanitizeTask` in `tasks/routes.ts`) already strips
+credentials from every API response regardless of the storage backend, so
+this constraint applies only to the storage adapter itself.
+
+## Daily task handlers
+
+Daily tasks live in `server/src/tasks/daily/` and dispatch through
+`createDailyExecutor` to one of three concrete handlers depending on the
+task's subtype.
+
+### `sshHandler.ts` — SSH command execution
+
+- Uses the `ssh2` client. Password or PEM-encoded private key auth.
+- Blocks any host in an SSRF-unsafe range (loopback, RFC 1918, cloud
+  metadata) at handler entry, so the check runs even for callers that
+  bypass HTTP validation.
+- Enforces a wall-clock timeout (`timeoutMs`, default 30 s) and per-stream
+  output caps (`maxOutputBytes`, default 1 MiB) so a stalled TCP handshake
+  or a runaway `cat /dev/urandom` cannot hold up the executor or exhaust
+  process memory.
+- Every thrown error goes through `sanitizeError` with the password and
+  private key attached to the `sensitive` list, so credentials cannot
+  appear in server logs or task-run errors.
+
+### `emailHandler.ts` — IMAP mailbox check
+
+- Speaks a hand-rolled subset of RFC 3501 over `tls.connect` with
+  `rejectUnauthorized: true`. IMAPS (port 993) only — STARTTLS-on-plaintext
+  is intentionally not supported to keep the state machine small and
+  downgrade-safe.
+- Uses `EXAMINE` (read-only SELECT) so a daily poll never mutates
+  `/Seen` flags or advances a cursor.
+- IMAP-quotes every argument (username, password, folder) and refuses
+  arguments containing CR/LF, so a mailbox name of `foo"\r\nCAPABILITY`
+  cannot inject a second IMAP command.
+- Response buffer capped at 64 KiB and wall-clock deadline enforced by a
+  top-level `setTimeout`.
+- Same `sanitizeError` wrapping as the SSH handler; the IMAP password
+  is added to the `sensitive` list on every error path.
+
+### `dashboardHandler.ts` — HTTP dashboard fetch
+
+- Uses the global `fetch` (Node 18+). URL scheme and hostname are
+  re-validated on every hop (initial request + each 3xx redirect) via
+  the same `validateUrl` used at task-create time.
+- **SSRF hardening beyond validation.** `resolveHostnameSafe` in
+  `dns.ts` re-resolves the hostname immediately before the request and
+  fails if any A/AAAA record targets a private range. This closes the
+  DNS-rebinding hole that validation-time checks alone leave open —
+  a hostname that resolved to a public IP at create time and now
+  resolves to `10.0.0.5` gets rejected before any bytes go on the wire.
+- Redirects are followed **manually** (`redirect: 'manual'`) so each
+  hop passes through the same validation → DNS-pin gate; `fetch`'s
+  built-in redirect follower would silently accept a Location pointing
+  at `http://127.0.0.1/`.
+- Sends with `credentials: 'omit'` so no cookies from the surrounding
+  Node process are forwarded to an arbitrary user-configured URL.
+- Response body capped at 1 MiB by default; sensitive response headers
+  (`Set-Cookie`, `WWW-Authenticate`, `Authorization`) are dropped from
+  the returned summary so they cannot be persisted in a run log.
+
+### Shared helpers
+
+- **`sanitizeError.ts`** — wraps every external call the handlers make.
+  Two-pass scrub: (a) literal credential substrings supplied by the
+  handler (`sensitive: [password, privateKey]`) are replaced with
+  `[REDACTED]`; (b) a regex pass strips common secret shapes (PEM
+  blocks, `Authorization:` header lines, URL userinfo, `Bearer …`).
+  The resulting `Error.message` is safe to log or persist; the
+  original error is kept on `.cause` for server-side observability.
+- **`dns.ts`** — `resolveHostnameSafe` re-resolves and re-validates the
+  hostname. Rejects with a coded `UnsafeHostError` (`UNSAFE_HOST`,
+  `DNS_LOOKUP_FAILED`, `NO_ADDRESSES`) so callers can key on the code
+  rather than message text.
+
+### Executor retry loop
+
+Failed daily-task runs are retried up to **three times with exponential
+backoff** (500 ms → 1 s → 2 s by default), matching the PRD's
+reliability NFR. Each retry creates a fresh `TaskRun` so operators see
+each attempt in the runs list rather than a merged history. `launchExecution`
+takes a `maxAttempts` / `baseBackoffMs` override for tests. The task
+status is only marked `failed` after the final attempt fails — earlier
+failures show up as failed runs but leave the task recoverable.
+
+### Real-time updates — event bus
+
+`TaskRunEventBus` in `executor.ts` is an in-process pub/sub the executor
+publishes on for every attempt transition (`attempt-start`,
+`attempt-succeeded`, `attempt-failed`, `run-abandoned`). The current API
+still uses polling — a future SSE/WebSocket endpoint will subscribe to
+this bus and stream updates so the PRD's "within 5 s" real-time
+requirement is met without further executor refactoring.
 
 ## Developmental task execution (Docker)
 
