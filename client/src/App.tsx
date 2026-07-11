@@ -4,6 +4,7 @@ import { AppHeader, type AppPage } from './components/AppHeader'
 import { Dashboard } from './pages/Dashboard'
 import { LoginPage } from './pages/Login'
 import { AiSettingsPage } from './pages/AiSettings'
+import { RoutineBuilderPage } from './pages/RoutineBuilder'
 import './App.css'
 
 function AppShell() {
@@ -29,6 +30,8 @@ function AppShell() {
       <AppHeader activePage={page} onNavigate={goto} />
       {page === 'dashboard' ? (
         <Dashboard />
+      ) : page === 'routine-builder' ? (
+        <RoutineBuilderPage />
       ) : (
         <AiSettingsPage onDone={() => goto('dashboard')} />
       )}

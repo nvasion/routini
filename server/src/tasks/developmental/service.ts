@@ -374,6 +374,9 @@ export function createDevelopmentalExecutor(
           aiApiKey = config.aiSettings.getApiKeyPlaintext(task.userId)
         } catch (err) {
           throw new DockerExecutionError(
+            // Generic message — the raw cause (which may contain crypto
+            // implementation details) is preserved in `e.cause` for server-side
+            // diagnosis but MUST NOT appear in the user-visible message.
             `Failed to retrieve AI credentials for task "${task.id}"`,
             'CREDENTIALS_ERROR',
             err,

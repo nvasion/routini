@@ -401,3 +401,323 @@ body {
   margin: 0.5rem 0 0 0;
   padding-left: 1.25rem;
 }
+
+/* --- Routine Builder page --- */
+
+.routine-layout {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2rem;
+  align-items: start;
+  max-width: 1100px;
+}
+
+@media (max-width: 700px) {
+  .routine-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+.routine-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.routine-section-heading {
+  margin: 0 0 0.5rem 0;
+  color: var(--color-orange);
+  letter-spacing: 0.02em;
+  font-size: 1.1rem;
+}
+
+/* Existing routine list items */
+
+.routine-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 1rem;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  margin-bottom: 0.5rem;
+}
+
+.routine-item-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.routine-item-name {
+  font-weight: 600;
+  color: var(--color-text);
+  flex: 1;
+}
+
+.routine-item-meta {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--color-muted);
+}
+
+.routine-item-time {
+  color: var(--color-muted);
+}
+
+.routine-item-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+/* Status badges */
+
+.routine-status-badge {
+  display: inline-block;
+  padding: 0.15rem 0.5rem;
+  border-radius: 12px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  border: 1px solid transparent;
+}
+
+.routine-status-idle {
+  background: var(--color-surface-2);
+  color: var(--color-muted);
+  border-color: var(--color-border);
+}
+
+.routine-status-queued {
+  background: var(--color-surface-2);
+  color: var(--color-orange);
+  border-color: var(--color-orange);
+}
+
+.routine-status-running {
+  background: var(--color-surface-2);
+  color: var(--color-orange);
+  border-color: var(--color-orange);
+  animation: routine-pulse 1.2s ease-in-out infinite;
+}
+
+.routine-status-succeeded {
+  background: var(--color-success-bg);
+  color: var(--color-success-fg);
+  border-color: var(--color-success-border);
+}
+
+.routine-status-failed {
+  background: var(--color-danger-bg);
+  color: var(--color-danger-fg);
+  border-color: var(--color-red);
+}
+
+@keyframes routine-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.6; }
+}
+
+/* Builder: step list */
+
+.routine-steps-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.routine-steps-heading {
+  margin: 0;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--color-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+}
+
+.routine-steps-empty {
+  margin: 0;
+  padding: 1rem;
+  background: var(--color-surface);
+  border: 1px dashed var(--color-border);
+  border-radius: 4px;
+  text-align: center;
+  color: var(--color-muted);
+  font-size: 0.9rem;
+}
+
+.routine-steps-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.routine-step-item {
+  padding: 0.75rem;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-left: 3px solid var(--color-orange);
+  border-radius: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.routine-step-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.routine-step-number {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.4rem;
+  height: 1.4rem;
+  border-radius: 50%;
+  background: var(--color-orange);
+  color: var(--color-black);
+  font-size: 0.75rem;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.routine-step-name {
+  flex: 1;
+  font-weight: 500;
+  color: var(--color-text);
+  font-size: 0.95rem;
+}
+
+.routine-step-controls {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.routine-move-btn {
+  padding: 0.2rem 0.4rem;
+  background: transparent;
+  color: var(--color-muted);
+  border: 1px solid var(--color-border);
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 0.7rem;
+  line-height: 1;
+}
+
+.routine-move-btn:hover:not(:disabled) {
+  color: var(--color-orange);
+  border-color: var(--color-orange);
+}
+
+.routine-move-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.routine-remove-btn {
+  padding: 0.2rem 0.5rem;
+  font-size: 0.75rem;
+}
+
+.routine-condition-label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+}
+
+.routine-condition-label-text {
+  color: var(--color-muted);
+  font-weight: 500;
+  white-space: nowrap;
+  min-width: 5rem;
+}
+
+.routine-condition-select {
+  flex: 1;
+  font-size: 0.82rem;
+  padding: 0.35rem 0.5rem;
+}
+
+/* Builder: available tasks */
+
+.routine-available-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.routine-available-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  max-height: 300px;
+  overflow-y: auto;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: 0.25rem;
+  background: var(--color-surface-2);
+}
+
+.routine-available-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.6rem;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 3px;
+}
+
+.routine-available-info {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.routine-available-name {
+  font-size: 0.9rem;
+  color: var(--color-text);
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 140px;
+}
+
+.routine-add-step-btn {
+  padding: 0.35rem 0.7rem;
+  background: transparent;
+  color: var(--color-orange);
+  border: 1px solid var(--color-orange);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.8rem;
+  font-weight: 600;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.routine-add-step-btn:hover:not(:disabled) {
+  background: var(--color-orange);
+  color: var(--color-black);
+}
+
+.routine-add-step-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

@@ -101,6 +101,9 @@ export {
   VALID_HTTP_METHODS,
 } from './validation.js'
 export { VALID_TASK_TYPES } from './types.js'
+export { createRoutineExecutor, RoutineStepError } from './routine/executor.js'
+export { evaluateCondition, isValidConditionSyntax } from './routine/condition.js'
+export type { StepContext } from './routine/condition.js'
 export type {
   Task,
   DailyTask,
