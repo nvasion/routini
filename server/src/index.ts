@@ -15,6 +15,7 @@ import {
   createDailyExecutor,
   createDevelopmentalExecutor,
   createDispatchExecutor,
+  createRoutineExecutor,
   readDockerLimitsFromEnv,
   resolveDockerConnection,
   DockerExecutionError,
@@ -124,9 +125,21 @@ function buildExecutor(): TaskExecutor | undefined {
     }
   }
 
+  // Build the sub-executor for step execution inside routines.
+  // It deliberately omits the routine handler to prevent nested routines
+  // (the step-lookup guard is a defence-in-depth check; this makes infinite
+  // recursion structurally impossible even if that guard were bypassed).
+  const subExecutor = createDispatchExecutor({
+    daily: dailyExecutor,
+    developmental: developmentalExecutor,
+  })
+
+  const routineExecutor = createRoutineExecutor(subExecutor)
+
   return createDispatchExecutor({
     daily: dailyExecutor,
     developmental: developmentalExecutor,
+    routine: routineExecutor,
   })
 }
 

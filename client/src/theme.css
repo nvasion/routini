@@ -34,4 +34,9 @@
   --focus-ring-orange: #ffa50040; /* orange at ~25% alpha */
   --login-glow: #ffa50026; /* orange at ~15% alpha */
   --login-shadow: #00000080;
+
+  /* Success state tokens (used by routine status badges etc.) */
+  --color-success-bg: #1a2e1aff;  /* deep muted green background */
+  --color-success-fg: #88cc88ff;  /* medium green text */
+  --color-success-border: #44884488; /* green border at ~53% alpha */
 }

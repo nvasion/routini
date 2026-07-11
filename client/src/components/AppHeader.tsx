@@ -14,7 +14,7 @@
 
 import { useAuth } from '../auth/AuthContext'
 
-export type AppPage = 'dashboard' | 'ai-settings'
+export type AppPage = 'dashboard' | 'routine-builder' | 'ai-settings'
 
 interface AppHeaderProps {
   activePage: AppPage
@@ -23,6 +23,7 @@ interface AppHeaderProps {
 
 const TABS: Array<{ id: AppPage; label: string }> = [
   { id: 'dashboard', label: 'Dashboard' },
+  { id: 'routine-builder', label: 'Routine Builder' },
   { id: 'ai-settings', label: 'AI Settings' },
 ]
 

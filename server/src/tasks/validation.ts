@@ -34,6 +34,7 @@ import type {
   UpdateDevelopmentalTaskInput,
   UpdateRoutineTaskInput,
 } from './types.js'
+import { isValidConditionSyntax } from './routine/condition.js'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -447,6 +448,12 @@ function validateRoutineSteps(steps: unknown): string[] {
       } else if (step.condition.length > MAX_CONDITION_LENGTH) {
         errors.push(
           `steps[${i}].condition: must not exceed ${MAX_CONDITION_LENGTH} characters`,
+        )
+      } else if (!isValidConditionSyntax(step.condition)) {
+        errors.push(
+          `steps[${i}].condition: unrecognized condition syntax. ` +
+            `Supported forms: previous.status === '<status>' or previous.status !== '<status>' ` +
+            `where <status> is one of: queued, running, succeeded, failed`,
         )
       }
     }

@@ -535,7 +535,9 @@ describe('validateCreateTask — routine', () => {
   const valid = {
     type: 'routine',
     name: 'Morning workflow',
-    steps: [{ taskId: 'abc' }, { taskId: 'def', condition: 'previous.status === "succeeded"' }],
+    // Condition uses single quotes around the status value — the canonical form
+    // documented in types.ts and enforced by the condition validator.
+    steps: [{ taskId: 'abc' }, { taskId: 'def', condition: "previous.status === 'succeeded'" }],
   }
 
   it('accepts a valid routine task', () => {
@@ -562,6 +564,42 @@ describe('validateCreateTask — routine', () => {
     fails(
       validateCreateTask({ ...valid, steps: [{ taskId: 'abc', condition: 123 }] }),
       'condition',
+    )
+  })
+
+  it('rejects an unrecognized condition syntax', () => {
+    fails(
+      validateCreateTask({ ...valid, steps: [{ taskId: 'abc', condition: 'always' }] }),
+      'condition',
+    )
+  })
+
+  it('rejects a condition using double quotes around the status value', () => {
+    fails(
+      validateCreateTask({
+        ...valid,
+        steps: [{ taskId: 'abc', condition: 'previous.status === "succeeded"' }],
+      }),
+      'condition',
+    )
+  })
+
+  it('rejects a condition with an unknown status value', () => {
+    fails(
+      validateCreateTask({
+        ...valid,
+        steps: [{ taskId: 'abc', condition: "previous.status === 'done'" }],
+      }),
+      'condition',
+    )
+  })
+
+  it('accepts condition previous.status !== \'failed\'', () => {
+    ok(
+      validateCreateTask({
+        ...valid,
+        steps: [{ taskId: 'abc', condition: "previous.status !== 'failed'" }],
+      }),
     )
   })
 
