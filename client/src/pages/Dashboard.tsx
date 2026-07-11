@@ -15,6 +15,28 @@ async function apiFetch(input: RequestInfo, init: RequestInit = {}): Promise<Res
   return fetch(input, { credentials: 'include', ...init })
 }
 
+/**
+ * Validate that a parsed API response body is an `ItemsResponse`.
+ *
+ * TypeScript casts (`as ItemsResponse`) are compile-time only — they do
+ * nothing at runtime. This function enforces the shape at runtime so that a
+ * malformed or unexpected server response is turned into a thrown `Error`
+ * (caught by the fetch effect's `catch` block) instead of silently leaving
+ * `items` state as `undefined` and crashing the `.map()` render.
+ *
+ * Exported for unit-testing in isolation without a DOM.
+ */
+export function parseItemsResponse(data: unknown): Item[] {
+  if (
+    typeof data !== 'object' ||
+    data === null ||
+    !Array.isArray((data as { items?: unknown }).items)
+  ) {
+    throw new Error('Unexpected server response: "items" is missing or not an array')
+  }
+  return (data as ItemsResponse).items
+}
+
 export function Dashboard() {
   const [items, setItems] = useState<Item[]>([])
   const [newItemName, setNewItemName] = useState('')
@@ -29,8 +51,8 @@ export function Dashboard() {
         if (!response.ok) {
           throw new Error(`Failed to fetch items (${response.status})`)
         }
-        const data = (await response.json()) as ItemsResponse
-        if (!cancelled) setItems(data.items)
+        const items = parseItemsResponse(await response.json())
+        if (!cancelled) setItems(items)
       } catch (err) {
         if (!cancelled) {
           setError(err instanceof Error ? err.message : 'Failed to fetch items')
