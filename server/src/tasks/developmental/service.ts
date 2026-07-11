@@ -374,7 +374,7 @@ export function createDevelopmentalExecutor(
           aiApiKey = config.aiSettings.getApiKeyPlaintext(task.userId)
         } catch (err) {
           throw new DockerExecutionError(
-            `Failed to retrieve AI credentials for task "${task.id}": decryption failed`,
+            `Failed to retrieve AI credentials for task "${task.id}"`,
             'CREDENTIALS_ERROR',
             err,
           )
