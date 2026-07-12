@@ -21,7 +21,38 @@ import {
   DockerExecutionError,
   redactCommonSecrets,
 } from './tasks/index.js'
-import type { TaskExecutor } from './tasks/index.js'
+import type {
+  TaskExecutor,
+  DockerClient,
+  DockerContainer,
+  DockerContainerCreateOptions,
+} from './tasks/index.js'
+
+/**
+ * Adapts the dockerode `Docker` class to our minimal `DockerClient` interface.
+ *
+ * Dockerode's `createContainer` exposes both a callback overload and a promise
+ * overload, so TypeScript cannot directly assign `Docker` to `DockerClient`
+ * (which only declares the promise form).  This adapter provides compile-time
+ * safety: TypeScript verifies that this class satisfies `DockerClient`, so any
+ * future change to the interface or to the dockerode API will surface here as a
+ * type error rather than a silent runtime failure.
+ *
+ * The casts inside are targeted and intentional:
+ *   - `options as Docker.ContainerCreateOptions`: our type is a structural
+ *     subset that dockerode accepts without extra properties.
+ *   - the return value `as Promise<DockerContainer>`: Dockerode.Container has
+ *     the same `start`, `wait`, and `remove` methods required by DockerContainer.
+ */
+class DockerClientAdapter implements DockerClient {
+  constructor(private readonly docker: Docker) {}
+
+  createContainer(options: DockerContainerCreateOptions): Promise<DockerContainer> {
+    return this.docker.createContainer(
+      options as Docker.ContainerCreateOptions,
+    ) as Promise<DockerContainer>
+  }
+}
 
 const config = loadConfig()
 
@@ -98,7 +129,7 @@ function buildExecutor(): TaskExecutor | undefined {
   let developmentalExecutor: TaskExecutor | undefined
   try {
     const dockerConn = resolveDockerConnection(process.env as Record<string, string | undefined>)
-    const dockerClient = new Docker(dockerConn)
+    const dockerClient = new DockerClientAdapter(new Docker(dockerConn))
     developmentalExecutor = createDevelopmentalExecutor({
       client: dockerClient,
       aiSettings: aiSettingsStore,

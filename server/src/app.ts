@@ -1,3 +1,6 @@
+import { existsSync } from 'fs'
+import { dirname, resolve } from 'path'
+import { fileURLToPath } from 'url'
 import express, {
   Express,
   NextFunction,
@@ -125,7 +128,31 @@ export function createApp(options: CreateAppOptions = {}): Express {
     app.use('/api', buildSkeletonRouter())
   }
 
-  // 404 handler — must come after all routes.
+  // Serve the pre-built React client when it exists (i.e. after `make build`
+  // or in production).  The path is resolved relative to *this compiled file*
+  // so it is correct whether we run from `server/src/` (tsx in dev) or from
+  // `server/dist/` (node in production).
+  const clientDist = resolve(
+    dirname(fileURLToPath(import.meta.url)),
+    '../../client/dist',
+  )
+  if (existsSync(clientDist)) {
+    // Serve static assets (JS bundles, CSS, images, …).
+    app.use(express.static(clientDist))
+    // SPA fallback: any GET request that is not an API/health path and has no
+    // matching static file gets index.html so the React router handles it.
+    // This must come before the JSON 404 handler so that client-side routes
+    // (e.g. /dashboard, /settings) are not swallowed as backend 404s.
+    app.get('*', (req: Request, res: Response, next: NextFunction) => {
+      if (req.path.startsWith('/api') || req.path === '/health') {
+        next()
+        return
+      }
+      res.sendFile(resolve(clientDist, 'index.html'))
+    })
+  }
+
+  // JSON 404 for unmatched API routes (and all routes when client dist is absent).
   app.use((_req: Request, res: Response) => {
     res.status(404).json({ error: 'Not Found' })
   })
