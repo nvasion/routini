@@ -130,6 +130,59 @@ async function apiFetch(input: string, init: RequestInit = {}): Promise<Response
 }
 
 // ---------------------------------------------------------------------------
+// Response parsers — runtime shape validation
+//
+// TypeScript casts (`as { tasks: Task[] }`) are compile-time only and provide
+// zero runtime protection. If the server returns a malformed body (missing
+// key, wrong type, proxy HTML page, unexpected 2xx error shape, etc.) the
+// TypeScript cast silently produces `undefined` at runtime. A caller that
+// then calls `.map()` or `.filter()` on that `undefined` value crashes with
+// an unhandled TypeError that bubbles all the way to the browser console.
+//
+// These validators enforce the shape contract at runtime: they throw a
+// `TasksApiError` on any invalid body so callers can catch-and-display the
+// error rather than letting an undefined value leak into React state.
+//
+// Exported so they can be unit-tested in isolation (no DOM / React needed).
+// ---------------------------------------------------------------------------
+
+/**
+ * Assert that a parsed API response body has the `{ tasks: Task[] }` shape.
+ * Throws `TasksApiError` when the shape contract is violated.
+ */
+export function parseTasksResponse(data: unknown): Task[] {
+  if (
+    typeof data !== 'object' ||
+    data === null ||
+    !Array.isArray((data as { tasks?: unknown }).tasks)
+  ) {
+    throw new TasksApiError(
+      200,
+      'Unexpected server response: "tasks" is missing or not an array',
+    )
+  }
+  return (data as { tasks: Task[] }).tasks
+}
+
+/**
+ * Assert that a parsed API response body has the `{ runs: TaskRun[] }` shape.
+ * Throws `TasksApiError` when the shape contract is violated.
+ */
+export function parseRunsResponse(data: unknown): TaskRun[] {
+  if (
+    typeof data !== 'object' ||
+    data === null ||
+    !Array.isArray((data as { runs?: unknown }).runs)
+  ) {
+    throw new TasksApiError(
+      200,
+      'Unexpected server response: "runs" is missing or not an array',
+    )
+  }
+  return (data as { runs: TaskRun[] }).runs
+}
+
+// ---------------------------------------------------------------------------
 // Task endpoints
 // ---------------------------------------------------------------------------
 
@@ -140,8 +193,7 @@ export async function listTasks(type?: TaskType): Promise<Task[]> {
   const url = type != null ? `/api/tasks?type=${encodeURIComponent(type)}` : '/api/tasks'
   const res = await apiFetch(url)
   if (!res.ok) throw await extractError(res, 'Failed to fetch tasks')
-  const data = (await res.json()) as { tasks: Task[] }
-  return data.tasks
+  return parseTasksResponse(await res.json())
 }
 
 /**
@@ -225,6 +277,5 @@ export async function deleteTask(id: string): Promise<void> {
 export async function listRuns(taskId: string): Promise<TaskRun[]> {
   const res = await apiFetch(`/api/tasks/${encodeURIComponent(taskId)}/runs`)
   if (!res.ok) throw await extractError(res, 'Failed to fetch runs')
-  const data = (await res.json()) as { runs: TaskRun[] }
-  return data.runs
+  return parseRunsResponse(await res.json())
 }
