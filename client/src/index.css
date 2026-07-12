@@ -31,25 +31,6 @@ body {
   color: var(--color-text);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  min-height: 100vh;
-}
-
-a {
-  color: var(--color-secondary);
-  text-decoration: none;
-}
-
-a:hover {
-  text-decoration: underline;
-}
-
-button {
-  cursor: pointer;
-  font-family: var(--font-sans);
-}
-
-input,
-select,
-textarea {
-  font-family: var(--font-sans);
+  background: #0d0d0d;
+  color: #e0e0e0;
 }
