@@ -70,6 +70,12 @@ function isValidItem(data: unknown): data is Item {
  * (caught by the caller's catch block) instead of silently leaving `items`
  * state as `undefined` and crashing the `.map()` render.
  *
+ * Validates both the envelope shape (items must be an array) and each element
+ * within the array (every item must match the Item interface). Using `as Item`
+ * would be compile-time-only; element validation here prevents malformed
+ * objects — including `null` array entries — from reaching the `.map()` call
+ * and throwing a `TypeError` at render time.
+ *
  * Exported for unit-testing in isolation without a DOM.
  */
 export function parseItemsResponse(data: unknown): Item[] {
@@ -80,7 +86,13 @@ export function parseItemsResponse(data: unknown): Item[] {
   ) {
     throw new Error('Unexpected server response: "items" is missing or not an array')
   }
-  return (data as ItemsResponse).items
+  const arr = (data as { items: unknown[] }).items
+  if (!arr.every(isValidItem)) {
+    throw new Error(
+      'Unexpected server response: one or more items have an invalid shape',
+    )
+  }
+  return arr
 }
 
 /**

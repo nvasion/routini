@@ -133,6 +133,89 @@ describe('parseItemsResponse — malformed / unexpected responses', () => {
 })
 
 // ---------------------------------------------------------------------------
+// Per-element validation — new in the fix for the items.map() crash
+//
+// parseItemsResponse now validates each element in the array using isValidItem
+// so malformed entries (null, missing fields, wrong types) are rejected before
+// they reach the .map() call in the component. Without this guard, a server
+// that returns `{ items: [null] }` would pass the array-check and then crash
+// when the component tries to access `item.id` inside the map callback.
+// ---------------------------------------------------------------------------
+
+describe('parseItemsResponse — invalid array elements', () => {
+  it('throws when the array contains a null element', () => {
+    expect(() =>
+      parseItemsResponse({ items: [null], count: 1 }),
+    ).toThrow(/invalid shape/i)
+  })
+
+  it('throws when the array contains an undefined element', () => {
+    expect(() =>
+      parseItemsResponse({ items: [undefined], count: 1 }),
+    ).toThrow(/invalid shape/i)
+  })
+
+  it('throws when the array contains a number element instead of an Item', () => {
+    expect(() =>
+      parseItemsResponse({ items: [42], count: 1 }),
+    ).toThrow(/invalid shape/i)
+  })
+
+  it('throws when an element is missing the id field', () => {
+    expect(() =>
+      parseItemsResponse({ items: [{ name: 'No id', createdAt: '2025-01-01T00:00:00.000Z' }], count: 1 }),
+    ).toThrow(/invalid shape/i)
+  })
+
+  it('throws when an element has id as a string instead of a number', () => {
+    expect(() =>
+      parseItemsResponse({ items: [{ id: '1', name: 'Bad id', createdAt: '2025-01-01T00:00:00.000Z' }], count: 1 }),
+    ).toThrow(/invalid shape/i)
+  })
+
+  it('throws when an element is missing the name field', () => {
+    expect(() =>
+      parseItemsResponse({ items: [{ id: 1, createdAt: '2025-01-01T00:00:00.000Z' }], count: 1 }),
+    ).toThrow(/invalid shape/i)
+  })
+
+  it('throws when an element is missing the createdAt field', () => {
+    expect(() =>
+      parseItemsResponse({ items: [{ id: 1, name: 'No date' }], count: 1 }),
+    ).toThrow(/invalid shape/i)
+  })
+
+  it('throws when only one of several elements is invalid (mixed array)', () => {
+    // A partially-valid response must be rejected entirely — otherwise the
+    // component would crash on the invalid element during .map().
+    expect(() =>
+      parseItemsResponse({
+        items: [
+          { id: 1, name: 'Valid', createdAt: '2025-01-01T00:00:00.000Z' },
+          null,
+          { id: 3, name: 'Also valid', createdAt: '2025-01-01T00:00:00.000Z' },
+        ],
+        count: 3,
+      }),
+    ).toThrow(/invalid shape/i)
+  })
+
+  it('does not throw when all elements are valid', () => {
+    // Belt-and-suspenders: the valid-response path still works after the
+    // extra validation is added.
+    expect(() =>
+      parseItemsResponse({
+        items: [
+          { id: 1, name: 'A', createdAt: '2025-01-01T00:00:00.000Z' },
+          { id: 2, name: 'B', createdAt: '2025-01-02T00:00:00.000Z' },
+        ],
+        count: 2,
+      }),
+    ).not.toThrow()
+  })
+})
+
+// ---------------------------------------------------------------------------
 // parseItemResponse — single-item POST response validator
 //
 // The POST /api/items endpoint returns a bare Item object (not wrapped in a

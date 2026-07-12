@@ -2,6 +2,9 @@ import { useEffect, useState, type FormEvent } from 'react'
 import { type Item, listItems, createItem, deleteItem } from '../api/itemsApi'
 
 export function Dashboard() {
+  // Initialized to an empty array so `items` is never `undefined`.
+  // listItems() validates the API response shape before calling setItems(),
+  // so the array always contains well-formed Item objects.
   const [items, setItems] = useState<Item[]>([])
   const [newItemName, setNewItemName] = useState('')
   const [loading, setLoading] = useState(true)
@@ -69,7 +72,7 @@ export function Dashboard() {
         <p className="empty">No items yet. Add one above!</p>
       ) : (
         <ul className="list">
-          {items.map((item) => (
+          {items?.map((item) => (
             <li key={item.id} className="list-item">
               <span>{item.name}</span>
               <button
