@@ -1,0 +1,139 @@
+.settings-loading {
+  padding: 4rem;
+  text-align: center;
+  color: var(--color-text-muted);
+}
+
+.settings-page {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 2rem;
+}
+
+.settings-container {
+  max-width: 640px;
+}
+
+/* ── Header ─────────────────────────────────────────────────── */
+.settings-header {
+  margin-bottom: 2rem;
+}
+
+.settings-header h1 {
+  font-size: 1.75rem;
+  font-weight: 700;
+}
+
+.settings-subtitle {
+  color: var(--color-text-muted);
+  font-size: 0.875rem;
+  margin-top: 0.25rem;
+}
+
+/* ── Form ───────────────────────────────────────────────────── */
+.settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.settings-flash {
+  padding: 0.75rem 1rem;
+  border-radius: var(--radius);
+  font-size: 0.875rem;
+}
+
+.settings-flash-success {
+  background: rgba(34, 197, 94, 0.1);
+  border: 1px solid rgba(34, 197, 94, 0.3);
+  color: var(--color-success);
+}
+
+.settings-flash-error {
+  background: rgba(255, 0, 0, 0.08);
+  border: 1px solid rgba(255, 0, 0, 0.3);
+  color: var(--color-primary);
+}
+
+/* ── Section ────────────────────────────────────────────────── */
+.settings-section {
+  background: var(--color-bg-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.settings-section h2 {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--color-secondary);
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.form-group label {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--color-text-muted);
+}
+
+.form-group input,
+.form-group select {
+  padding: 0.7rem 0.9rem;
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  color: var(--color-text);
+  font-size: 0.9rem;
+  outline: none;
+  transition: border-color 0.15s;
+  width: 100%;
+}
+
+.form-group input:focus,
+.form-group select:focus {
+  border-color: var(--color-secondary);
+}
+
+.form-group input::placeholder {
+  color: rgba(153, 153, 153, 0.5);
+}
+
+.form-group select option {
+  background: var(--color-bg-elevated);
+}
+
+/* ── Footer ─────────────────────────────────────────────────── */
+.settings-footer {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.btn-save {
+  padding: 0.7rem 2rem;
+  background: var(--color-primary);
+  color: #fff;
+  border: none;
+  border-radius: var(--radius);
+  font-size: 0.9rem;
+  font-weight: 600;
+  transition: background 0.15s;
+}
+
+.btn-save:hover:not(:disabled) {
+  background: #cc0000;
+}
+
+.btn-save:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}

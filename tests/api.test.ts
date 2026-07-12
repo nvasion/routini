@@ -1,37 +1,38 @@
 import { describe, it, expect } from 'vitest'
+import supertest from 'supertest'
+import { app } from '../server/src/app'
 
-// Basic API tests - in a real app these would use supertest
-describe('API Routes', () => {
-  const API_BASE = 'http://localhost:3001'
+const request = supertest(app)
 
-  it('should have correct configuration', () => {
-    expect(API_BASE).toBe('http://localhost:3001')
+describe('GET /health', () => {
+  it('returns status ok with an ISO timestamp', async () => {
+    const res = await request.get('/health')
+    expect(res.status).toBe(200)
+    expect(res.body.status).toBe('ok')
+    expect(typeof res.body.timestamp).toBe('string')
+    expect(new Date(res.body.timestamp).getTime()).not.toBeNaN()
+  })
+})
+
+describe('GET /api/version', () => {
+  it('returns version and name', async () => {
+    const res = await request.get('/api/version')
+    expect(res.status).toBe(200)
+    expect(res.body.version).toBe('0.1.0')
+    expect(res.body.name).toBe('routini')
+  })
+})
+
+describe('404 handler', () => {
+  it('returns 404 for unknown routes', async () => {
+    const res = await request.get('/api/does-not-exist')
+    expect(res.status).toBe(404)
+    expect(res.body.error).toBeDefined()
   })
 
-  it('health check endpoint format', () => {
-    // This documents the expected response format
-    const expectedResponse = {
-      status: 'ok',
-      timestamp: expect.any(String)
-    }
-    expect(expectedResponse.status).toBe('ok')
-  })
-
-  it('items endpoint format', () => {
-    // This documents the expected response format
-    const expectedResponse = {
-      items: expect.any(Array),
-      count: expect.any(Number)
-    }
-    expect(Array.isArray(expectedResponse.items)).toBe(true)
-  })
-
-  it('version endpoint format', () => {
-    // This documents the expected response format
-    const expectedResponse = {
-      version: '0.1.0',
-      name: 'routini'
-    }
-    expect(expectedResponse.version).toBe('0.1.0')
+  it('returns JSON for unknown routes', async () => {
+    const res = await request.get('/no-such-path')
+    expect(res.status).toBe(404)
+    expect(res.type).toMatch(/json/)
   })
 })

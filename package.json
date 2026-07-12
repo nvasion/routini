@@ -16,6 +16,8 @@
     "install:all": "npm install && cd server && npm install && cd ../client && npm install"
   },
   "devDependencies": {
-    "concurrently": "^8.2.2"
+    "@types/supertest": "^7.2.0",
+    "concurrently": "^8.2.2",
+    "supertest": "^7.2.2"
   }
 }
