@@ -12,12 +12,6 @@
 vendor/
 node_modules/
 
-# Package manager caches
-.npm-cache/
-.npm/
-.yarn/
-.pnpm-store/
-
 # IDE
 .vscode/
 .idea/
@@ -33,14 +27,4 @@ build/
 
 # Logs
 *.log
-
-# Environment files (contain secrets)
-.env
-.env.local
-.env.*.local
-.env.production
-.env.development
-
-# Coverage reports
-coverage/
-.nyc_output/
+.factory/worktrees/
