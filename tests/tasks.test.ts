@@ -1,14 +1,31 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeAll } from 'vitest'
 import supertest from 'supertest'
 import { app } from '../server/src/app'
 
 const request = supertest(app)
 
+// ── Auth helper ───────────────────────────────────────────────────
+// All task endpoints require a valid Bearer token. Obtain one from the
+// seed account before the test suite runs.
+
+let authToken: string
+
+beforeAll(async () => {
+  const res = await request
+    .post('/api/auth/login')
+    .send({ email: 'admin@routini.dev', password: 'changeme' })
+  authToken = res.body.token as string
+})
+
+function auth() {
+  return { Authorization: `Bearer ${authToken}` }
+}
+
 // ── GET /api/tasks ───────────────────────────────────────────────
 
 describe('GET /api/tasks', () => {
   it('returns all tasks with a count', async () => {
-    const res = await request.get('/api/tasks')
+    const res = await request.get('/api/tasks').set(auth())
     expect(res.status).toBe(200)
     expect(Array.isArray(res.body.tasks)).toBe(true)
     expect(typeof res.body.count).toBe('number')
@@ -16,7 +33,7 @@ describe('GET /api/tasks', () => {
   })
 
   it('returns only daily tasks when filtered by type=daily', async () => {
-    const res = await request.get('/api/tasks?type=daily')
+    const res = await request.get('/api/tasks?type=daily').set(auth())
     expect(res.status).toBe(200)
     res.body.tasks.forEach((t: { type: string }) => {
       expect(t.type).toBe('daily')
@@ -24,7 +41,7 @@ describe('GET /api/tasks', () => {
   })
 
   it('returns only idle tasks when filtered by status=idle', async () => {
-    const res = await request.get('/api/tasks?status=idle')
+    const res = await request.get('/api/tasks?status=idle').set(auth())
     expect(res.status).toBe(200)
     res.body.tasks.forEach((t: { status: string }) => {
       expect(t.status).toBe('idle')
@@ -32,15 +49,20 @@ describe('GET /api/tasks', () => {
   })
 
   it('returns 400 for an invalid type filter', async () => {
-    const res = await request.get('/api/tasks?type=badtype')
+    const res = await request.get('/api/tasks?type=badtype').set(auth())
     expect(res.status).toBe(400)
     expect(res.body.error).toBeDefined()
   })
 
   it('returns 400 for an invalid status filter', async () => {
-    const res = await request.get('/api/tasks?status=badstatus')
+    const res = await request.get('/api/tasks?status=badstatus').set(auth())
     expect(res.status).toBe(400)
     expect(res.body.error).toBeDefined()
+  })
+
+  it('returns 401 without an Authorization header', async () => {
+    const res = await request.get('/api/tasks')
+    expect(res.status).toBe(401)
   })
 })
 
@@ -48,7 +70,7 @@ describe('GET /api/tasks', () => {
 
 describe('POST /api/tasks', () => {
   it('creates a daily task with all required fields', async () => {
-    const res = await request.post('/api/tasks').send({
+    const res = await request.post('/api/tasks').set(auth()).send({
       name: 'Test Daily Task',
       description: 'A test daily task',
       type: 'daily',
@@ -66,7 +88,7 @@ describe('POST /api/tasks', () => {
   })
 
   it('creates a developmental task', async () => {
-    const res = await request.post('/api/tasks').send({
+    const res = await request.post('/api/tasks').set(auth()).send({
       name: 'Test Dev Task',
       type: 'developmental',
       repoUrl: 'https://github.com/example/repo',
@@ -80,7 +102,7 @@ describe('POST /api/tasks', () => {
   })
 
   it('creates a routine task', async () => {
-    const res = await request.post('/api/tasks').send({
+    const res = await request.post('/api/tasks').set(auth()).send({
       name: 'Test Routine',
       type: 'routine',
     })
@@ -90,7 +112,7 @@ describe('POST /api/tasks', () => {
   })
 
   it('trims whitespace from the name', async () => {
-    const res = await request.post('/api/tasks').send({
+    const res = await request.post('/api/tasks').set(auth()).send({
       name: '   Padded Name   ',
       type: 'routine',
     })
@@ -99,19 +121,19 @@ describe('POST /api/tasks', () => {
   })
 
   it('returns 400 when name is missing', async () => {
-    const res = await request.post('/api/tasks').send({ type: 'daily' })
+    const res = await request.post('/api/tasks').set(auth()).send({ type: 'daily' })
     expect(res.status).toBe(400)
     expect(res.body.error).toMatch(/name/i)
   })
 
   it('returns 400 when name is blank', async () => {
-    const res = await request.post('/api/tasks').send({ name: '   ', type: 'daily' })
+    const res = await request.post('/api/tasks').set(auth()).send({ name: '   ', type: 'daily' })
     expect(res.status).toBe(400)
     expect(res.body.error).toMatch(/name/i)
   })
 
   it('returns 400 when type is missing', async () => {
-    const res = await request.post('/api/tasks').send({ name: 'No Type Task' })
+    const res = await request.post('/api/tasks').set(auth()).send({ name: 'No Type Task' })
     expect(res.status).toBe(400)
     expect(res.body.error).toMatch(/type/i)
   })
@@ -119,18 +141,24 @@ describe('POST /api/tasks', () => {
   it('returns 400 for an invalid task type', async () => {
     const res = await request
       .post('/api/tasks')
+      .set(auth())
       .send({ name: 'Bad Type Task', type: 'invalid' })
     expect(res.status).toBe(400)
     expect(res.body.error).toBeDefined()
   })
 
   it('returns 400 when developmental task is missing repoUrl', async () => {
-    const res = await request.post('/api/tasks').send({
+    const res = await request.post('/api/tasks').set(auth()).send({
       name: 'Dev Without Repo',
       type: 'developmental',
     })
     expect(res.status).toBe(400)
     expect(res.body.error).toMatch(/repoUrl/i)
+  })
+
+  it('returns 401 without an Authorization header', async () => {
+    const res = await request.post('/api/tasks').send({ name: 'No Auth', type: 'routine' })
+    expect(res.status).toBe(401)
   })
 })
 
@@ -140,17 +168,20 @@ describe('GET /api/tasks/:id', () => {
   it('returns the task for a valid id', async () => {
     const created = await request
       .post('/api/tasks')
+      .set(auth())
       .send({ name: 'Findable Task', type: 'routine' })
     const id = created.body.id as string
 
-    const res = await request.get(`/api/tasks/${id}`)
+    const res = await request.get(`/api/tasks/${id}`).set(auth())
     expect(res.status).toBe(200)
     expect(res.body.id).toBe(id)
     expect(res.body.name).toBe('Findable Task')
   })
 
   it('returns 404 for a non-existent id', async () => {
-    const res = await request.get('/api/tasks/00000000-0000-0000-0000-000000000000')
+    const res = await request
+      .get('/api/tasks/00000000-0000-0000-0000-000000000000')
+      .set(auth())
     expect(res.status).toBe(404)
     expect(res.body.error).toBeDefined()
   })
@@ -162,11 +193,13 @@ describe('PUT /api/tasks/:id', () => {
   it('updates the task name', async () => {
     const created = await request
       .post('/api/tasks')
+      .set(auth())
       .send({ name: 'Old Name', type: 'routine' })
     const id = created.body.id as string
 
     const res = await request
       .put(`/api/tasks/${id}`)
+      .set(auth())
       .send({ name: 'New Name' })
     expect(res.status).toBe(200)
     expect(res.body.name).toBe('New Name')
@@ -176,6 +209,7 @@ describe('PUT /api/tasks/:id', () => {
   it('updates updatedAt on every PUT', async () => {
     const created = await request
       .post('/api/tasks')
+      .set(auth())
       .send({ name: 'Update Timer', type: 'routine' })
     const originalUpdatedAt = created.body.updatedAt as string
 
@@ -183,6 +217,7 @@ describe('PUT /api/tasks/:id', () => {
 
     const res = await request
       .put(`/api/tasks/${created.body.id}`)
+      .set(auth())
       .send({ name: 'Updated' })
     expect(res.body.updatedAt).not.toBe(originalUpdatedAt)
   })
@@ -190,6 +225,7 @@ describe('PUT /api/tasks/:id', () => {
   it('returns 404 for a non-existent id', async () => {
     const res = await request
       .put('/api/tasks/00000000-0000-0000-0000-000000000000')
+      .set(auth())
       .send({ name: 'Ghost Update' })
     expect(res.status).toBe(404)
   })
@@ -197,10 +233,11 @@ describe('PUT /api/tasks/:id', () => {
   it('ignores a blank name and keeps the existing one', async () => {
     const created = await request
       .post('/api/tasks')
+      .set(auth())
       .send({ name: 'Keep Me', type: 'routine' })
     const id = created.body.id as string
 
-    const res = await request.put(`/api/tasks/${id}`).send({ name: '' })
+    const res = await request.put(`/api/tasks/${id}`).set(auth()).send({ name: '' })
     expect(res.status).toBe(200)
     expect(res.body.name).toBe('Keep Me')
   })
@@ -212,22 +249,23 @@ describe('DELETE /api/tasks/:id', () => {
   it('deletes an existing task', async () => {
     const created = await request
       .post('/api/tasks')
+      .set(auth())
       .send({ name: 'Delete Me', type: 'routine' })
     const id = created.body.id as string
 
-    const del = await request.delete(`/api/tasks/${id}`)
+    const del = await request.delete(`/api/tasks/${id}`).set(auth())
     expect(del.status).toBe(200)
     expect(del.body.id).toBe(id)
 
     // Confirm it's gone
-    const get = await request.get(`/api/tasks/${id}`)
+    const get = await request.get(`/api/tasks/${id}`).set(auth())
     expect(get.status).toBe(404)
   })
 
   it('returns 404 for a non-existent id', async () => {
-    const res = await request.delete(
-      '/api/tasks/00000000-0000-0000-0000-000000000000',
-    )
+    const res = await request
+      .delete('/api/tasks/00000000-0000-0000-0000-000000000000')
+      .set(auth())
     expect(res.status).toBe(404)
     expect(res.body.error).toBeDefined()
   })
@@ -239,19 +277,20 @@ describe('POST /api/tasks/:id/trigger', () => {
   it('queues an idle task', async () => {
     const created = await request
       .post('/api/tasks')
+      .set(auth())
       .send({ name: 'Triggerable', type: 'routine' })
     const id = created.body.id as string
 
-    const res = await request.post(`/api/tasks/${id}/trigger`)
+    const res = await request.post(`/api/tasks/${id}/trigger`).set(auth())
     expect(res.status).toBe(200)
     expect(res.body.task.status).toBe('queued')
     expect(res.body.task.id).toBe(id)
   })
 
   it('returns 404 for a non-existent id', async () => {
-    const res = await request.post(
-      '/api/tasks/00000000-0000-0000-0000-000000000000/trigger',
-    )
+    const res = await request
+      .post('/api/tasks/00000000-0000-0000-0000-000000000000/trigger')
+      .set(auth())
     expect(res.status).toBe(404)
     expect(res.body.error).toBeDefined()
   })

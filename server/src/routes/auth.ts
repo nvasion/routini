@@ -1,4 +1,4 @@
-import { Router, Request, Response } from 'express'
+import { Router, Request, Response, NextFunction } from 'express'
 import { hashSync, compareSync } from 'bcryptjs'
 import { sign, verify, TokenExpiredError } from 'jsonwebtoken'
 import { randomBytes, randomUUID } from 'node:crypto'
@@ -142,14 +142,18 @@ authRouter.post('/logout', (req: Request, res: Response) => {
   res.json({ message: 'Logged out successfully' })
 })
 
-// ── GET /api/auth/me ──────────────────────────────────────────────
+// ── Auth middleware ───────────────────────────────────────────────
+// Shared verification logic used by /me and requireAuth.
 
-authRouter.get('/me', (req: Request, res: Response) => {
+function verifyBearerToken(
+  req: Request,
+  res: Response,
+): { user: User } | null {
   const token = extractBearerToken(req)
 
   if (!token) {
     res.status(401).json({ error: 'Authentication required' })
-    return
+    return null
   }
 
   let payload: { userId: string; email: string; jti?: string }
@@ -159,19 +163,36 @@ authRouter.get('/me', (req: Request, res: Response) => {
     const message =
       err instanceof TokenExpiredError ? 'Token has expired' : 'Invalid or expired token'
     res.status(401).json({ error: message })
-    return
+    return null
   }
 
   if (payload.jti && revokedJtis.has(payload.jti)) {
     res.status(401).json({ error: 'Token has been revoked' })
-    return
+    return null
   }
 
   const user = users.get(payload.userId)
   if (!user) {
     res.status(401).json({ error: 'User not found' })
-    return
+    return null
   }
 
-  res.json(safeUser(user))
+  return { user: safeUser(user) }
+}
+
+/**
+ * Express middleware that enforces Bearer-token authentication.
+ * Mount before any router that should be protected.
+ */
+export function requireAuth(req: Request, res: Response, next: NextFunction): void {
+  const result = verifyBearerToken(req, res)
+  if (result) next()
+}
+
+// ── GET /api/auth/me ──────────────────────────────────────────────
+
+authRouter.get('/me', (req: Request, res: Response) => {
+  const result = verifyBearerToken(req, res)
+  if (!result) return
+  res.json(result.user)
 })
