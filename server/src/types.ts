@@ -66,6 +66,14 @@ export interface AISettings {
   defaultAgentId: string
 }
 
+// ── Execution logs ────────────────────────────
+
+/** A single timestamped log line produced during task execution. */
+export interface TaskLog {
+  timestamp: string
+  message: string
+}
+
 // ── API helpers ───────────────────────────────
 
 export interface ApiError {

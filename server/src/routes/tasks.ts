@@ -1,17 +1,34 @@
 import { Router, Request, Response } from 'express'
 import { randomUUID } from 'node:crypto'
-import type { Task, TaskType, TaskStatus, DailyTask, DevTask, Routine } from '../types.js'
+import type { Task, TaskType, TaskStatus, DailyTask, DevTask, Routine, TaskLog } from '../types.js'
+import { runDevTask, validateRepoUrl, validateAgentId, VALID_AGENTS } from '../services/devTask.js'
 
 export const tasksRouter = Router()
 
-// ── In-memory store (skeleton – no persistence) ───────────────────
+// ── In-memory stores (skeleton – no persistence) ─────────────────────────────
 
 export const tasks = new Map<string, Task>()
+
+/**
+ * Execution logs per task ID.
+ * Each entry is an ordered list of timestamped log lines.
+ * Logs are appended during and after container execution.
+ */
+export const taskLogs = new Map<string, TaskLog[]>()
 
 const VALID_TYPES: TaskType[] = ['daily', 'developmental', 'routine']
 const VALID_STATUSES: TaskStatus[] = ['queued', 'running', 'succeeded', 'failed', 'idle']
 
-// Seed data
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function appendLog(taskId: string, message: string): void {
+  const list = taskLogs.get(taskId) ?? []
+  list.push({ timestamp: new Date().toISOString(), message })
+  taskLogs.set(taskId, list)
+}
+
+// ── Seed data ─────────────────────────────────────────────────────────────────
+
 function seedData(): void {
   const now = new Date().toISOString()
 
@@ -62,7 +79,7 @@ function seedData(): void {
 
 seedData()
 
-// ── GET /api/tasks ────────────────────────────────────────────────
+// ── GET /api/tasks ────────────────────────────────────────────────────────────
 
 tasksRouter.get('/', (req: Request, res: Response) => {
   const { type, status } = req.query
@@ -85,7 +102,7 @@ tasksRouter.get('/', (req: Request, res: Response) => {
   res.json({ tasks: result, count: result.length })
 })
 
-// ── GET /api/tasks/:id ───────────────────────────────────────────
+// ── GET /api/tasks/:id ────────────────────────────────────────────────────────
 
 tasksRouter.get('/:id', (req: Request, res: Response) => {
   const task = tasks.get(req.params.id)
@@ -98,7 +115,7 @@ tasksRouter.get('/:id', (req: Request, res: Response) => {
   res.json(task)
 })
 
-// ── POST /api/tasks ──────────────────────────────────────────────
+// ── POST /api/tasks ───────────────────────────────────────────────────────────
 
 tasksRouter.post('/', (req: Request, res: Response) => {
   const body = req.body as Record<string, unknown>
@@ -144,8 +161,26 @@ tasksRouter.post('/', (req: Request, res: Response) => {
   } else if (type === 'developmental') {
     const { repoUrl, branch = 'main', agentId = 'claude' } = body
 
-    if (!repoUrl || typeof repoUrl !== 'string' || repoUrl.trim() === '') {
+    // Reject missing or non-string value before URL parsing.
+    if (!repoUrl || typeof repoUrl !== 'string') {
       res.status(400).json({ error: 'repoUrl is required for developmental tasks' })
+      return
+    }
+
+    // Validate the URL is safe (https, known host, no credentials) to catch
+    // problems early and prevent SSRF when the task is later triggered.
+    const repoCheck = validateRepoUrl(repoUrl)
+    if (!repoCheck.valid) {
+      res.status(400).json({ error: repoCheck.error })
+      return
+    }
+
+    // Validate the agent ID references a supported AI agent.
+    const resolvedAgent = typeof agentId === 'string' && agentId.trim() ? agentId.trim() : 'claude'
+    if (!validateAgentId(resolvedAgent)) {
+      res.status(400).json({
+        error: `Unsupported agentId "${resolvedAgent}". Must be one of: ${[...VALID_AGENTS].join(', ')}`,
+      })
       return
     }
 
@@ -154,7 +189,7 @@ tasksRouter.post('/', (req: Request, res: Response) => {
       type: 'developmental',
       repoUrl: repoUrl.trim(),
       branch: typeof branch === 'string' ? branch.trim() : 'main',
-      agentId: typeof agentId === 'string' ? agentId.trim() : 'claude',
+      agentId: resolvedAgent,
     }
   } else {
     // routine
@@ -165,7 +200,7 @@ tasksRouter.post('/', (req: Request, res: Response) => {
   res.status(201).json(newTask)
 })
 
-// ── PUT /api/tasks/:id ───────────────────────────────────────────
+// ── PUT /api/tasks/:id ────────────────────────────────────────────────────────
 
 tasksRouter.put('/:id', (req: Request, res: Response) => {
   const task = tasks.get(req.params.id)
@@ -191,7 +226,7 @@ tasksRouter.put('/:id', (req: Request, res: Response) => {
   res.json(updated)
 })
 
-// ── DELETE /api/tasks/:id ────────────────────────────────────────
+// ── DELETE /api/tasks/:id ─────────────────────────────────────────────────────
 
 tasksRouter.delete('/:id', (req: Request, res: Response) => {
   if (!tasks.has(req.params.id)) {
@@ -200,10 +235,11 @@ tasksRouter.delete('/:id', (req: Request, res: Response) => {
   }
 
   tasks.delete(req.params.id)
+  taskLogs.delete(req.params.id) // remove associated logs
   res.json({ message: 'Task deleted', id: req.params.id })
 })
 
-// ── POST /api/tasks/:id/trigger ──────────────────────────────────
+// ── POST /api/tasks/:id/trigger ───────────────────────────────────────────────
 
 tasksRouter.post('/:id/trigger', (req: Request, res: Response) => {
   const task = tasks.get(req.params.id)
@@ -221,5 +257,79 @@ tasksRouter.post('/:id/trigger', (req: Request, res: Response) => {
   const triggered: Task = { ...task, status: 'queued', updatedAt: new Date().toISOString() }
   tasks.set(triggered.id, triggered)
 
+  // Respond immediately — the container run is async and may take minutes.
   res.json({ message: 'Task triggered', task: triggered })
+
+  // Fire-and-forget: execute developmental tasks in the background.
+  if (triggered.type === 'developmental') {
+    void executeDevTask(triggered as DevTask)
+  }
 })
+
+// ── GET /api/tasks/:id/logs ───────────────────────────────────────────────────
+
+tasksRouter.get('/:id/logs', (req: Request, res: Response) => {
+  if (!tasks.has(req.params.id)) {
+    res.status(404).json({ error: 'Task not found' })
+    return
+  }
+
+  const logs = taskLogs.get(req.params.id) ?? []
+  res.json({ logs, count: logs.length })
+})
+
+// ── Background execution ──────────────────────────────────────────────────────
+
+/**
+ * Runs a developmental task container and keeps the in-memory task record
+ * and log store in sync throughout the lifecycle:
+ *
+ *   queued → running → succeeded | failed
+ *
+ * This function is intentionally fire-and-forget from the trigger route.
+ * Errors are caught and reflected in task status rather than thrown.
+ */
+async function executeDevTask(task: DevTask): Promise<void> {
+  // Transition to 'running' before the container starts.
+  const running: Task = { ...task, status: 'running', updatedAt: new Date().toISOString() }
+  tasks.set(running.id, running)
+  appendLog(task.id, 'Starting developmental task container…')
+
+  try {
+    const result = await runDevTask(task)
+
+    // Append all container log lines as individual TaskLog entries.
+    for (const line of result.logs) {
+      appendLog(task.id, line)
+    }
+
+    if (result.success) {
+      appendLog(task.id, `Container finished successfully. Commit SHA: ${result.commitSha ?? 'n/a'}`)
+      const succeeded: DevTask = {
+        ...(tasks.get(task.id) as DevTask ?? task),
+        status: 'succeeded',
+        lastRunAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }
+      tasks.set(succeeded.id, succeeded)
+    } else {
+      appendLog(task.id, `Container failed: ${result.error ?? 'unknown error'}`)
+      const failed: DevTask = {
+        ...(tasks.get(task.id) as DevTask ?? task),
+        status: 'failed',
+        lastRunAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }
+      tasks.set(failed.id, failed)
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    appendLog(task.id, `Unexpected error during execution: ${msg}`)
+    const failed: Task = {
+      ...(tasks.get(task.id) ?? task),
+      status: 'failed',
+      updatedAt: new Date().toISOString(),
+    }
+    tasks.set(failed.id, failed)
+  }
+}
