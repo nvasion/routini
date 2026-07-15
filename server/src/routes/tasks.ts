@@ -1,7 +1,18 @@
 import { Router, Request, Response } from 'express'
 import { randomUUID } from 'node:crypto'
-import type { Task, TaskType, TaskStatus, DailyTask, DevTask, Routine, TaskLog } from '../types.js'
+import type {
+  Task,
+  TaskType,
+  TaskStatus,
+  DailyTask,
+  DevTask,
+  Routine,
+  RoutineStep,
+  TaskLog,
+} from '../types.js'
 import { runDevTask, validateRepoUrl, validateAgentId, VALID_AGENTS } from '../services/devTask.js'
+import { executeRoutine, validateStepCondition } from '../services/routineEngine.js'
+import { requireCsrf } from './auth.js'
 
 export const tasksRouter = Router()
 
@@ -18,6 +29,9 @@ export const taskLogs = new Map<string, TaskLog[]>()
 
 const VALID_TYPES: TaskType[] = ['daily', 'developmental', 'routine']
 const VALID_STATUSES: TaskStatus[] = ['queued', 'running', 'succeeded', 'failed', 'idle']
+
+/** Maximum number of steps a single routine may have. */
+const MAX_STEPS = 20
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -117,7 +131,7 @@ tasksRouter.get('/:id', (req: Request, res: Response) => {
 
 // ── POST /api/tasks ───────────────────────────────────────────────────────────
 
-tasksRouter.post('/', (req: Request, res: Response) => {
+tasksRouter.post('/', requireCsrf, (req: Request, res: Response) => {
   const body = req.body as Record<string, unknown>
   const { name, description, type } = body
 
@@ -192,7 +206,7 @@ tasksRouter.post('/', (req: Request, res: Response) => {
       agentId: resolvedAgent,
     }
   } else {
-    // routine
+    // routine — steps are managed separately via PUT /api/tasks/:id/steps
     newTask = { ...base, type: 'routine', steps: [] }
   }
 
@@ -202,7 +216,7 @@ tasksRouter.post('/', (req: Request, res: Response) => {
 
 // ── PUT /api/tasks/:id ────────────────────────────────────────────────────────
 
-tasksRouter.put('/:id', (req: Request, res: Response) => {
+tasksRouter.put('/:id', requireCsrf, (req: Request, res: Response) => {
   const task = tasks.get(req.params.id)
 
   if (!task) {
@@ -226,9 +240,129 @@ tasksRouter.put('/:id', (req: Request, res: Response) => {
   res.json(updated)
 })
 
+// ── PUT /api/tasks/:id/steps ──────────────────────────────────────────────────
+
+/**
+ * Replaces all steps of a routine task.
+ *
+ * Validation rules:
+ *   - Task must exist and be of type 'routine'.
+ *   - `steps` must be an array with at most MAX_STEPS elements.
+ *   - Each step needs a valid `taskId` referencing an existing, non-self task.
+ *   - `order` must be a unique positive integer per step.
+ *   - `condition` (optional) must match the supported condition pattern.
+ *
+ * On success the full updated routine is returned.
+ */
+tasksRouter.put('/:id/steps', requireCsrf, (req: Request, res: Response) => {
+  const task = tasks.get(req.params.id)
+
+  if (!task) {
+    res.status(404).json({ error: 'Task not found' })
+    return
+  }
+
+  if (task.type !== 'routine') {
+    res.status(400).json({ error: 'Steps can only be set on routine tasks' })
+    return
+  }
+
+  const { steps: rawSteps } = req.body as { steps: unknown }
+
+  if (!Array.isArray(rawSteps)) {
+    res.status(400).json({ error: 'steps must be an array' })
+    return
+  }
+
+  if (rawSteps.length > MAX_STEPS) {
+    res.status(400).json({ error: `Routine cannot have more than ${MAX_STEPS} steps` })
+    return
+  }
+
+  const validatedSteps: RoutineStep[] = []
+  const seenOrders = new Set<number>()
+
+  for (let i = 0; i < rawSteps.length; i++) {
+    const s = rawSteps[i]
+
+    if (!s || typeof s !== 'object' || Array.isArray(s)) {
+      res.status(400).json({ error: `Step ${i}: each step must be an object` })
+      return
+    }
+
+    const step = s as Record<string, unknown>
+
+    // taskId validation
+    const taskId = step['taskId']
+    if (!taskId || typeof taskId !== 'string' || taskId.trim() === '') {
+      res.status(400).json({ error: `Step ${i}: taskId is required` })
+      return
+    }
+    const trimmedTaskId = taskId.trim()
+    if (!tasks.has(trimmedTaskId)) {
+      res.status(400).json({ error: `Step ${i}: task "${trimmedTaskId}" not found` })
+      return
+    }
+    if (trimmedTaskId === req.params.id) {
+      res.status(400).json({ error: `Step ${i}: routine cannot reference itself` })
+      return
+    }
+
+    // order validation
+    const rawOrder = step['order']
+    const order = Number(rawOrder)
+    if (!Number.isInteger(order) || order < 1) {
+      res.status(400).json({ error: `Step ${i}: order must be a positive integer` })
+      return
+    }
+    if (seenOrders.has(order)) {
+      res.status(400).json({ error: `Step ${i}: duplicate order value ${order}` })
+      return
+    }
+    seenOrders.add(order)
+
+    // condition validation (optional)
+    const rawCondition = step['condition']
+    let condition: string | undefined
+    if (rawCondition !== undefined && rawCondition !== null) {
+      const condStr = String(rawCondition).trim()
+      if (condStr !== '') {
+        const condErr = validateStepCondition(condStr)
+        if (condErr) {
+          res.status(400).json({ error: `Step ${i}: ${condErr}` })
+          return
+        }
+        condition = condStr
+      }
+    }
+
+    // Preserve existing step IDs if provided; otherwise generate new ones.
+    const stepId =
+      typeof step['id'] === 'string' && step['id'].trim() !== ''
+        ? step['id'].trim()
+        : randomUUID()
+
+    validatedSteps.push({
+      id: stepId,
+      taskId: trimmedTaskId,
+      order,
+      ...(condition !== undefined ? { condition } : {}),
+    })
+  }
+
+  const updated: Routine = {
+    ...(task as Routine),
+    steps: validatedSteps,
+    updatedAt: new Date().toISOString(),
+  }
+
+  tasks.set(updated.id, updated)
+  res.json(updated)
+})
+
 // ── DELETE /api/tasks/:id ─────────────────────────────────────────────────────
 
-tasksRouter.delete('/:id', (req: Request, res: Response) => {
+tasksRouter.delete('/:id', requireCsrf, (req: Request, res: Response) => {
   if (!tasks.has(req.params.id)) {
     res.status(404).json({ error: 'Task not found' })
     return
@@ -241,7 +375,7 @@ tasksRouter.delete('/:id', (req: Request, res: Response) => {
 
 // ── POST /api/tasks/:id/trigger ───────────────────────────────────────────────
 
-tasksRouter.post('/:id/trigger', (req: Request, res: Response) => {
+tasksRouter.post('/:id/trigger', requireCsrf, (req: Request, res: Response) => {
   const task = tasks.get(req.params.id)
 
   if (!task) {
@@ -257,12 +391,14 @@ tasksRouter.post('/:id/trigger', (req: Request, res: Response) => {
   const triggered: Task = { ...task, status: 'queued', updatedAt: new Date().toISOString() }
   tasks.set(triggered.id, triggered)
 
-  // Respond immediately — the container run is async and may take minutes.
+  // Respond immediately — execution is async and may take minutes.
   res.json({ message: 'Task triggered', task: triggered })
 
-  // Fire-and-forget: execute developmental tasks in the background.
+  // Fire-and-forget: execute tasks in the background.
   if (triggered.type === 'developmental') {
     void executeDevTask(triggered as DevTask)
+  } else if (triggered.type === 'routine') {
+    void executeRoutineTask(triggered as Routine)
   }
 })
 
@@ -327,6 +463,46 @@ async function executeDevTask(task: DevTask): Promise<void> {
     appendLog(task.id, `Unexpected error during execution: ${msg}`)
     const failed: Task = {
       ...(tasks.get(task.id) ?? task),
+      status: 'failed',
+      updatedAt: new Date().toISOString(),
+    }
+    tasks.set(failed.id, failed)
+  }
+}
+
+/**
+ * Runs a routine's steps in sequence using the routine engine.
+ *
+ * Lifecycle:
+ *   queued → running → succeeded | failed
+ *
+ * Errors from individual steps are caught by the engine and reflected in
+ * per-step logs. If an unhandled error escapes the engine, it is caught
+ * here and the routine is marked as failed.
+ */
+async function executeRoutineTask(routine: Routine): Promise<void> {
+  const running: Routine = {
+    ...routine,
+    status: 'running',
+    updatedAt: new Date().toISOString(),
+  }
+  tasks.set(running.id, running)
+  appendLog(routine.id, 'Routine execution starting…')
+
+  try {
+    const finalStatus = await executeRoutine(routine, tasks, appendLog)
+
+    const finished: Routine = {
+      ...(tasks.get(routine.id) as Routine ?? routine),
+      status: finalStatus,
+      updatedAt: new Date().toISOString(),
+    }
+    tasks.set(finished.id, finished)
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    appendLog(routine.id, `Unexpected error during routine execution: ${msg}`)
+    const failed: Routine = {
+      ...(tasks.get(routine.id) as Routine ?? routine),
       status: 'failed',
       updatedAt: new Date().toISOString(),
     }

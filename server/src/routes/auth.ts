@@ -5,9 +5,32 @@ import { randomBytes, randomUUID } from 'node:crypto'
 import rateLimit from 'express-rate-limit'
 import type { User } from '../types.js'
 
+// ── Global type augmentation ──────────────────────────────────────
+// Extend Express Request so downstream handlers can access the
+// authenticated user and CSRF token set by requireAuth.
+declare global {
+  namespace Express {
+    interface Request {
+      user?: User
+      /**
+       * CSRF token extracted from the JWT.
+       * Set only when auth was performed via the HTTP-only cookie.
+       * Undefined when auth uses a Bearer token (CSRF is not required
+       * for Bearer-based auth because Bearer tokens in sessionStorage
+       * cannot be forged cross-origin – OWASP CSRF Cheat Sheet §7.2).
+       */
+      csrfToken?: string
+    }
+  }
+}
+
 export const authRouter = Router()
 
 // ── Configuration ─────────────────────────────────────────────────
+
+const COOKIE_NAME = 'routini_token' as const
+const CSRF_HEADER = 'x-csrf-token' as const
+const COOKIE_MAX_AGE_MS = 24 * 60 * 60 * 1000 // 24 h
 
 // JWT_SECRET must be set via environment variable in production.
 // In development/test an ephemeral secret is generated so the server starts
@@ -37,6 +60,7 @@ interface StoredUser extends User {
 
 // userId → StoredUser
 export const users = new Map<string, StoredUser>()
+
 // Revoked JWT IDs (jti claim) – populated on logout.
 // In production, move this to Redis or a database.
 const revokedJtis = new Set<string>()
@@ -67,6 +91,29 @@ function extractBearerToken(req: Request): string | null {
   return header.slice(7)
 }
 
+interface JwtPayload {
+  userId: string
+  email: string
+  jti?: string
+  csrfToken?: string
+}
+
+/**
+ * Verify a raw JWT string. Returns the decoded payload if the token is valid
+ * and has not been revoked, or null otherwise. Never throws.
+ */
+function verifyJwt(token: string): JwtPayload | null {
+  try {
+    const payload = verify(token, JWT_SECRET) as JwtPayload
+    if (payload.jti && revokedJtis.has(payload.jti)) {
+      return null // revoked
+    }
+    return payload
+  } catch {
+    return null
+  }
+}
+
 // ── Rate limiter for login endpoint ───────────────────────────────
 
 const loginLimiter = rateLimit({
@@ -76,8 +123,7 @@ const loginLimiter = rateLimit({
   legacyHeaders: false,
   message: { error: 'Too many login attempts, please try again later' },
   // Skip rate limiting in test environments so integration tests are not blocked
-  // by the shared in-process store. The limiter is still instantiated and tested
-  // via the middleware being present; production behaviour is unchanged.
+  // by the shared in-process store.
   skip: () => process.env['NODE_ENV'] === 'test',
 })
 
@@ -114,85 +160,178 @@ authRouter.post('/login', loginLimiter, (req: Request, res: Response) => {
   }
 
   const jti = randomUUID()
+
+  // Generate a cryptographically random CSRF token and embed it in the JWT.
+  // The client receives the CSRF token in the response body, stores it in
+  // sessionStorage, and must include it as X-CSRF-Token on all state-changing
+  // requests when using cookie-based auth (Double-Submit Cookie pattern).
+  const csrfToken = randomBytes(32).toString('hex')
+
   const token = sign(
-    { userId: user.id, email: user.email, jti },
+    { userId: user.id, email: user.email, jti, csrfToken },
     JWT_SECRET,
     { expiresIn: JWT_EXPIRES_IN },
   )
 
-  res.json({ token, user: safeUser(user) })
+  // Set the JWT in an HTTP-only cookie for browser clients.
+  //  - httpOnly:   prevents XSS from reading the token via document.cookie
+  //  - sameSite:   'strict' provides defense-in-depth against CSRF
+  //  - secure:     HTTPS-only in production
+  res.cookie(COOKIE_NAME, token, {
+    httpOnly: true,
+    secure: process.env['NODE_ENV'] === 'production',
+    sameSite: 'strict',
+    maxAge: COOKIE_MAX_AGE_MS,
+  })
+
+  // Return:
+  //  - token:      raw JWT for programmatic / test clients using Bearer auth
+  //  - user:       safe user object (no password hash)
+  //  - csrfToken:  for browser clients using cookie-based auth; must be stored
+  //                in sessionStorage (not in an accessible cookie) so it can be
+  //                sent as a request header
+  res.json({ token, user: safeUser(user), csrfToken })
 })
 
 // ── POST /api/auth/logout ─────────────────────────────────────────
 
 authRouter.post('/logout', (req: Request, res: Response) => {
-  const token = extractBearerToken(req)
+  // Accept the JWT from either the HTTP-only cookie or a Bearer token header
+  // so both browser clients and test clients can revoke their session.
+  const cookieToken: string | undefined = req.cookies?.[COOKIE_NAME]
+  const bearerToken = extractBearerToken(req)
+  const rawToken = cookieToken ?? bearerToken
 
-  if (token) {
+  if (rawToken) {
     try {
-      const decoded = verify(token, JWT_SECRET) as { jti?: string }
+      const decoded = verify(rawToken, JWT_SECRET) as { jti?: string }
       if (decoded.jti) {
         revokedJtis.add(decoded.jti)
       }
     } catch {
-      // Token is invalid or already expired – nothing to revoke
+      // Token invalid or already expired — nothing to revoke
     }
   }
+
+  // Clear the HTTP-only cookie regardless of whether the token was valid.
+  res.clearCookie(COOKIE_NAME, {
+    httpOnly: true,
+    sameSite: 'strict',
+    secure: process.env['NODE_ENV'] === 'production',
+  })
 
   res.json({ message: 'Logged out successfully' })
 })
 
 // ── Auth middleware ───────────────────────────────────────────────
-// Shared verification logic used by /me and requireAuth.
 
-function verifyBearerToken(
-  req: Request,
-  res: Response,
-): { user: User } | null {
-  const token = extractBearerToken(req)
-
-  if (!token) {
-    res.status(401).json({ error: 'Authentication required' })
-    return null
+/**
+ * Express middleware that enforces authentication.
+ *
+ * Auth is accepted from two sources (checked in priority order):
+ *
+ * 1. HTTP-only cookie (`routini_token`) — preferred for browser clients.
+ *    Sets req.csrfToken from the JWT payload so that requireCsrf can
+ *    enforce the Double-Submit Cookie pattern on state-changing routes.
+ *
+ * 2. Authorization: Bearer <token> header — for programmatic/test clients.
+ *    req.csrfToken is left undefined. CSRF protection is not required for
+ *    Bearer tokens because they live in sessionStorage, which is inaccessible
+ *    to cross-origin attackers (OWASP CSRF Cheat Sheet §7.2).
+ */
+export function requireAuth(req: Request, res: Response, next: NextFunction): void {
+  // ── 1. Cookie-based auth ─────────────────────────────────────────
+  const cookieToken: string | undefined = req.cookies?.[COOKIE_NAME]
+  if (cookieToken) {
+    const payload = verifyJwt(cookieToken)
+    if (payload) {
+      const user = users.get(payload.userId)
+      if (user) {
+        req.user = safeUser(user)
+        // Expose the CSRF token so requireCsrf can validate it.
+        req.csrfToken = payload.csrfToken
+        next()
+        return
+      }
+    }
+    // Cookie is present but invalid/expired/revoked — clear it and fall through
+    // to the Bearer check so the client gets a 401 rather than a misleading 403.
+    res.clearCookie(COOKIE_NAME, {
+      httpOnly: true,
+      sameSite: 'strict',
+      secure: process.env['NODE_ENV'] === 'production',
+    })
   }
 
-  let payload: { userId: string; email: string; jti?: string }
+  // ── 2. Bearer token auth ─────────────────────────────────────────
+  const bearerToken = extractBearerToken(req)
+  if (!bearerToken) {
+    res.status(401).json({ error: 'Authentication required' })
+    return
+  }
+
+  let payload: JwtPayload
   try {
-    payload = verify(token, JWT_SECRET) as { userId: string; email: string; jti?: string }
+    const decoded = verify(bearerToken, JWT_SECRET) as JwtPayload
+    if (decoded.jti && revokedJtis.has(decoded.jti)) {
+      res.status(401).json({ error: 'Token has been revoked' })
+      return
+    }
+    payload = decoded
   } catch (err) {
     const message =
       err instanceof TokenExpiredError ? 'Token has expired' : 'Invalid or expired token'
     res.status(401).json({ error: message })
-    return null
-  }
-
-  if (payload.jti && revokedJtis.has(payload.jti)) {
-    res.status(401).json({ error: 'Token has been revoked' })
-    return null
+    return
   }
 
   const user = users.get(payload.userId)
   if (!user) {
     res.status(401).json({ error: 'User not found' })
-    return null
+    return
   }
 
-  return { user: safeUser(user) }
+  req.user = safeUser(user)
+  // req.csrfToken is intentionally NOT set for Bearer auth.
+  // CSRF attacks exploit the automatic inclusion of cookies in cross-site
+  // requests. Bearer tokens require explicit JavaScript inclusion and cannot
+  // be forged cross-origin, so CSRF protection is unnecessary here.
+  next()
 }
 
 /**
- * Express middleware that enforces Bearer-token authentication.
- * Mount before any router that should be protected.
+ * CSRF protection middleware for state-changing endpoints (POST, PUT, DELETE).
+ * Must run after requireAuth so req.csrfToken is populated.
+ *
+ * Enforcement is conditional on the auth method:
+ *  - Cookie auth   → req.csrfToken is set → header validation is enforced.
+ *  - Bearer auth   → req.csrfToken is undefined → validation is skipped.
+ *
+ * This follows the established principle that CSRF protection is only required
+ * when the session credential is automatically included by the browser
+ * (i.e., via cookies). Bearer tokens require explicit JS inclusion and are
+ * therefore inherently CSRF-safe.
  */
-export function requireAuth(req: Request, res: Response, next: NextFunction): void {
-  const result = verifyBearerToken(req, res)
-  if (result) next()
+export function requireCsrf(req: Request, res: Response, next: NextFunction): void {
+  // Skip for Bearer-token-authenticated requests (req.csrfToken not set).
+  if (req.csrfToken === undefined) {
+    next()
+    return
+  }
+
+  const headerToken = req.headers[CSRF_HEADER] as string | undefined
+  if (!headerToken || headerToken !== req.csrfToken) {
+    res.status(403).json({ error: 'CSRF token validation failed' })
+    return
+  }
+
+  next()
 }
 
 // ── GET /api/auth/me ──────────────────────────────────────────────
 
-authRouter.get('/me', (req: Request, res: Response) => {
-  const result = verifyBearerToken(req, res)
-  if (!result) return
-  res.json(result.user)
+authRouter.get('/me', requireAuth, (req: Request, res: Response) => {
+  // req.user is guaranteed by requireAuth. Return the safe user object;
+  // never include password hashes or other sensitive fields.
+  res.json(req.user)
 })

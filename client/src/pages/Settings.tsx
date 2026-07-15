@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import type { AISettings } from '../types'
+import { apiFetch } from '../api'
 import './Settings.css'
 
 const AI_PROVIDERS = [
@@ -25,7 +26,7 @@ export function Settings() {
   const fetchSettings = async () => {
     try {
       setLoading(true)
-      const res = await fetch('/api/settings')
+      const res = await apiFetch('/api/settings')
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = (await res.json()) as AISettings
       setSettings(data)
@@ -42,7 +43,7 @@ export function Settings() {
 
     try {
       setSaving(true)
-      const res = await fetch('/api/settings', {
+      const res = await apiFetch('/api/settings', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(settings),

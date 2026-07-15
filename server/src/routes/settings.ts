@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express'
 import type { AISettings } from '../types.js'
+import { requireCsrf } from './auth.js'
 
 export const settingsRouter = Router()
 
@@ -20,7 +21,7 @@ settingsRouter.get('/', (_req: Request, res: Response) => {
 
 // ── PUT /api/settings ─────────────────────────────────────────────
 
-settingsRouter.put('/', (req: Request, res: Response) => {
+settingsRouter.put('/', requireCsrf, (req: Request, res: Response) => {
   const body = req.body as Record<string, unknown>
   const { provider, model, defaultAgentId } = body
 
