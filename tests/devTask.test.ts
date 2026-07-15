@@ -5,15 +5,13 @@
  *   – validateRepoUrl: protocol, host allowlist, credentials, port, path
  *   – validateAgentId: known / unknown agents
  *   – runDevTask: validation short-circuits, success path, failure path,
- *                 timeout, spawn error, commit SHA extraction
+ *                 timeout, infrastructure error, commit SHA extraction,
+ *                 container name, environment variable forwarding
  *   – GET /api/tasks/:id/logs: empty logs, logs after trigger, 404
  *   – Trigger integration: status transitions for developmental tasks
  */
 
 import { describe, it, expect, beforeAll, vi } from 'vitest'
-import { EventEmitter } from 'node:events'
-import { PassThrough } from 'node:stream'
-import type { ChildProcess } from 'node:child_process'
 import supertest from 'supertest'
 import { app } from '../server/src/app'
 import {
@@ -22,6 +20,8 @@ import {
   runDevTask,
   VALID_AGENTS,
 } from '../server/src/services/devTask'
+import type { RunnerOptions } from '../server/src/services/devTask'
+import type { DockerService, ContainerLifecycleResult, ContainerConfig } from '../server/src/services/docker'
 import type { DevTask } from '../server/src/types'
 
 const request = supertest(app)
@@ -41,51 +41,31 @@ function auth() {
   return { Authorization: `Bearer ${authToken}` }
 }
 
-// ── Mock ChildProcess factory ─────────────────────────────────────────────────
+// ── Mock DockerService factory ────────────────────────────────────────────────
 
 /**
- * Creates a ChildProcess-like object that emits the given stdout/stderr and
- * then closes with `exitCode` after `delay` milliseconds.
+ * Creates a mock DockerService whose `runContainer` method resolves with
+ * the provided partial result.  Missing fields use safe defaults.
  */
-function mockProcess(opts: {
-  exitCode: number
-  stdout?: string
-  stderr?: string
-  delay?: number
-  emitError?: Error
-}): ChildProcess {
-  const proc = new EventEmitter() as ChildProcess
-  const stdoutStream = new PassThrough()
-  const stderrStream = new PassThrough()
-  ;(proc as unknown as Record<string, unknown>).stdout = stdoutStream
-  ;(proc as unknown as Record<string, unknown>).stderr = stderrStream
-  ;(proc as unknown as Record<string, unknown>).stdin = null
-  ;(proc as unknown as Record<string, unknown>).kill = (signal?: string) => {
-    // Simulate a kill → close with null exit code
-    process.nextTick(() => proc.emit('close', null, signal))
-    return true
+function mockDockerService(
+  partial: Partial<ContainerLifecycleResult> = {}
+): DockerService {
+  const result: ContainerLifecycleResult = {
+    containerId: 'abc123def456',
+    exitCode: 0,
+    logs: [],
+    timedOut: false,
+    ...partial,
   }
+  return {
+    runContainer: vi.fn().mockResolvedValue(result),
+  } as unknown as DockerService
+}
 
-  const delay = opts.delay ?? 0
-
-  if (opts.emitError) {
-    const err = opts.emitError
-    setTimeout(() => proc.emit('error', err), delay)
-  } else {
-    setTimeout(() => {
-      if (opts.stdout) {
-        stdoutStream.write(opts.stdout)
-      }
-      stdoutStream.end()
-      if (opts.stderr) {
-        stderrStream.write(opts.stderr)
-      }
-      stderrStream.end()
-      proc.emit('close', opts.exitCode)
-    }, delay)
-  }
-
-  return proc
+/** Returns the ContainerConfig passed to the first `runContainer` call. */
+function capturedConfig(service: DockerService): ContainerConfig {
+  const mock = (service.runContainer as ReturnType<typeof vi.fn>)
+  return mock.mock.calls[0][0] as ContainerConfig
 }
 
 /** Minimal valid DevTask fixture. */
@@ -262,37 +242,39 @@ describe('validateAgentId', () => {
 })
 
 // ═════════════════════════════════════════════════════════════════════════════
-// runDevTask – unit tests with mocked Docker spawner
+// runDevTask – unit tests with a mocked DockerService
 // ═════════════════════════════════════════════════════════════════════════════
 
 describe('runDevTask', () => {
-  it('returns an error result for an invalid repoUrl without spawning Docker', async () => {
-    const spawnDocker = vi.fn()
+  it('returns an error result for an invalid repoUrl without calling DockerService', async () => {
+    const service = mockDockerService()
     const result = await runDevTask(
       { ...baseDevTask, repoUrl: 'http://github.com/owner/repo' },
-      { spawnDocker }
+      { dockerService: service }
     )
     expect(result.success).toBe(false)
     expect(result.error).toMatch(/https/i)
-    expect(spawnDocker).not.toHaveBeenCalled()
+    expect(service.runContainer).not.toHaveBeenCalled()
   })
 
-  it('returns an error result for an unsupported agentId without spawning Docker', async () => {
-    const spawnDocker = vi.fn()
+  it('returns an error result for an unsupported agentId without calling DockerService', async () => {
+    const service = mockDockerService()
     const result = await runDevTask(
       { ...baseDevTask, agentId: 'unknown-agent' },
-      { spawnDocker }
+      { dockerService: service }
     )
     expect(result.success).toBe(false)
     expect(result.error).toMatch(/unsupported agent/i)
-    expect(spawnDocker).not.toHaveBeenCalled()
+    expect(service.runContainer).not.toHaveBeenCalled()
   })
 
   it('returns success when the container exits with code 0', async () => {
-    const spawnDocker = () =>
-      mockProcess({ exitCode: 0, stdout: 'All good\nDone\n' })
+    const service = mockDockerService({
+      exitCode: 0,
+      logs: ['All good', 'Done'],
+    })
 
-    const result = await runDevTask(baseDevTask, { spawnDocker })
+    const result = await runDevTask(baseDevTask, { dockerService: service })
     expect(result.success).toBe(true)
     expect(result.logs).toContain('All good')
     expect(result.logs).toContain('Done')
@@ -300,123 +282,101 @@ describe('runDevTask', () => {
   })
 
   it('returns failure when the container exits with a non-zero code', async () => {
-    const spawnDocker = () =>
-      mockProcess({ exitCode: 1, stdout: 'Something failed\n' })
+    const service = mockDockerService({ exitCode: 1, logs: ['Something failed'] })
 
-    const result = await runDevTask(baseDevTask, { spawnDocker })
+    const result = await runDevTask(baseDevTask, { dockerService: service })
     expect(result.success).toBe(false)
     expect(result.error).toMatch(/code 1/i)
   })
 
-  it('captures stderr lines with a [stderr] prefix', async () => {
-    const spawnDocker = () =>
-      mockProcess({ exitCode: 0, stderr: 'Warning: something\n' })
+  it('captures stderr lines as returned by DockerService', async () => {
+    const service = mockDockerService({
+      exitCode: 0,
+      logs: ['[stderr] Warning: something'],
+    })
 
-    const result = await runDevTask(baseDevTask, { spawnDocker })
+    const result = await runDevTask(baseDevTask, { dockerService: service })
     expect(result.logs.some(l => l.startsWith('[stderr]'))).toBe(true)
   })
 
-  it('extracts COMMIT_SHA from stdout on success', async () => {
-    const stdout = 'Cloning…\nCOMMIT_SHA=abc1234def5678\nPushed.\n'
-    const spawnDocker = () => mockProcess({ exitCode: 0, stdout })
+  it('extracts COMMIT_SHA from logs on success', async () => {
+    const service = mockDockerService({
+      exitCode: 0,
+      logs: ['Cloning…', 'COMMIT_SHA=abc1234def5678', 'Pushed.'],
+    })
 
-    const result = await runDevTask(baseDevTask, { spawnDocker })
+    const result = await runDevTask(baseDevTask, { dockerService: service })
     expect(result.success).toBe(true)
     expect(result.commitSha).toBe('abc1234def5678')
   })
 
   it('does not set commitSha when the agent emits no COMMIT_SHA line', async () => {
-    const spawnDocker = () => mockProcess({ exitCode: 0, stdout: 'Done.\n' })
+    const service = mockDockerService({ exitCode: 0, logs: ['Done.'] })
 
-    const result = await runDevTask(baseDevTask, { spawnDocker })
+    const result = await runDevTask(baseDevTask, { dockerService: service })
     expect(result.success).toBe(true)
     expect(result.commitSha).toBeUndefined()
   })
 
-  it('returns a timeout error when the container exceeds timeoutMs', async () => {
-    // delay > timeoutMs so the timeout fires first
-    const spawnDocker = () => mockProcess({ exitCode: 0, delay: 200 })
+  it('returns a timeout error when DockerService signals timedOut', async () => {
+    const service = mockDockerService({ timedOut: true, exitCode: null })
 
-    const result = await runDevTask(baseDevTask, { spawnDocker, timeoutMs: 50 })
+    const result = await runDevTask(baseDevTask, { dockerService: service, timeoutMs: 50 })
     expect(result.success).toBe(false)
     expect(result.error).toMatch(/timed out/i)
   })
 
-  it('returns an error result when the spawner throws synchronously', async () => {
-    const spawnDocker = (): ChildProcess => {
-      throw new Error('docker not found')
-    }
+  it('returns an error result when DockerService returns an infrastructure error', async () => {
+    const service = mockDockerService({
+      containerId: '',
+      exitCode: null,
+      logs: [],
+      error: 'Failed to create container: docker not found',
+    })
 
-    const result = await runDevTask(baseDevTask, { spawnDocker })
+    const result = await runDevTask(baseDevTask, { dockerService: service })
     expect(result.success).toBe(false)
     expect(result.error).toMatch(/docker not found/i)
   })
 
-  it('returns an error result when the process emits an error event', async () => {
-    const spawnDocker = () =>
-      mockProcess({ exitCode: 0, emitError: new Error('ENOENT: docker not found') })
+  it('propagates a start-failure error from DockerService', async () => {
+    const service = mockDockerService({
+      exitCode: null,
+      logs: [],
+      error: 'Failed to start container: ENOENT: no such file or directory',
+    })
 
-    const result = await runDevTask(baseDevTask, { spawnDocker })
+    const result = await runDevTask(baseDevTask, { dockerService: service })
     expect(result.success).toBe(false)
     expect(result.error).toMatch(/ENOENT/i)
   })
 
-  it('populates containerId in every result', async () => {
-    const spawnDocker = () => mockProcess({ exitCode: 0 })
-    const result = await runDevTask(baseDevTask, { spawnDocker })
+  it('populates containerId in every result path', async () => {
+    const service = mockDockerService({ exitCode: 0 })
+    const result = await runDevTask(baseDevTask, { dockerService: service })
     expect(typeof result.containerId).toBe('string')
     expect(result.containerId.length).toBeGreaterThan(0)
   })
 
-  it('includes the task id in the container name', async () => {
-    let capturedArgs: string[] = []
-    const spawnDocker = (args: string[]) => {
-      capturedArgs = args
-      return mockProcess({ exitCode: 0 })
-    }
+  it('includes the task id in the container name passed to DockerService', async () => {
+    const service = mockDockerService({ exitCode: 0 })
 
-    await runDevTask(baseDevTask, { spawnDocker })
+    await runDevTask(baseDevTask, { dockerService: service })
 
-    const nameIdx = capturedArgs.indexOf('--name')
-    expect(nameIdx).toBeGreaterThan(-1)
-    const containerName = capturedArgs[nameIdx + 1]
-    expect(containerName).toContain(baseDevTask.id)
+    const config = capturedConfig(service)
+    expect(config.name).toContain(baseDevTask.id)
   })
 
-  it('passes REPO_URL, BRANCH, AGENT, TASK_ID env vars to docker', async () => {
-    let capturedArgs: string[] = []
-    const spawnDocker = (args: string[]) => {
-      capturedArgs = args
-      return mockProcess({ exitCode: 0 })
-    }
+  it('passes REPO_URL, BRANCH, AGENT, TASK_ID env vars to DockerService', async () => {
+    const service = mockDockerService({ exitCode: 0 })
 
-    await runDevTask(baseDevTask, { spawnDocker })
+    await runDevTask(baseDevTask, { dockerService: service })
 
-    const envPairs = capturedArgs.reduce<string[]>((acc, v, i) => {
-      if (capturedArgs[i - 1] === '-e') acc.push(v)
-      return acc
-    }, [])
-
-    expect(envPairs).toContain(`REPO_URL=${baseDevTask.repoUrl}`)
-    expect(envPairs).toContain(`BRANCH=${baseDevTask.branch}`)
-    expect(envPairs).toContain(`AGENT=${baseDevTask.agentId}`)
-    expect(envPairs).toContain(`TASK_ID=${baseDevTask.id}`)
-  })
-
-  it('includes security flags: --no-new-privileges, --cap-drop ALL, --user nobody', async () => {
-    let capturedArgs: string[] = []
-    const spawnDocker = (args: string[]) => {
-      capturedArgs = args
-      return mockProcess({ exitCode: 0 })
-    }
-
-    await runDevTask(baseDevTask, { spawnDocker })
-
-    expect(capturedArgs).toContain('--no-new-privileges')
-    expect(capturedArgs).toContain('--cap-drop')
-    expect(capturedArgs).toContain('ALL')
-    expect(capturedArgs).toContain('--user')
-    expect(capturedArgs).toContain('nobody')
+    const config = capturedConfig(service)
+    expect(config.env['REPO_URL']).toBe(baseDevTask.repoUrl)
+    expect(config.env['BRANCH']).toBe(baseDevTask.branch)
+    expect(config.env['AGENT']).toBe(baseDevTask.agentId)
+    expect(config.env['TASK_ID']).toBe(baseDevTask.id)
   })
 })
 

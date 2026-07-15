@@ -1,24 +1,24 @@
 /**
  * Developmental Task Service
  *
- * Runs a developmental task inside an ephemeral Docker container.  The
- * container clones the target repository, invokes the selected AI agent
- * script, commits any changes, and pushes to the configured branch.
+ * Runs a developmental task inside an ephemeral Docker container managed by
+ * the DockerService.  The container clones the target repository, invokes
+ * the selected AI agent script, commits any changes, and pushes to the
+ * configured branch.
  *
- * Security controls applied to every container:
+ * Security controls (enforced by DockerService for every container):
  *   - Runs as unprivileged user `nobody`
- *   - `--no-new-privileges` prevents setuid escalation
- *   - `--cap-drop ALL` removes all Linux capabilities
+ *   - `no-new-privileges` SecurityOpt prevents setuid/setgid escalation
+ *   - `CapDrop ALL` removes all Linux capabilities
  *   - Memory and CPU limits prevent resource exhaustion
  *
  * SSRF mitigation: `validateRepoUrl` only accepts https:// URLs whose
  * hostname belongs to a known git-hosting service allowlist.
  */
 
-import { spawn } from 'node:child_process'
-import type { ChildProcess } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import type { DevTask } from '../types.js'
+import { DockerService } from './docker.js'
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -39,17 +39,17 @@ const ALLOWED_GIT_HOSTS: readonly string[] = [
 /** Docker image used for each agent. */
 const AGENT_IMAGES: Readonly<Record<string, string>> = {
   opencode: 'routini/opencode-agent:latest',
-  claude: 'routini/claude-agent:latest',
+  claude:   'routini/claude-agent:latest',
   omnimancer: 'routini/omnimancer-agent:latest',
 }
 
-const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000 // 10 minutes
+const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000  // 10 minutes
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
 export interface DevTaskResult {
   success: boolean
-  /** Docker container name used for the run. */
+  /** Docker container ID (short form) used for the run. */
   containerId: string
   /** Combined stdout + stderr lines from the container. */
   logs: string[]
@@ -60,13 +60,13 @@ export interface DevTaskResult {
 }
 
 export interface RunnerOptions {
-  /** Milliseconds before the container is forcefully killed. Default: 10 min. */
+  /** Milliseconds before the container is forcefully killed.  Default: 10 min. */
   timeoutMs?: number
   /**
-   * Inject a custom process spawner instead of calling `docker` directly.
-   * Useful in tests to avoid requiring a real Docker daemon.
+   * Inject a DockerService instance instead of creating a real one.
+   * Used in tests to avoid requiring a live Docker daemon.
    */
-  spawnDocker?: (args: string[]) => ChildProcess
+  dockerService?: DockerService
 }
 
 // ── Validation ───────────────────────────────────────────────────────────────
@@ -125,7 +125,7 @@ export function validateRepoUrl(rawUrl: string): UrlValidResult {
   return { valid: true, url: parsed }
 }
 
-/** Returns true if `agentId` names a supported AI coding agent. */
+/** Returns `true` if `agentId` names a supported AI coding agent. */
 export function validateAgentId(agentId: string): boolean {
   return VALID_AGENTS.has(agentId)
 }
@@ -137,11 +137,9 @@ export function validateAgentId(agentId: string): boolean {
  *
  * Flow:
  *   1. Validate `repoUrl` and `agentId` before touching Docker.
- *   2. Build a `docker run` command with security flags and env vars.
- *   3. Stream stdout/stderr into the returned `logs` array.
- *   4. Kill the container if `timeoutMs` elapses.
- *   5. Extract a commit SHA if the agent script prints `COMMIT_SHA=<sha>`.
- *   6. Return a structured result regardless of outcome.
+ *   2. Delegate container lifecycle to DockerService (create → start → wait → remove).
+ *   3. Map the container result to a structured DevTaskResult.
+ *   4. Extract a commit SHA if the agent script prints `COMMIT_SHA=<sha>`.
  *
  * The caller is responsible for updating task status in the store.
  */
@@ -171,114 +169,66 @@ export async function runDevTask(
   const image = AGENT_IMAGES[task.agentId]!
   // Include a random suffix so concurrent runs of the same task do not clash.
   const containerName = `routini-dev-${task.id}-${randomUUID().slice(0, 8)}`
-  const logs: string[] = []
-
-  const dockerArgs = [
-    'run',
-    '--rm',
-    '--name', containerName,
-    // Run as unprivileged user – prevents writing to host-mounted paths as root.
-    '--user', 'nobody',
-    // Prevent the container from gaining new privileges via setuid/setgid.
-    '--no-new-privileges',
-    // Drop every Linux capability; the agent script does not need any.
-    '--cap-drop', 'ALL',
-    // Resource limits prevent a runaway agent from starving the host.
-    '--memory', '512m',
-    '--cpus', '1',
-    // Environment variables consumed by the agent entrypoint script.
-    '-e', `REPO_URL=${task.repoUrl}`,
-    '-e', `BRANCH=${task.branch}`,
-    '-e', `AGENT=${task.agentId}`,
-    '-e', `TASK_ID=${task.id}`,
-    image,
-  ]
-
-  // Allow tests to substitute a mock spawner.
-  const spawnFn: (args: string[]) => ChildProcess =
-    options.spawnDocker ??
-    ((args) => spawn('docker', args, { stdio: ['ignore', 'pipe', 'pipe'] }))
+  const service = options.dockerService ?? new DockerService()
 
   // ── Execution ────────────────────────────────────────────────────
-  return new Promise<DevTaskResult>(resolve => {
-    let settled = false
-    const settle = (result: DevTaskResult): void => {
-      if (!settled) {
-        settled = true
-        resolve(result)
-      }
+  const result = await service.runContainer(
+    {
+      image,
+      name: containerName,
+      env: {
+        REPO_URL: task.repoUrl,
+        BRANCH:   task.branch,
+        AGENT:    task.agentId,
+        TASK_ID:  task.id,
+      },
+    },
+    timeoutMs
+  )
+
+  // Infrastructure failure (image not found, daemon unreachable, etc.).
+  if (result.error) {
+    return {
+      success: false,
+      containerId: result.containerId || containerName,
+      logs: result.logs,
+      error: `[task:${task.id}] ${result.error}`,
     }
+  }
 
-    let proc: ChildProcess
-    try {
-      proc = spawnFn(dockerArgs)
-    } catch (spawnErr) {
-      const msg = spawnErr instanceof Error ? spawnErr.message : String(spawnErr)
-      return settle({
-        success: false,
-        containerId: containerName,
-        logs,
-        error: `Failed to spawn Docker process: ${msg}`,
-      })
+  // Container killed due to timeout.
+  if (result.timedOut) {
+    return {
+      success: false,
+      containerId: result.containerId,
+      logs: result.logs,
+      error: `[task:${task.id}][container:${result.containerId}] Container timed out after ${timeoutMs}ms`,
     }
+  }
 
-    const appendLog = (line: string): void => {
-      if (line.trim()) logs.push(line)
+  // Extract commit SHA if the agent script emitted a `COMMIT_SHA=<sha>` line.
+  let commitSha: string | undefined
+  for (const line of result.logs) {
+    const match = /COMMIT_SHA=([0-9a-f]{7,40})\b/i.exec(line)
+    if (match?.[1]) {
+      commitSha = match[1]
+      break
     }
+  }
 
-    proc.stdout?.on('data', (chunk: Buffer) => {
-      for (const line of chunk.toString().split('\n')) appendLog(line)
-    })
+  if (result.exitCode === 0) {
+    return {
+      success: true,
+      containerId: result.containerId,
+      logs: result.logs,
+      commitSha,
+    }
+  }
 
-    proc.stderr?.on('data', (chunk: Buffer) => {
-      for (const line of chunk.toString().split('\n')) {
-        if (line.trim()) appendLog(`[stderr] ${line}`)
-      }
-    })
-
-    const timer = setTimeout(() => {
-      proc.kill('SIGTERM')
-      settle({
-        success: false,
-        containerId: containerName,
-        logs,
-        error: `Container timed out after ${timeoutMs}ms`,
-      })
-    }, timeoutMs)
-
-    proc.on('close', (code: number | null) => {
-      clearTimeout(timer)
-
-      // Extract commit SHA if the agent script emitted a `COMMIT_SHA=<sha>` line.
-      let commitSha: string | undefined
-      for (const line of logs) {
-        const match = /COMMIT_SHA=([0-9a-f]{7,40})\b/i.exec(line)
-        if (match?.[1]) {
-          commitSha = match[1]
-          break
-        }
-      }
-
-      if (code === 0) {
-        settle({ success: true, containerId: containerName, logs, commitSha })
-      } else {
-        settle({
-          success: false,
-          containerId: containerName,
-          logs,
-          error: `Container exited with code ${code ?? 'unknown'}`,
-        })
-      }
-    })
-
-    proc.on('error', (err: Error) => {
-      clearTimeout(timer)
-      settle({
-        success: false,
-        containerId: containerName,
-        logs,
-        error: `Docker process error: ${err.message}`,
-      })
-    })
-  })
+  return {
+    success: false,
+    containerId: result.containerId,
+    logs: result.logs,
+    error: `[task:${task.id}][container:${result.containerId}] Container exited with code ${result.exitCode ?? 'unknown'}`,
+  }
 }

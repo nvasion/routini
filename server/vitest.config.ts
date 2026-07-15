@@ -8,6 +8,8 @@ const workspaceRoot = path.resolve(__dirname, '..')
 
 export default defineConfig({
   root: workspaceRoot,
+  // Write optimizer cache inside the workspace rather than /tmp (which may be small).
+  cacheDir: path.resolve(__dirname, '../.vitest-cache'),
   test: {
     // Include root-level integration tests and any future server unit tests
     include: ['tests/**/*.test.ts', 'server/src/**/*.test.ts'],
