@@ -16,16 +16,9 @@ interface StoredUser {
   passwordHash: string
 }
 
-// Extend Express Request so downstream handlers see req.user and req.csrfToken
-declare global {
-  namespace Express {
-    interface Request {
-      user?: AuthUser
-      /** CSRF token extracted from the verified JWT. Set by requireAuth. */
-      csrfToken?: string
-    }
-  }
-}
+// NOTE: This file is superseded by server/src/routes/auth.ts and is no longer
+// imported by any active code path. The global Express.Request augmentation has
+// been moved to routes/auth.ts (using the canonical User type from types.ts).
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -160,7 +153,8 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
 
   try {
     const session = verifyToken(token)
-    req.user = session.user
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    req.user = session.user as any // dead-code file; type managed by routes/auth.ts
     req.csrfToken = session.csrfToken
     next()
   } catch (err) {

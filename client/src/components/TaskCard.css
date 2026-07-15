@@ -106,3 +106,27 @@
   opacity: 0.35;
   cursor: not-allowed;
 }
+
+/* ── Edit-steps button ──────────────────────────────────────── */
+.edit-steps-btn:hover:not(:disabled) {
+  border-color: var(--color-secondary);
+  color: var(--color-secondary);
+}
+
+.edit-steps-btn.active {
+  background: rgba(255, 165, 0, 0.1);
+  border-color: var(--color-secondary);
+  color: var(--color-secondary);
+}
+
+/* ── Editing state outline ──────────────────────────────────── */
+.task-card--editing {
+  border-color: var(--color-secondary);
+  box-shadow: 0 0 0 2px rgba(255, 165, 0, 0.15);
+}
+
+/* ── Step count ─────────────────────────────────────────────── */
+.task-card-steps {
+  font-size: 0.775rem;
+  color: var(--color-text-muted);
+}

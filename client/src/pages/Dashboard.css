@@ -104,6 +104,19 @@
   font-size: 0.875rem;
 }
 
+/* ── New Routine form ───────────────────────────────────────── */
+.new-routine-form {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1.25rem;
+  flex-wrap: wrap;
+}
+
+.new-routine-form .search-input {
+  flex: 1;
+  min-width: 180px;
+}
+
 /* ── Grid ───────────────────────────────────────────────────── */
 .task-grid {
   display: grid;

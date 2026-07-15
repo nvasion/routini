@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { setCsrfToken } from '../api'
 import './Login.css'
 
 export function Login() {
@@ -26,17 +27,23 @@ export function Login() {
         body: JSON.stringify({ email, password }),
       })
 
-      const data = (await res.json()) as { token?: string; error?: string }
+      const data = (await res.json()) as {
+        token?: string
+        csrfToken?: string
+        user?: object
+        error?: string
+      }
 
       if (!res.ok) {
         setError(data.error ?? 'Login failed')
         return
       }
 
-      // Skeleton: store token in sessionStorage
-      // Production: use HTTP-only cookies
-      if (data.token) {
-        sessionStorage.setItem('token', data.token)
+      // The server sets the JWT in an HTTP-only cookie automatically.
+      // Store the CSRF token (returned in the response body) in sessionStorage
+      // so apiFetch can include it as X-CSRF-Token on state-changing requests.
+      if (data.csrfToken) {
+        setCsrfToken(data.csrfToken)
       }
       navigate('/')
     } catch {
