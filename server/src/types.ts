@@ -66,6 +66,20 @@ export interface AISettings {
   defaultAgentId: string
 }
 
+/** Controls if and when email notifications are sent for task outcomes. */
+export interface NotificationSettings {
+  /** Master switch: no emails are sent when false. */
+  enabled: boolean
+  /** Destination email address for all notifications. */
+  recipientEmail: string
+  /** Notify when any task completes successfully. */
+  notifyOnSuccess: boolean
+  /** Notify when any task fails. */
+  notifyOnFailure: boolean
+  /** Notify whenever a routine completes (either status). */
+  notifyOnRoutineMilestone: boolean
+}
+
 // ── Execution logs ────────────────────────────
 
 /** A single timestamped log line produced during task execution. */

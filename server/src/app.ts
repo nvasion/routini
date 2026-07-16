@@ -5,6 +5,7 @@ import rateLimit from 'express-rate-limit'
 import { authRouter, requireAuth } from './routes/auth.js'
 import { tasksRouter } from './routes/tasks.js'
 import { settingsRouter } from './routes/settings.js'
+import { notificationsRouter } from './routes/notifications.js'
 
 export const app = express()
 
@@ -49,6 +50,7 @@ app.use('/api/auth', authRouter)
 // solely on individual handler checks.
 app.use('/api/tasks', requireAuth, tasksRouter)
 app.use('/api/settings', requireAuth, settingsRouter)
+app.use('/api/notifications', requireAuth, notificationsRouter)
 
 // ── Health check (public) ─────────────────────────────────────────
 

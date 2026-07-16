@@ -12,6 +12,8 @@ import type {
 } from '../types.js'
 import { runDevTask, validateRepoUrl, validateAgentId, VALID_AGENTS } from '../services/devTask.js'
 import { executeRoutine, validateStepCondition } from '../services/routineEngine.js'
+import { sendTaskOutcomeNotification, createTransporter } from '../services/email.js'
+import { notificationSettings } from './notifications.js'
 import { requireCsrf } from './auth.js'
 
 export const tasksRouter = Router()
@@ -39,6 +41,57 @@ function appendLog(taskId: string, message: string): void {
   const list = taskLogs.get(taskId) ?? []
   list.push({ timestamp: new Date().toISOString(), message })
   taskLogs.set(taskId, list)
+}
+
+// ── Notification helper ───────────────────────────────────────────────────────
+
+/**
+ * Dispatches an email notification for a completed task when the current
+ * notification settings require it.
+ *
+ * Rules:
+ *   – `enabled` must be true.
+ *   – `recipientEmail` must be present.
+ *   – Routine completions trigger an email when `notifyOnRoutineMilestone` is set
+ *     (regardless of the success/failure flags).
+ *   – All other tasks trigger an email when `notifyOnSuccess` (status="succeeded")
+ *     or `notifyOnFailure` (status="failed") matches.
+ *
+ * Errors from the transport are caught and logged; they must not propagate and
+ * crash the background execution loop.
+ */
+async function notifyOutcome(task: Task): Promise<void> {
+  const settings = notificationSettings
+
+  if (!settings.enabled || !settings.recipientEmail) return
+
+  const { status, type } = task
+
+  const shouldNotify =
+    (type === 'routine' && settings.notifyOnRoutineMilestone) ||
+    (status === 'succeeded' && settings.notifyOnSuccess) ||
+    (status === 'failed' && settings.notifyOnFailure)
+
+  if (!shouldNotify) return
+
+  try {
+    await sendTaskOutcomeNotification(
+      {
+        taskId: task.id,
+        taskName: task.name,
+        taskType: type,
+        status,
+        timestamp: new Date().toISOString(),
+      },
+      settings.recipientEmail,
+      createTransporter(),
+    )
+  } catch (err) {
+    // Log but never re-throw — notification failures must not surface as task
+    // failures or crash the execution loop.  Log without forwarding err.message
+    // because transport errors may embed SMTP credentials.
+    console.error(`[notifications] Failed to send email for task ${task.id}`, err)
+  }
 }
 
 // ── Seed data ─────────────────────────────────────────────────────────────────
@@ -448,6 +501,7 @@ async function executeDevTask(task: DevTask): Promise<void> {
         updatedAt: new Date().toISOString(),
       }
       tasks.set(succeeded.id, succeeded)
+      await notifyOutcome(succeeded)
     } else {
       appendLog(task.id, `Container failed: ${result.error ?? 'unknown error'}`)
       const failed: DevTask = {
@@ -457,6 +511,7 @@ async function executeDevTask(task: DevTask): Promise<void> {
         updatedAt: new Date().toISOString(),
       }
       tasks.set(failed.id, failed)
+      await notifyOutcome(failed)
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
@@ -467,6 +522,7 @@ async function executeDevTask(task: DevTask): Promise<void> {
       updatedAt: new Date().toISOString(),
     }
     tasks.set(failed.id, failed)
+    await notifyOutcome(failed)
   }
 }
 
@@ -498,6 +554,7 @@ async function executeRoutineTask(routine: Routine): Promise<void> {
       updatedAt: new Date().toISOString(),
     }
     tasks.set(finished.id, finished)
+    await notifyOutcome(finished)
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     appendLog(routine.id, `Unexpected error during routine execution: ${msg}`)
@@ -507,5 +564,6 @@ async function executeRoutineTask(routine: Routine): Promise<void> {
       updatedAt: new Date().toISOString(),
     }
     tasks.set(failed.id, failed)
+    await notifyOutcome(failed)
   }
 }
