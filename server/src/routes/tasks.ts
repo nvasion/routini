@@ -13,6 +13,9 @@ import type {
 import { runDevTask, validateRepoUrl, validateAgentId, VALID_AGENTS } from '../services/devTask.js'
 import { executeRoutine, validateStepCondition } from '../services/routineEngine.js'
 import { sendTaskOutcomeNotification, createTransporter } from '../services/email.js'
+import { runSshTask } from '../services/ssh.js'
+import { runImapTask } from '../services/imap.js'
+import { runHttpTask } from '../services/http.js'
 import { notificationSettings } from './notifications.js'
 import { requireCsrf } from './auth.js'
 import { taskEvents } from '../services/taskEvents.js'
@@ -703,7 +706,9 @@ tasksRouter.post('/:id/trigger', requireCsrf, (req: Request, res: Response) => {
   res.json({ message: 'Task triggered', task: triggered })
 
   // Fire-and-forget: execute tasks in the background.
-  if (triggered.type === 'developmental') {
+  if (triggered.type === 'daily') {
+    void executeDailyTask(triggered as DailyTask)
+  } else if (triggered.type === 'developmental') {
     void executeDevTask(triggered as DevTask)
   } else if (triggered.type === 'routine') {
     void executeRoutineTask(triggered as Routine)
@@ -711,6 +716,82 @@ tasksRouter.post('/:id/trigger', requireCsrf, (req: Request, res: Response) => {
 })
 
 // ── Background execution ──────────────────────────────────────────────────────
+
+/**
+ * Shared helper: runs a daily-task handler function, appends all returned log
+ * lines to the task log store, and logs a failure message when unsuccessful.
+ * Returns the handler's `success` flag.
+ *
+ * Centralising this pattern eliminates the repeated log-flush + error-log block
+ * that previously appeared in each actionType branch of `executeDailyTask`.
+ */
+async function dispatchDailyHandler(
+  taskId: string,
+  handlerName: string,
+  handler: () => Promise<{ success: boolean; logs: string[]; error?: string }>,
+): Promise<boolean> {
+  const result = await handler()
+  for (const line of result.logs) appendLog(taskId, line)
+  if (!result.success && result.error) {
+    appendLog(taskId, `${handlerName} task failed: ${result.error}`)
+  }
+  return result.success
+}
+
+/**
+ * Dispatches a daily task to the appropriate handler based on its `actionType`
+ * and keeps the in-memory task record and log store in sync throughout the
+ * lifecycle: queued → running → succeeded | failed.
+ *
+ * Supported action types:
+ *   ssh   – Run a shell command on a remote host via SSH (ssh2).
+ *   email – Check an IMAP mailbox for messages matching a search criterion.
+ *   http  – Perform an HTTP request and check the response status.
+ *
+ * Errors from the handler are caught here and reflected as task failures.
+ */
+async function executeDailyTask(task: DailyTask): Promise<void> {
+  const running: Task = { ...task, status: 'running', updatedAt: new Date().toISOString() }
+  setTaskAndNotify(running)
+  appendLog(task.id, `Starting daily task (actionType: ${task.actionType})…`)
+
+  let success = false
+
+  try {
+    if (task.actionType === 'ssh') {
+      success = await dispatchDailyHandler(task.id, 'SSH', () => runSshTask(task))
+    } else if (task.actionType === 'email') {
+      const result = await runImapTask(task)
+      for (const line of result.logs) appendLog(task.id, line)
+      if (result.success && result.messageCount !== undefined) {
+        appendLog(task.id, `IMAP check complete: ${result.messageCount} message(s) found.`)
+      }
+      if (!result.success && result.error) {
+        appendLog(task.id, `IMAP task failed: ${result.error}`)
+      }
+      success = result.success
+    } else if (task.actionType === 'http') {
+      success = await dispatchDailyHandler(task.id, 'HTTP', () => runHttpTask(task))
+    } else {
+      // Unknown actionType — treat as a configuration error.
+      appendLog(task.id, `Unknown actionType "${(task as DailyTask).actionType}". No handler registered.`)
+      success = false
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    appendLog(task.id, `Unexpected error during daily task execution: ${msg}`)
+    success = false
+  }
+
+  const finalStatus = success ? 'succeeded' : 'failed'
+  const finished: Task = {
+    ...(tasks.get(task.id) ?? task),
+    status: finalStatus,
+    updatedAt: new Date().toISOString(),
+  }
+  setTaskAndNotify(finished)
+  await notifyOutcome(finished)
+}
 
 /**
  * Runs a developmental task container and keeps the in-memory task record
