@@ -15,7 +15,7 @@
  * Native HTML5 Drag-and-Drop is used (no third-party library).
  */
 
-import { useState, useRef, useCallback } from 'react'
+import React, { useState, useRef, useCallback } from 'react'
 import type { Task, Routine, RoutineStep } from '../types'
 import './RoutineBuilder.css'
 

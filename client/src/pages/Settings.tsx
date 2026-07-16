@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import React, { useState, useEffect } from 'react'
 import type { AISettings } from '../types'
 import { apiFetch } from '../api'
 import './Settings.css'

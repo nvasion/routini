@@ -19,6 +19,7 @@
  *     clears the CSRF token and redirects to /login automatically.
  */
 
+import React from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { Navbar } from './components/Navbar'
 import { Login } from './pages/Login'
