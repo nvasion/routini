@@ -32,7 +32,7 @@
 .rb-title {
   font-size: 1.1rem;
   font-weight: 700;
-  background: linear-gradient(135deg, #ff0000, #ffa500);
+  background: linear-gradient(135deg, var(--color-primary), var(--color-secondary));
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
@@ -409,7 +409,7 @@
 
 .rb-btn-save {
   padding: 0.5rem 1.25rem;
-  background: linear-gradient(135deg, #cc0000, #ff6600);
+  background: linear-gradient(135deg, var(--color-primary-dark), var(--color-secondary-dark));
   color: #fff;
   border: none;
   border-radius: var(--radius);
