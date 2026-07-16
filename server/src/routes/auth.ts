@@ -1,6 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express'
 import { hashSync, compareSync } from 'bcryptjs'
-import { sign, verify, TokenExpiredError } from 'jsonwebtoken'
+import jwt from 'jsonwebtoken'
+const { sign, verify, TokenExpiredError } = jwt
 import { randomBytes, randomUUID } from 'node:crypto'
 import rateLimit from 'express-rate-limit'
 import type { User } from '../types.js'
