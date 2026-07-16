@@ -108,6 +108,12 @@
   color: rgba(153, 153, 153, 0.5);
 }
 
+.form-hint {
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+  margin-top: 0.15rem;
+}
+
 .form-group select option {
   background: var(--color-bg-elevated);
 }

@@ -56,4 +56,6 @@ export interface AISettings {
   provider: AIProvider | string
   model: string
   defaultAgentId: string
+  /** True when an API key has been stored; the key itself is never returned by the server. */
+  hasApiKey: boolean
 }
