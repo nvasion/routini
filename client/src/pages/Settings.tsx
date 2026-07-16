@@ -14,7 +14,14 @@ export function Settings() {
     provider: 'claude',
     model: '',
     defaultAgentId: '',
+    hasApiKey: false,
   })
+  /**
+   * Local-only API key input.  The server never returns the stored key so this
+   * field is never pre-populated.  A non-empty value on submit is sent to the
+   * server and the field is cleared afterward to avoid leaving the key in state.
+   */
+  const [apiKey, setApiKey] = useState('')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [flash, setFlash] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
@@ -43,19 +50,34 @@ export function Settings() {
 
     try {
       setSaving(true)
+
+      // Build the request payload.  Only include apiKey when the user has
+      // typed a new value — omitting it leaves the stored key unchanged.
+      const payload: Record<string, string> = {
+        provider: settings.provider,
+        model: settings.model,
+        defaultAgentId: settings.defaultAgentId,
+      }
+      if (apiKey.trim()) {
+        payload.apiKey = apiKey.trim()
+      }
+
       const res = await apiFetch('/api/settings', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(settings),
+        body: JSON.stringify(payload),
       })
 
       if (!res.ok) {
-        const body = (await res.json()) as { error: string }
-        throw new Error(body.error ?? `HTTP ${res.status}`)
+        const errData = (await res.json()) as { error: string }
+        throw new Error(errData.error ?? `HTTP ${res.status}`)
       }
 
       const updated = (await res.json()) as AISettings
       setSettings(updated)
+      // Clear the local key input after a successful save so the plaintext
+      // key is not held in React state longer than necessary.
+      setApiKey('')
       setFlash({ type: 'success', text: 'Settings saved successfully' })
     } catch (err) {
       setFlash({ type: 'error', text: err instanceof Error ? err.message : 'Failed to save settings' })
@@ -103,6 +125,25 @@ export function Settings() {
                   </option>
                 ))}
               </select>
+            </div>
+
+            <div className="form-group">
+              <label htmlFor="apiKey">API Key</label>
+              <input
+                id="apiKey"
+                type="password"
+                value={apiKey}
+                onChange={e => setApiKey(e.target.value)}
+                placeholder={
+                  settings.hasApiKey
+                    ? 'Key configured — enter a new value to replace it'
+                    : 'Enter your API key'
+                }
+                autoComplete="new-password"
+              />
+              {settings.hasApiKey && !apiKey && (
+                <p className="form-hint">A key is currently configured for this provider.</p>
+              )}
             </div>
 
             <div className="form-group">
