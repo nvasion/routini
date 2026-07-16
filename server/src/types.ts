@@ -11,6 +11,12 @@ export type AIProvider = 'opencode' | 'claude' | 'omnimancer'
 
 interface BaseTask {
   id: string
+  /**
+   * ID of the user who created this task.
+   * Undefined for system/seed tasks, which are visible to all authenticated users.
+   * All tasks created via the API are tagged with the creator's user ID.
+   */
+  ownerId?: string
   name: string
   description: string
   type: TaskType
