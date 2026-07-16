@@ -294,4 +294,90 @@ describe('POST /api/tasks/:id/trigger', () => {
     expect(res.status).toBe(404)
     expect(res.body.error).toBeDefined()
   })
+
+  it('succeeds (200) when triggering a task that is already queued', async () => {
+    // Only 'running' tasks are rejected with 409; a 'queued' task can be
+    // re-triggered and its status is reset to 'queued' again.
+    const created = await request
+      .post('/api/tasks')
+      .set(auth())
+      .send({ name: 'Double-Trigger Routine', type: 'routine' })
+    const id = created.body.id as string
+
+    // First trigger: idle → queued
+    await request.post(`/api/tasks/${id}/trigger`).set(auth())
+
+    // Second trigger: queued → queued (still allowed, not running)
+    const second = await request.post(`/api/tasks/${id}/trigger`).set(auth())
+    expect(second.status).toBe(200)
+    expect(second.body.task.status).toBe('queued')
+  })
+
+  it('response body includes both task and message fields', async () => {
+    const created = await request
+      .post('/api/tasks')
+      .set(auth())
+      .send({ name: 'Trigger Shape Check', type: 'routine' })
+    const id = created.body.id as string
+
+    const res = await request.post(`/api/tasks/${id}/trigger`).set(auth())
+    expect(res.status).toBe(200)
+    expect(typeof res.body.message).toBe('string')
+    expect(res.body.task).toBeDefined()
+    expect(res.body.task.id).toBe(id)
+  })
+})
+
+// ── GET /api/tasks – combined filters ────────────────────────────
+
+describe('GET /api/tasks – combined type and status filters', () => {
+  it('filters by both type=routine and status=idle simultaneously', async () => {
+    // Create a routine task (starts idle) and a developmental task.
+    await Promise.all([
+      request.post('/api/tasks').set(auth()).send({ name: 'Combined Filter Routine', type: 'routine' }),
+      request.post('/api/tasks').set(auth()).send({
+        name: 'Combined Filter Dev',
+        type: 'developmental',
+        repoUrl: 'https://github.com/example/repo',
+        agentId: 'claude',
+      }),
+    ])
+
+    const res = await request.get('/api/tasks?type=routine&status=idle').set(auth())
+    expect(res.status).toBe(200)
+    // All returned tasks must match BOTH criteria
+    for (const t of res.body.tasks as Array<{ type: string; status: string }>) {
+      expect(t.type).toBe('routine')
+      expect(t.status).toBe('idle')
+    }
+    // The developmental task must not appear
+    const names = (res.body.tasks as Array<{ name: string }>).map(t => t.name)
+    expect(names).not.toContain('Combined Filter Dev')
+  })
+
+  it('returns an empty list when no tasks match both type and status', async () => {
+    // No tasks start as 'succeeded'; combining with type=daily should yield 0.
+    const res = await request.get('/api/tasks?type=daily&status=succeeded').set(auth())
+    expect(res.status).toBe(200)
+    expect(res.body.tasks).toHaveLength(0)
+    expect(res.body.count).toBe(0)
+  })
+})
+
+// ── DELETE /api/tasks/:id – response body ────────────────────────
+
+describe('DELETE /api/tasks/:id – response body shape', () => {
+  it('response includes id and message fields', async () => {
+    const created = await request
+      .post('/api/tasks')
+      .set(auth())
+      .send({ name: 'Delete Shape Test', type: 'routine' })
+    const id = created.body.id as string
+
+    const res = await request.delete(`/api/tasks/${id}`).set(auth())
+    expect(res.status).toBe(200)
+    expect(res.body.id).toBe(id)
+    expect(typeof res.body.message).toBe('string')
+    expect(res.body.message.length).toBeGreaterThan(0)
+  })
 })

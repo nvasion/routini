@@ -646,3 +646,150 @@ describe('POST /api/tasks/:id/trigger (routine)', () => {
     expect(['succeeded', 'queued']).toContain(taskRes.body.status)
   })
 })
+
+// ── defaultRunStep – daily task via integration ───────────────────────────────
+//
+// Tests that the built-in step runner (not mocked) correctly handles each task
+// type by executing a real routine trigger.  Docker is NOT required for daily
+// tasks because they use a simulated implementation.
+
+describe('defaultRunStep – daily task step (simulated execution)', () => {
+  it('a routine with a daily task step reaches succeeded status', async () => {
+    // Create the daily task and the parent routine
+    const [dailyRes, routineRes] = await Promise.all([
+      request.post('/api/tasks').set(auth()).send({
+        name: 'Daily Step Task',
+        type: 'daily',
+        schedule: '0 9 * * *',
+        actionType: 'http',
+        config: { url: 'https://example.com' },
+      }),
+      request.post('/api/tasks').set(auth()).send({ name: 'Daily Step Routine', type: 'routine' }),
+    ])
+    const dailyId = dailyRes.body.id as string
+    const routineId = routineRes.body.id as string
+
+    // Add the daily task as step 1 of the routine
+    await request
+      .put(`/api/tasks/${routineId}/steps`)
+      .set(auth())
+      .send({ steps: [{ taskId: dailyId, order: 1 }] })
+
+    // Trigger and wait for the async engine to finish
+    await request.post(`/api/tasks/${routineId}/trigger`).set(auth())
+    await new Promise(r => setTimeout(r, 100))
+
+    const routineResult = await request.get(`/api/tasks/${routineId}`).set(auth())
+    expect(routineResult.status).toBe(200)
+    expect(routineResult.body.status).toBe('succeeded')
+  })
+
+  it('logs include "simulated" marker from the daily task runner', async () => {
+    const [dailyRes, routineRes] = await Promise.all([
+      request.post('/api/tasks').set(auth()).send({
+        name: 'Daily Log Marker Task',
+        type: 'daily',
+        actionType: 'email',
+      }),
+      request
+        .post('/api/tasks')
+        .set(auth())
+        .send({ name: 'Daily Log Routine', type: 'routine' }),
+    ])
+    const dailyId = dailyRes.body.id as string
+    const routineId = routineRes.body.id as string
+
+    await request
+      .put(`/api/tasks/${routineId}/steps`)
+      .set(auth())
+      .send({ steps: [{ taskId: dailyId, order: 1 }] })
+
+    await request.post(`/api/tasks/${routineId}/trigger`).set(auth())
+    await new Promise(r => setTimeout(r, 100))
+
+    const logsRes = await request.get(`/api/tasks/${routineId}/logs`).set(auth())
+    expect(logsRes.status).toBe(200)
+    const messages: string[] = (logsRes.body.logs as Array<{ message: string }>).map(l => l.message)
+    expect(messages.some(m => m.toLowerCase().includes('simulated'))).toBe(true)
+  })
+
+  it('logs include the action type of the daily task', async () => {
+    const [dailyRes, routineRes] = await Promise.all([
+      request.post('/api/tasks').set(auth()).send({
+        name: 'SSH Daily Task',
+        type: 'daily',
+        actionType: 'ssh',
+      }),
+      request.post('/api/tasks').set(auth()).send({ name: 'SSH Routine', type: 'routine' }),
+    ])
+    const dailyId = dailyRes.body.id as string
+    const routineId = routineRes.body.id as string
+
+    await request
+      .put(`/api/tasks/${routineId}/steps`)
+      .set(auth())
+      .send({ steps: [{ taskId: dailyId, order: 1 }] })
+
+    await request.post(`/api/tasks/${routineId}/trigger`).set(auth())
+    await new Promise(r => setTimeout(r, 100))
+
+    const logsRes = await request.get(`/api/tasks/${routineId}/logs`).set(auth())
+    const messages: string[] = (logsRes.body.logs as Array<{ message: string }>).map(l => l.message)
+    expect(messages.some(m => m.includes('ssh'))).toBe(true)
+  })
+})
+
+// ── defaultRunStep – nested routine rejection via integration ─────────────────
+//
+// A routine step that references another routine (not itself) is allowed by the
+// PUT /steps validator but rejected at execution time by defaultRunStep, which
+// returns 'failed' and logs a "not supported" message.
+
+describe('defaultRunStep – nested routine rejection', () => {
+  it('a routine whose step references another routine fails gracefully', async () => {
+    // Create two routines: the inner routine will be referenced as a step.
+    const [innerRes, outerRes] = await Promise.all([
+      request.post('/api/tasks').set(auth()).send({ name: 'Inner Routine', type: 'routine' }),
+      request.post('/api/tasks').set(auth()).send({ name: 'Outer Routine', type: 'routine' }),
+    ])
+    const innerId = innerRes.body.id as string
+    const outerId = outerRes.body.id as string
+
+    // Add the inner routine as a step — this is allowed by the API.
+    await request
+      .put(`/api/tasks/${outerId}/steps`)
+      .set(auth())
+      .send({ steps: [{ taskId: innerId, order: 1 }] })
+
+    // Trigger the outer routine
+    await request.post(`/api/tasks/${outerId}/trigger`).set(auth())
+    await new Promise(r => setTimeout(r, 100))
+
+    // The outer routine must fail because nested routines are not supported.
+    const result = await request.get(`/api/tasks/${outerId}`).set(auth())
+    expect(result.status).toBe(200)
+    expect(result.body.status).toBe('failed')
+  })
+
+  it('logs include "not supported" message when a nested routine is encountered', async () => {
+    const [innerRes, outerRes] = await Promise.all([
+      request.post('/api/tasks').set(auth()).send({ name: 'Inner Routine 2', type: 'routine' }),
+      request.post('/api/tasks').set(auth()).send({ name: 'Outer Routine 2', type: 'routine' }),
+    ])
+    const innerId = innerRes.body.id as string
+    const outerId = outerRes.body.id as string
+
+    await request
+      .put(`/api/tasks/${outerId}/steps`)
+      .set(auth())
+      .send({ steps: [{ taskId: innerId, order: 1 }] })
+
+    await request.post(`/api/tasks/${outerId}/trigger`).set(auth())
+    await new Promise(r => setTimeout(r, 100))
+
+    const logsRes = await request.get(`/api/tasks/${outerId}/logs`).set(auth())
+    expect(logsRes.status).toBe(200)
+    const messages: string[] = (logsRes.body.logs as Array<{ message: string }>).map(l => l.message)
+    expect(messages.some(m => /not supported/i.test(m))).toBe(true)
+  })
+})
