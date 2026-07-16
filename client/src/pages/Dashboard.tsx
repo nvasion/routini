@@ -3,6 +3,7 @@ import type { Task, TaskType, Routine, RoutineStep } from '../types'
 import { TaskCard } from '../components/TaskCard'
 import { RoutineBuilder } from '../components/RoutineBuilder'
 import { apiFetch } from '../api'
+import { useTaskEvents } from '../hooks/useTaskEvents'
 import './Dashboard.css'
 
 const FILTER_TYPES = ['all', 'daily', 'developmental', 'routine'] as const
@@ -14,6 +15,7 @@ export function Dashboard() {
   const [error, setError] = useState<string | null>(null)
   const [filter, setFilter] = useState<FilterType>('all')
   const [search, setSearch] = useState('')
+  const [sseConnected, setSseConnected] = useState(false)
 
   // Routine builder: which routine is currently being edited (if any)
   const [editingRoutine, setEditingRoutine] = useState<Routine | null>(null)
@@ -22,6 +24,50 @@ export function Dashboard() {
   const [showNewForm, setShowNewForm] = useState(false)
   const [newRoutineName, setNewRoutineName] = useState('')
   const [creating, setCreating] = useState(false)
+
+  // ── Real-time SSE subscription ────────────────────────────────────────────
+  //
+  // The 'connected' event provides an authoritative snapshot of all tasks at
+  // the moment the SSE connection is established. We use this to initialize
+  // state (replacing the loading-spinner phase) and mark the connection live.
+  //
+  // Subsequent 'task:updated' events keep individual tasks in sync without
+  // requiring polling. The Dashboard falls back gracefully to its initial HTTP
+  // snapshot when SSE is unavailable (e.g. in test environments).
+
+  useTaskEvents({
+    onConnected: (initialTasks) => {
+      setTasks(initialTasks)
+      setLoading(false)
+      setError(null)
+      setSseConnected(true)
+    },
+    onTaskUpdated: (updatedTask) => {
+      setTasks(prev => {
+        const exists = prev.some(t => t.id === updatedTask.id)
+        if (exists) {
+          return prev.map(t => (t.id === updatedTask.id ? updatedTask : t))
+        }
+        // Task was created by another session — append it to the list.
+        return [...prev, updatedTask]
+      })
+      // Keep the routine builder in sync if the open routine was updated.
+      setEditingRoutine(prev =>
+        prev?.id === updatedTask.id && updatedTask.type === 'routine'
+          ? (updatedTask as Routine)
+          : prev,
+      )
+    },
+    onError: () => {
+      setSseConnected(false)
+    },
+  })
+
+  // ── Initial HTTP fetch (fallback) ─────────────────────────────────────────
+  //
+  // Issued on mount to provide an immediate task list while the SSE connection
+  // is being established, and as a fallback if SSE is unavailable. Once SSE
+  // delivers its 'connected' snapshot the HTTP-fetched state is superseded.
 
   const fetchTasks = useCallback(async () => {
     try {
@@ -50,6 +96,8 @@ export function Dashboard() {
       const res = await apiFetch(`/api/tasks/${id}/trigger`, { method: 'POST' })
       const body = await res.json() as { task?: Task; error?: string }
       if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`)
+      // Optimistically apply the trigger response; SSE will deliver subsequent
+      // status transitions (running → succeeded/failed) automatically.
       if (body.task) {
         setTasks(prev => prev.map(t => (t.id === id ? body.task! : t)))
       }
@@ -90,7 +138,12 @@ export function Dashboard() {
       })
       const body = await res.json() as Task & { error?: string }
       if (!res.ok) throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`)
-      setTasks(prev => [...prev, body])
+      // The SSE 'task:updated' event will also arrive and keep the list in
+      // sync; adding here provides immediate feedback without waiting for SSE.
+      setTasks(prev => {
+        if (prev.some(t => t.id === body.id)) return prev
+        return [...prev, body]
+      })
       setNewRoutineName('')
       setShowNewForm(false)
     } catch (err) {
@@ -114,7 +167,8 @@ export function Dashboard() {
       const body = await res.json() as Routine & { error?: string }
       if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`)
 
-      // Update both the task list and the active editing state
+      // Update both the task list and the active editing state; SSE will also
+      // deliver the update but applying it locally here prevents a flicker.
       setTasks(prev => prev.map(t => (t.id === body.id ? body : t)))
       setEditingRoutine(body)
     },
@@ -145,16 +199,27 @@ export function Dashboard() {
           </p>
         </div>
 
-        <button
-          className="btn btn-primary"
-          onClick={() => {
-            setShowNewForm(v => !v)
-            setNewRoutineName('')
-            setError(null)
-          }}
-        >
-          + New Routine
-        </button>
+        <div className="dashboard-header-actions">
+          <span
+            className={`sse-indicator ${sseConnected ? 'sse-indicator--live' : 'sse-indicator--offline'}`}
+            title={sseConnected ? 'Live updates active' : 'Connecting to live updates…'}
+            aria-label={sseConnected ? 'Live updates active' : 'Connecting to live updates'}
+          >
+            <span className="sse-indicator__dot" aria-hidden="true" />
+            {sseConnected ? 'Live' : 'Connecting…'}
+          </span>
+
+          <button
+            className="btn btn-primary"
+            onClick={() => {
+              setShowNewForm(v => !v)
+              setNewRoutineName('')
+              setError(null)
+            }}
+          >
+            + New Routine
+          </button>
+        </div>
       </header>
 
       {/* New routine creation form */}
