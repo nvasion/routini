@@ -1,0 +1,16 @@
+# Development image — installs all dependencies so that Vite and
+# TypeScript tooling are available for hot-reload.  Source code is
+# mounted at runtime via the docker-compose volume; node_modules stays
+# in the image layer and is preserved by the named volume declared in
+# the compose file, so container restarts do not re-install packages.
+FROM node:20-alpine
+WORKDIR /app
+
+COPY package.json package-lock.json* ./
+RUN npm install --ignore-scripts
+
+EXPOSE 5173
+
+# --host 0.0.0.0 makes Vite listen on all interfaces so the dev server
+# is reachable from outside the container.
+CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0"]

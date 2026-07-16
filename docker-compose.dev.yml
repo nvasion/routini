@@ -1,0 +1,56 @@
+# Development Docker Compose — hot-reload for both server and client
+#
+# Usage:
+#   docker compose -f docker-compose.dev.yml up --build
+#
+# Both services bind-mount their source trees so that changes on the
+# host are reflected instantly inside the containers.  node_modules are
+# stored in named volumes (populated from the image layer on first run)
+# so they are not overwritten by the bind mount and do not need to be
+# re-installed on container restart.
+#
+# The Vite dev-server proxy is pointed at the "server" service via the
+# API_PROXY_TARGET environment variable (see client/vite.config.ts).
+
+services:
+  server:
+    build:
+      context: ./server
+      dockerfile: Dockerfile.dev
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    volumes:
+      # Mount source for hot-reload
+      - ./server:/app
+      # Preserve the image's node_modules — the bind mount above would
+      # otherwise shadow this directory with the (potentially empty) host path
+      - server_modules:/app/node_modules
+    environment:
+      NODE_ENV: development
+      PORT: "3001"
+      CLIENT_URL: "${CLIENT_URL:-http://localhost:5173}"
+      COOKIE_SECRET: "${COOKIE_SECRET:-dev-secret-change-in-production}"
+
+  client:
+    build:
+      context: ./client
+      dockerfile: Dockerfile.dev
+    restart: unless-stopped
+    ports:
+      - "5173:5173"
+    volumes:
+      # Mount source for hot-reload
+      - ./client:/app
+      # Preserve the image's node_modules
+      - client_modules:/app/node_modules
+    environment:
+      # Overrides the default localhost:3001 so Vite's dev-server proxy
+      # can reach the server container by its Docker Compose service name
+      API_PROXY_TARGET: "http://server:3001"
+    depends_on:
+      - server
+
+volumes:
+  server_modules:
+  client_modules:
