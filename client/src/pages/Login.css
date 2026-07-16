@@ -111,3 +111,20 @@
   font-size: 0.8rem;
   color: var(--color-text-muted);
 }
+
+.login-hint-fill {
+  all: unset;
+  cursor: pointer;
+  text-decoration: underline dotted;
+  color: inherit;
+  border-radius: var(--radius);
+}
+
+.login-hint-fill:hover {
+  color: var(--color-secondary);
+}
+
+.login-hint-fill:focus-visible {
+  outline: 2px solid var(--color-secondary);
+  outline-offset: 2px;
+}

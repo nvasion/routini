@@ -10,11 +10,23 @@ export function Login() {
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
 
+  const DEMO_EMAIL = 'admin@routini.dev'
+  const DEMO_PASSWORD = 'changeme'
+
+  const fillDemo = () => {
+    setEmail(DEMO_EMAIL)
+    setPassword(DEMO_PASSWORD)
+    setError(null)
+  }
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setError(null)
 
-    if (!email.trim() || !password) {
+    const trimmedEmail = email.trim()
+    const trimmedPassword = password.trim()
+
+    if (!trimmedEmail || !trimmedPassword) {
       setError('Email and password are required')
       return
     }
@@ -24,7 +36,7 @@ export function Login() {
       const res = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify({ email: trimmedEmail, password: trimmedPassword }),
       })
 
       const data = (await res.json()) as {
@@ -100,8 +112,15 @@ export function Login() {
         </form>
 
         <p className="login-hint">
-          Demo credentials: <strong>admin@routini.dev</strong> /{' '}
-          <strong>changeme</strong>
+          Demo credentials:{' '}
+          <button
+            type="button"
+            className="login-hint-fill"
+            onClick={fillDemo}
+            aria-label="Fill demo credentials"
+          >
+            <strong>{DEMO_EMAIL}</strong> / <strong>{DEMO_PASSWORD}</strong>
+          </button>
         </p>
       </div>
     </div>
