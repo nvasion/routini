@@ -34,7 +34,13 @@ beforeAll(async () => {
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
   serverPort = (server.address() as http.AddressInfo).port
 })
-
+beforeAll(async () => {
+  const res = await supertestAgent
+    .post('/api/auth/login')
+    .send({ email: 'admin@routini.dev', password: 'changeme' })
+  expect(res.status).toBe(200)
+  authToken = res.body.token as string
+  expect(authToken).toBeDefined()
 afterAll(() => {
   server.close()
 })
