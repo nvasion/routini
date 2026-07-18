@@ -149,7 +149,27 @@ export function Dashboard() {
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create routine')
     } finally {
-      setCreating(false)
+  const handleSaveSteps = useCallback(
+    async (steps: RoutineStep[]) => {
+      if (!editingRoutine) return
+
+      try {
+        const res = await apiFetch(`/api/tasks/${editingRoutine.id}/steps`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ steps }),
+        })
+        const body = await res.json() as Routine & { error?: string }
+        if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`)
+
+        setTasks(prev => prev.map(t => (t.id === body.id ? body : t)))
+        setEditingRoutine(body)
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to save steps')
+      }
+    },
+    [editingRoutine],
+  )
     }
   }
 
