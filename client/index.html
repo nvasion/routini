@@ -5,6 +5,26 @@
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>routini</title>
+    <!--
+      Defensive fallback for @vitejs/plugin-react Fast Refresh.
+
+      In development Vite injects a <script type="module"> that imports the
+      /@react-refresh virtual module and sets window.__vite_plugin_react_preamble_installed__.
+      That module script is *deferred* (runs after parsing).  This non-module
+      script runs *synchronously during parsing* — before any module script —
+      so it guarantees the globals exist even if the Vite preamble module
+      cannot be fetched (e.g. when the dev server is reached through a reverse
+      proxy that does not forward the /@react-refresh path).
+
+      When the real Vite preamble does load it overwrites $RefreshReg$ and
+      $RefreshSig$ with working Fast-Refresh implementations; these stubs are
+      only active when the actual preamble fails to load.
+    -->
+    <script>
+      window.$RefreshReg$ = window.$RefreshReg$ || function () {};
+      window.$RefreshSig$ = window.$RefreshSig$ || function () { return function (type) { return type; }; };
+      window.__vite_plugin_react_preamble_installed__ = true;
+    </script>
   </head>
   <body>
     <div id="root"></div>

@@ -28,3 +28,6 @@ build/
 # Logs
 *.log
 .factory/worktrees/
+
+# Test caches
+.vitest-cache/

@@ -11,13 +11,29 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
-    "express": "^4.18.2"
+    "dockerode": "^5.0.1",
+    "express": "^4.18.2",
+    "express-rate-limit": "^8.5.2",
+    "imapflow": "^1.4.7",
+    "jsonwebtoken": "^9.0.3",
+    "nodemailer": "^9.0.3",
+    "ssh2": "^1.17.0"
   },
   "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/cookie-parser": "^1.4.10",
     "@types/cors": "^2.8.17",
+    "@types/dockerode": "^4.0.1",
     "@types/express": "^4.17.21",
+    "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^20.10.0",
+    "@types/nodemailer": "^8.0.1",
+    "@types/ssh2": "^1.15.5",
+    "@types/supertest": "^7.2.0",
+    "supertest": "^7.2.2",
     "tsx": "^4.6.0",
     "typescript": "^5.3.2",
     "vitest": "^1.0.0"

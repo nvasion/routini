@@ -1,0 +1,444 @@
+/* ── RoutineBuilder ──────────────────────────────────────────────────────────
+   Drag-and-drop step editor for routine tasks.
+   Follows the project's red / orange / black design tokens from index.css.
+   ────────────────────────────────────────────────────────────────────────── */
+
+/* ── Outer container ─────────────────────────────────────────────────────── */
+
+.rb {
+  background: var(--color-bg-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  /* Sit on top of the task grid without covering the entire page */
+  margin-top: 1.5rem;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+}
+
+/* ── Header ──────────────────────────────────────────────────────────────── */
+
+.rb-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1.25rem 1.5rem;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-bg-elevated);
+}
+
+.rb-title {
+  font-size: 1.1rem;
+  font-weight: 700;
+  background: linear-gradient(135deg, var(--color-primary), var(--color-secondary));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  margin-bottom: 0.15rem;
+}
+
+.rb-subtitle {
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+}
+
+.rb-close {
+  background: transparent;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  color: var(--color-text-muted);
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.75rem;
+  flex-shrink: 0;
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.rb-close:hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+/* ── Body (two-panel layout) ─────────────────────────────────────────────── */
+
+.rb-body {
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  min-height: 320px;
+  overflow: hidden;
+}
+
+/* ── Available tasks palette (left) ──────────────────────────────────────── */
+
+.rb-palette {
+  border-right: 1px solid var(--color-border);
+  padding: 1rem;
+  overflow-y: auto;
+  background: rgba(255, 255, 255, 0.015);
+}
+
+.rb-panel-title {
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--color-text-muted);
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-bottom: 0.25rem;
+}
+
+.rb-step-count {
+  background: var(--color-secondary);
+  color: #000;
+  border-radius: 100px;
+  padding: 0.05rem 0.45rem;
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+.rb-panel-hint {
+  font-size: 0.72rem;
+  color: var(--color-text-muted);
+  margin-bottom: 0.85rem;
+  opacity: 0.7;
+}
+
+.rb-task-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.rb-task-item {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.6rem 0.75rem;
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  cursor: grab;
+  transition: border-color 0.15s, background 0.15s;
+  user-select: none;
+}
+
+.rb-task-item:hover,
+.rb-task-item:focus {
+  border-color: var(--color-secondary);
+  background: rgba(255, 165, 0, 0.06);
+  outline: none;
+}
+
+.rb-task-item:active {
+  cursor: grabbing;
+}
+
+.rb-task-name {
+  font-size: 0.8rem;
+  color: var(--color-text);
+  line-height: 1.3;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rb-empty {
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+  line-height: 1.6;
+  padding: 0.5rem 0;
+}
+
+/* ── Type badges ─────────────────────────────────────────────────────────── */
+
+.rb-type-badge {
+  display: inline-block;
+  padding: 0.1rem 0.45rem;
+  border-radius: 100px;
+  font-size: 0.62rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  flex-shrink: 0;
+}
+
+.rb-type-badge--sm {
+  padding: 0.08rem 0.35rem;
+  font-size: 0.58rem;
+}
+
+.rb-task-daily    .rb-type-badge, .rb-type-badge.rb-task-daily    { background: rgba(59,130,246,.15); color: #60a5fa; }
+.rb-task-developmental .rb-type-badge, .rb-type-badge.rb-task-developmental { background: rgba(168,85,247,.15); color: #c084fc; }
+.rb-task-routine  .rb-type-badge, .rb-type-badge.rb-task-routine  { background: rgba(255,165,0,.15);  color: var(--color-secondary); }
+
+/* ── Steps panel (right) ─────────────────────────────────────────────────── */
+
+.rb-steps-panel {
+  padding: 1rem;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.rb-drop-zone {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  border: 2px dashed var(--color-border);
+  border-radius: var(--radius);
+  padding: 2rem;
+  color: var(--color-text-muted);
+  font-size: 0.85rem;
+  text-align: center;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.rb-drop-zone:hover {
+  border-color: var(--color-secondary);
+  background: rgba(255, 165, 0, 0.03);
+}
+
+.rb-drop-icon {
+  font-size: 1.5rem;
+  opacity: 0.4;
+}
+
+.rb-step-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+/* ── Individual step row ─────────────────────────────────────────────────── */
+
+.rb-step-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
+  padding: 0.75rem;
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.rb-step-row:hover {
+  border-color: rgba(255, 165, 0, 0.3);
+}
+
+.rb-step-row--drop-target {
+  border-color: var(--color-secondary) !important;
+  background: rgba(255, 165, 0, 0.07) !important;
+  box-shadow: 0 0 0 2px rgba(255, 165, 0, 0.25);
+}
+
+.rb-drag-handle {
+  color: var(--color-text-muted);
+  cursor: grab;
+  font-size: 1rem;
+  padding-top: 0.15rem;
+  opacity: 0.5;
+  flex-shrink: 0;
+  line-height: 1;
+  transition: opacity 0.15s;
+}
+
+.rb-step-row:hover .rb-drag-handle {
+  opacity: 0.9;
+}
+
+.rb-drag-handle:active {
+  cursor: grabbing;
+}
+
+.rb-step-num {
+  width: 22px;
+  height: 22px;
+  border-radius: 100%;
+  background: rgba(255, 165, 0, 0.15);
+  color: var(--color-secondary);
+  font-size: 0.7rem;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  margin-top: 0.1rem;
+}
+
+.rb-step-content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.rb-step-task {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.rb-step-task-name {
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--color-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rb-step-missing {
+  font-size: 0.8rem;
+  color: var(--color-primary);
+  font-style: italic;
+}
+
+/* ── Condition input ─────────────────────────────────────────────────────── */
+
+.rb-condition-label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.rb-condition-hint {
+  font-size: 0.68rem;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.rb-condition-input {
+  padding: 0.4rem 0.65rem;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  color: var(--color-text);
+  font-size: 0.78rem;
+  font-family: 'SFMono-Regular', 'Menlo', 'Monaco', 'Courier New', monospace;
+  outline: none;
+  transition: border-color 0.15s;
+  width: 100%;
+}
+
+.rb-condition-input:focus {
+  border-color: var(--color-secondary);
+}
+
+.rb-condition-input::placeholder {
+  color: rgba(153, 153, 153, 0.4);
+}
+
+/* ── Remove button ───────────────────────────────────────────────────────── */
+
+.rb-remove-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  color: var(--color-text-muted);
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.65rem;
+  flex-shrink: 0;
+  margin-top: 0.05rem;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+
+.rb-remove-btn:hover {
+  border-color: rgba(255, 0, 0, 0.4);
+  color: var(--color-primary);
+  background: rgba(255, 0, 0, 0.07);
+}
+
+/* ── Error banner ────────────────────────────────────────────────────────── */
+
+.rb-error {
+  margin: 0 1.5rem;
+  padding: 0.65rem 0.9rem;
+  background: rgba(255, 0, 0, 0.07);
+  border: 1px solid rgba(255, 0, 0, 0.25);
+  border-radius: var(--radius);
+  color: var(--color-primary);
+  font-size: 0.82rem;
+}
+
+/* ── Footer ──────────────────────────────────────────────────────────────── */
+
+.rb-footer {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 1rem 1.5rem;
+  border-top: 1px solid var(--color-border);
+  background: var(--color-bg-elevated);
+}
+
+.rb-btn-ghost {
+  padding: 0.5rem 1rem;
+  background: transparent;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  color: var(--color-text-muted);
+  font-size: 0.875rem;
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.rb-btn-ghost:hover:not(:disabled) {
+  border-color: var(--color-text-muted);
+  color: var(--color-text);
+}
+
+.rb-btn-save {
+  padding: 0.5rem 1.25rem;
+  background: linear-gradient(135deg, var(--color-primary-dark), var(--color-secondary-dark));
+  color: #fff;
+  border: none;
+  border-radius: var(--radius);
+  font-size: 0.875rem;
+  font-weight: 600;
+  transition: opacity 0.15s;
+}
+
+.rb-btn-save:hover:not(:disabled) {
+  opacity: 0.88;
+}
+
+.rb-btn-save:disabled,
+.rb-btn-ghost:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* ── Responsive ──────────────────────────────────────────────────────────── */
+
+@media (max-width: 640px) {
+  .rb-body {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
+  }
+
+  .rb-palette {
+    border-right: none;
+    border-bottom: 1px solid var(--color-border);
+    max-height: 200px;
+  }
+}

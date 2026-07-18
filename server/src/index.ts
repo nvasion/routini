@@ -1,25 +1,15 @@
-import express from 'express'
-import cors from 'cors'
-import { router } from './routes.js'
+// Server entry point — delegates all app setup to app.ts so that
+// tests can import the configured app without starting a real listener.
 
-const app = express()
-const PORT = process.env.PORT || 3001
+import { app } from './app.js'
 
-// Middleware
-app.use(cors())
-app.use(express.json())
+const PORT = process.env.PORT ?? 3001
 
-// API routes
-app.use('/api', router)
-
-// Health check
-app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() })
-})
-
-// Start server
-app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`)
-})
+// Skip listen() in test environments so supertest can bind its own port.
+if (process.env.NODE_ENV !== 'test') {
+  app.listen(PORT, () => {
+    console.log(`Server running on http://localhost:${PORT}`)
+  })
+}
 
 export { app }

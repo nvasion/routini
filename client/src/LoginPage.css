@@ -1,0 +1,131 @@
+/* ── Login page — red / orange / black theme ─────────────────────────────── */
+
+.login-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-bg);
+}
+
+.login-card {
+  background: var(--color-bg-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 4px 32px rgba(255, 100, 0, 0.12);
+  padding: 2.5rem;
+  width: 100%;
+  max-width: 400px;
+}
+
+/* ── Logo / branding ───────────────────────────────────────────── */
+
+.login-logo {
+  margin-bottom: 2rem;
+  text-align: center;
+}
+
+.login-logo h1 {
+  background: linear-gradient(135deg, var(--color-primary), var(--color-secondary));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  font-size: 2.5rem;
+  font-weight: 800;
+  letter-spacing: 3px;
+  margin: 0 0 0.4rem;
+  text-transform: lowercase;
+}
+
+.login-logo p {
+  color: var(--color-text-muted);
+  font-size: 0.8125rem;
+  margin: 0;
+}
+
+/* ── Form ──────────────────────────────────────────────────────── */
+
+.login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.login-error {
+  background: rgba(255, 0, 0, 0.08);
+  border: 1px solid rgba(255, 0, 0, 0.25);
+  border-radius: var(--radius);
+  color: var(--color-primary);
+  font-size: 0.875rem;
+  padding: 0.75rem 1rem;
+}
+
+.login-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.login-field label {
+  color: var(--color-text-muted);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+
+.login-field input {
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  color: var(--color-text);
+  font-size: 1rem;
+  outline: none;
+  padding: 0.75rem 1rem;
+  transition: border-color 0.15s ease;
+  width: 100%;
+}
+
+.login-field input:focus {
+  border-color: var(--color-secondary);
+}
+
+.login-field input::placeholder {
+  color: rgba(153, 153, 153, 0.5);
+}
+
+.login-field input:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/* ── Submit button ─────────────────────────────────────────────── */
+
+.login-button {
+  background: linear-gradient(135deg, #CC0000, #FF6600);
+  border: none;
+  border-radius: var(--radius);
+  color: var(--color-text);
+  cursor: pointer;
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  margin-top: 0.25rem;
+  padding: 0.875rem;
+  transition: opacity 0.15s ease, transform 0.1s ease;
+  width: 100%;
+}
+
+.login-button:hover:not(:disabled) {
+  opacity: 0.88;
+  transform: translateY(-1px);
+}
+
+.login-button:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.login-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}

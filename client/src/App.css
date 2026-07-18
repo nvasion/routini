@@ -1,24 +1,71 @@
-.app {
-  min-height: 100vh;
+.app-layout {
   display: flex;
   flex-direction: column;
+  min-height: 100vh;
 }
 
+/* ── Header ─────────────────────────────────────────────────────── */
+
 .header {
-  background: #1a1a1a;
+  background: #000;
   color: white;
-  padding: 2rem;
+  padding: 1.5rem 2rem;
   text-align: center;
 }
 
 .header h1 {
-  margin: 0 0 0.5rem 0;
+  margin: 0 0 0.25rem 0;
+  font-size: 2rem;
+  font-weight: 800;
+  letter-spacing: 3px;
+  text-transform: lowercase;
+  background: linear-gradient(135deg, #FF0000, #FFA500);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
 }
 
 .header p {
   margin: 0;
-  opacity: 0.8;
+  opacity: 0.5;
+  font-size: 0.875rem;
 }
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+
+.user-info {
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 0.8125rem;
+}
+
+.user-info strong {
+  color: rgba(255, 165, 0, 0.85);
+  font-weight: 600;
+}
+
+.logout-btn {
+  background: transparent;
+  border: 1px solid rgba(255, 165, 0, 0.35);
+  border-radius: 4px;
+  color: #FFA500;
+  cursor: pointer;
+  font-size: 0.8125rem;
+  padding: 0.3rem 0.75rem;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.logout-btn:hover {
+  background: rgba(255, 165, 0, 0.1);
+  border-color: rgba(255, 165, 0, 0.6);
+}
+
+/* ── Main content ───────────────────────────────────────────────── */
 
 .main {
   flex: 1;
@@ -29,8 +76,9 @@
 }
 
 .error {
-  background: #fee;
-  color: #c00;
+  background: rgba(255, 0, 0, 0.08);
+  border: 1px solid rgba(255, 0, 0, 0.25);
+  color: #ff4444;
   padding: 1rem;
   border-radius: 4px;
   margin-bottom: 1rem;
@@ -45,23 +93,37 @@
 .input {
   flex: 1;
   padding: 0.75rem;
-  border: 1px solid #ddd;
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
   border-radius: 4px;
+  color: var(--color-text);
   font-size: 1rem;
+  outline: none;
+  transition: border-color 0.15s ease;
+}
+
+.input:focus {
+  border-color: var(--color-secondary);
+}
+
+.input::placeholder {
+  color: rgba(153, 153, 153, 0.5);
 }
 
 .button {
   padding: 0.75rem 1.5rem;
-  background: #1a1a1a;
+  background: linear-gradient(135deg, #CC0000, #FF6600);
   color: white;
   border: none;
   border-radius: 4px;
   cursor: pointer;
   font-size: 1rem;
+  font-weight: 600;
+  transition: opacity 0.15s ease;
 }
 
 .button:hover {
-  background: #333;
+  opacity: 0.88;
 }
 
 .list {
@@ -75,27 +137,31 @@
   justify-content: space-between;
   align-items: center;
   padding: 1rem;
-  border: 1px solid #eee;
+  background: var(--color-bg-card);
+  border: 1px solid var(--color-border);
   border-radius: 4px;
   margin-bottom: 0.5rem;
+  color: var(--color-text);
 }
 
 .delete-btn {
   padding: 0.5rem 1rem;
-  background: #dc3545;
-  color: white;
-  border: none;
+  background: transparent;
+  border: 1px solid rgba(255, 0, 0, 0.35);
+  color: var(--color-primary);
   border-radius: 4px;
   cursor: pointer;
   font-size: 0.875rem;
+  transition: background 0.15s ease, border-color 0.15s ease;
 }
 
 .delete-btn:hover {
-  background: #c82333;
+  background: rgba(255, 0, 0, 0.08);
+  border-color: var(--color-primary);
 }
 
 .empty {
   text-align: center;
-  color: #666;
+  color: var(--color-text-muted);
   padding: 2rem;
 }
