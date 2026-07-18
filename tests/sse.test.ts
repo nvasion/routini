@@ -341,7 +341,15 @@ describe('GET /api/tasks/events – task:updated events', () => {
           return false
         }
       },
-    )
+const originalTask = taskStore.get(otherTaskId)!
+const otherUserTask = { ...originalTask, ownerId: 'other-user-id-999' }
+taskStore.set(otherTaskId, otherUserTask)
+
+try {
+  // ... test code ...
+} finally {
+  taskStore.set(otherTaskId, originalTask)
+}
 
     await new Promise(r => setTimeout(r, 50))
 
