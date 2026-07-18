@@ -76,7 +76,60 @@ function sseRequest(
 
         res.on('data', (chunk: string) => {
           accumulated += chunk
-          if (predicate(accumulated)) {
+function sseRequest(
+  path: string,
+  predicate: (data: string) => boolean,
+  timeoutMs = 2000,
+): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    let accumulated = ''
+    let settled = false
+
+    const req = http.get(
+      {
+        hostname: '127.0.0.1',
+        port: serverPort,
+        path,
+        headers: authHeader(),
+      },
+      (res) => {
+        res.setEncoding('utf8')
+
+        res.on('data', (chunk: string) => {
+          accumulated += chunk
+          if (!settled && predicate(accumulated)) {
+            settled = true
+            req.destroy()
+            resolve(accumulated)
+          }
+        })
+
+        res.on('end', () => {
+          if (!settled) {
+            reject(new Error(`SSE stream ended before predicate matched. Got: ${accumulated}`))
+          }
+        })
+      },
+    )
+
+    req.setTimeout(timeoutMs, () => {
+      if (!settled) {
+        settled = true
+        req.destroy()
+        reject(new Error(`SSE request timed out after ${timeoutMs} ms`))
+      }
+    })
+
+    req.on('error', (err: NodeJS.ErrnoException) => {
+      if (settled) return
+      if (err.code === 'ECONNRESET' || err.code === 'ECONNREFUSED') {
+        resolve(accumulated)
+      } else {
+        reject(err)
+      }
+    })
+  })
+}
             req.destroy()
             resolve(accumulated)
           }
