@@ -4,7 +4,7 @@ import './LoginPage.css'
 
 function LoginPage() {
   const { login } = useAuth()
-  const [username, setUsername] = useState('')
+  const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
@@ -12,9 +12,10 @@ function LoginPage() {
   const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault()
 
-    // Client-side guard — backend validates too, but this gives instant feedback
-    if (!username.trim() || !password) {
-      setError('Please enter your username and password')
+    // Client-side guard — backend validates too, but this gives instant feedback.
+    // Only trim the email; passwords are sent verbatim.
+    if (!email.trim() || !password) {
+      setError('Please enter your email and password')
       return
     }
 
@@ -24,7 +25,7 @@ function LoginPage() {
     try {
       // login() makes the API call, sets the auth cookie, and updates context state.
       // On failure it throws with the server's error message.
-      await login(username.trim(), password)
+      await login(email.trim(), password)
     } catch (err: unknown) {
       const message =
         err instanceof Error ? err.message : 'Login failed. Please try again.'
@@ -50,14 +51,14 @@ function LoginPage() {
           )}
 
           <div className="login-field">
-            <label htmlFor="username">Username</label>
+            <label htmlFor="email">Email</label>
             <input
-              id="username"
-              type="text"
-              value={username}
-              onChange={e => setUsername(e.target.value)}
-              placeholder="Enter your username"
-              autoComplete="username"
+              id="email"
+              type="email"
+              value={email}
+              onChange={e => setEmail(e.target.value)}
+              placeholder="admin@routini.dev"
+              autoComplete="email"
               disabled={loading}
               autoFocus
             />

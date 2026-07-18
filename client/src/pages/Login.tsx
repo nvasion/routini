@@ -23,10 +23,11 @@ export function Login() {
     e.preventDefault()
     setError(null)
 
+    // Trim only the email (emails cannot have leading/trailing whitespace).
+    // Passwords are sent verbatim — trimming would silently corrupt credentials.
     const trimmedEmail = email.trim()
-    const trimmedPassword = password.trim()
 
-    if (!trimmedEmail || !trimmedPassword) {
+    if (!trimmedEmail || !password) {
       setError('Email and password are required')
       return
     }
@@ -36,7 +37,10 @@ export function Login() {
       const res = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: trimmedEmail, password: trimmedPassword }),
+        // credentials:'include' is required so the browser stores the
+        // HttpOnly session cookie returned by the server.
+        credentials: 'include',
+        body: JSON.stringify({ email: trimmedEmail, password }),
       })
 
       const data = (await res.json()) as {

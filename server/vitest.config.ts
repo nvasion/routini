@@ -11,8 +11,8 @@ export default defineConfig({
   // Write optimizer cache inside the workspace rather than /tmp (which may be small).
   cacheDir: path.resolve(__dirname, '../.vitest-cache'),
   test: {
-    // Include root-level integration tests and any future server unit tests
-    include: ['tests/**/*.test.ts', 'server/src/**/*.test.ts'],
+    // Include root-level integration tests, server-specific tests, and server unit tests
+    include: ['tests/**/*.test.ts', 'server/tests/**/*.test.ts', 'server/src/**/*.test.ts'],
     environment: 'node',
   },
   resolve: {

@@ -1,11 +1,13 @@
 import { createContext, useContext, useState, useEffect, ReactNode } from 'react'
+import type { User } from './types'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-export interface AuthUser {
-  id: number
-  username: string
-}
+// Re-export so consumers can use a single import.
+export type { User }
+
+// AuthUser is the canonical authenticated user shape from the server.
+export type AuthUser = User
 
 interface AuthContextValue {
   user: AuthUser | null
@@ -19,7 +21,7 @@ interface AuthContextValue {
   csrfToken: string | null
   loading: boolean
   /** Makes the POST /api/auth/login call, sets user on success, throws on failure. */
-  login: (username: string, password: string) => Promise<void>
+  login: (email: string, password: string) => Promise<void>
   logout: () => Promise<void>
 }
 
@@ -36,15 +38,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   // On mount: check whether a valid session already exists. The HTTP-only
   // cookie is sent automatically by the browser — we cannot read it from JS.
-  // The /api/auth/me response also returns the CSRF token so we can re-sync
-  // the in-memory token after a page refresh.
+  //
+  // NOTE: GET /api/auth/me returns the safe user object directly (e.g.
+  //   { id, email, createdAt })
+  // whereas POST /api/auth/login returns a wrapper:
+  //   { token, user, csrfToken }
+  // The difference is intentional: /me is a read-only session probe and does
+  // not need to return a new CSRF token, while /login bootstraps the full auth
+  // context. The csrfToken is restored from the login response in pages/Login.tsx
+  // via setCsrfToken() and persisted in sessionStorage.
   useEffect(() => {
     fetch('/api/auth/me', { credentials: 'include' })
       .then(res => (res.ok ? res.json() : null))
-      .then((data: { user: AuthUser; csrfToken: string } | null) => {
-        if (data?.user) {
-          setUser(data.user)
-          setCsrfToken(data.csrfToken ?? null)
+      .then((data: AuthUser | null) => {
+        if (data?.id) {
+          setUser(data)
         }
       })
       .catch((err: unknown) => {
@@ -57,26 +65,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   /**
-   * Calls POST /api/auth/login. On success the server sets an HTTP-only
-   * cookie, returns the user object, and returns a CSRF token. Throws with
-   * the server's error message on failure so the LoginPage can surface it.
+   * Calls POST /api/auth/login with email + password. On success the server
+   * sets an HTTP-only cookie, returns the safe user object, and returns a
+   * CSRF token. Throws with the server's error message on failure.
    */
-  const login = async (username: string, password: string): Promise<void> => {
+  const login = async (email: string, password: string): Promise<void> => {
     const res = await fetch('/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include', // required to receive the HttpOnly cookie
-      body: JSON.stringify({ username, password }),
+      body: JSON.stringify({ email, password }),
     })
 
-    const data = await res.json()
+    const data = (await res.json()) as { user?: AuthUser; csrfToken?: string; error?: string }
 
     if (!res.ok) {
       throw new Error(data.error ?? 'Login failed. Please try again.')
     }
 
-    setUser(data.user as AuthUser)
-    setCsrfToken((data.csrfToken as string) ?? null)
+    if (data.user) setUser(data.user)
+    if (data.csrfToken) setCsrfToken(data.csrfToken)
   }
 
   const logout = async () => {
