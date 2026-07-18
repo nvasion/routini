@@ -11,7 +11,8 @@ export function Login() {
   const [loading, setLoading] = useState(false)
 
   const DEMO_EMAIL = 'admin@routini.dev'
-  const DEMO_PASSWORD = 'changeme'
+const DEMO_EMAIL = import.meta.env.VITE_DEMO_EMAIL ?? ''
+const DEMO_PASSWORD = import.meta.env.VITE_DEMO_PASSWORD ?? ''
 
   const fillDemo = () => {
     setEmail(DEMO_EMAIL)
