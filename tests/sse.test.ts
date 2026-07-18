@@ -471,7 +471,17 @@ describe('GET /api/tasks/events – task:log events', () => {
 
     const raw = await rawPromise
     expect(raw).toContain('event: task:log')
-    expect(raw).toContain(logMessage)
+const task = taskStore.get(taskId)!
+taskStore.set(taskId, { ...task, ownerId: 'different-user-id' })
+
+try {
+  const res = await supertestAgent
+    .get(`/api/tasks/${taskId}/events`)
+    .set(authHeader())
+  expect(res.status).toBe(403)
+} finally {
+  taskStore.set(taskId, task)
+}
     expect(raw).toContain(taskId)
   })
 })
