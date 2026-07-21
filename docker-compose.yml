@@ -17,6 +17,9 @@ services:
     # Only expose to the internal Docker network; nginx handles external traffic
     expose:
       - "3001"
+    volumes:
+      # Persist the SQLite database across container restarts/rebuilds
+      - server_data:/app/data
     environment:
       NODE_ENV: production
       PORT: "${PORT:-3001}"
@@ -24,6 +27,11 @@ services:
       CLIENT_URL: "${CLIENT_URL:-http://localhost}"
       # Required: set a strong random string in your .env file
       COOKIE_SECRET: "${COOKIE_SECRET:?COOKIE_SECRET must be set in the environment or .env file}"
+      # Path to the SQLite database file, must live under the persisted
+      # /app/data directory created in the server image
+      ROUTINI_DB_PATH: "${ROUTINI_DB_PATH:?ROUTINI_DB_PATH must be set in the environment or .env file}"
+      # Required: encryption key for the credential store; set a strong random string in your .env file
+      CREDENTIALS_MASTER_KEY: "${CREDENTIALS_MASTER_KEY:?CREDENTIALS_MASTER_KEY must be set in the environment or .env file}"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3001/health"]
       interval: 30s
@@ -41,3 +49,6 @@ services:
     depends_on:
       server:
         condition: service_healthy
+
+volumes:
+  server_data:
