@@ -405,7 +405,27 @@ describe('persistence semantics', () => {
     expect(Buffer.from(row.iv, 'base64').toString('base64')).toBe(row.iv)
     // IV must be exactly 12 bytes.
     expect(Buffer.from(row.iv, 'base64').length).toBe(12)
-    // The stored ciphertext must NOT contain the plaintext.
-    expect(row.encrypted_value).not.toContain('v')
+  })
+
+  it('stores ciphertext that is not the plaintext (encryption is non-trivial)', () => {
+    const secret = 'plaintext-secret-to-encrypt'
+    saveCredential('u-1', 'k', secret)
+    const db = getDb()
+    const row = db
+      .prepare(
+        'SELECT encrypted_value FROM credentials WHERE user_id = ? AND key = ?',
+      )
+      .get('u-1', 'k') as { encrypted_value: string }
+    // The stored value must never equal the plaintext.
+    expect(row.encrypted_value).not.toBe(secret)
+    // And the plaintext must not appear anywhere in the stored blob.
+    expect(row.encrypted_value).not.toContain(secret)
+  })
+
+  it('decrypts correctly after a fresh DB read (simulates restart of the store layer)', () => {
+    saveCredential('u-1', 'persisted', 'restart-safe-value')
+    // A fresh get reads from the same DB and decrypts with the same derived key.
+    expect(getCredentialSecret('u-1', 'persisted')).toBe('restart-safe-value')
   })
 })
+
