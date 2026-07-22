@@ -40,6 +40,7 @@ import {
   credentialId,
   deleteCredential,
   getCredential,
+  getDb,
   upsertCredential,
 } from '../db/index.js'
 
@@ -304,35 +305,39 @@ export function getCredentialSecret(
  *                are returned; when null only system credentials; when
  *                omitted all credentials across all scopes.
  */
+/** Row shape returned by the list query (no ciphertext/iv). */
+interface CredentialListRow {
+  id: string
+  user_id: string | null
+  key: string
+  created_at: string
+  updated_at: string
+}
+
 export function listCredentials(userId?: string | null): CredentialMetadata[] {
-  // Delegate the row scan to the DB module.  We import lazily to avoid a
-  // circular dependency at module-eval time and to keep this service thin.
-  const { getDb } = require('../db/index.js') as typeof import('../db/index.js')
+  // Delegate the row scan to the DB module.  getDb is imported at the top of
+  // this module — the db module does not import the credentials service, so
+  // there is no circular dependency.  Using a static import (rather than a
+  // lazy require) keeps this working under the project's ESM/vitest setup.
   const db = getDb()
 
-  let rows: Array<{
-    id: string
-    user_id: string | null
-    key: string
-    created_at: string
-    updated_at: string
-  }>
+  let rows: CredentialListRow[]
 
   if (userId === undefined) {
     rows = db
-      .prepare(
+      .prepare<unknown[], CredentialListRow>(
         'SELECT id, user_id, key, created_at, updated_at FROM credentials ORDER BY user_id IS NULL DESC, user_id, key',
       )
       .all()
   } else if (userId === null) {
     rows = db
-      .prepare(
+      .prepare<unknown[], CredentialListRow>(
         'SELECT id, user_id, key, created_at, updated_at FROM credentials WHERE user_id IS NULL ORDER BY key',
       )
       .all()
   } else {
     rows = db
-      .prepare(
+      .prepare<[string], CredentialListRow>(
         'SELECT id, user_id, key, created_at, updated_at FROM credentials WHERE user_id = ? ORDER BY key',
       )
       .all(userId)
