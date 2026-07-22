@@ -2,12 +2,21 @@
  * Email Notification Service
  *
  * Sends task-outcome notifications via SMTP (including SendGrid's SMTP relay).
- * Configuration is loaded exclusively from environment variables — no secrets
- * are accepted through any user-facing API.
+ *
+ * Credential resolution:
+ *   SMTP_* secrets (SMTP_USER, SMTP_PASS) are resolved from the encrypted
+ *   credential store FIRST, falling back to environment variables when nothing
+ *   is stored.  This keeps SMTP secrets out of the process environment in
+ *   deployments that persist them through the credentials API, while
+ *   preserving the original env-var behaviour as a default.  Non-secret SMTP
+ *   configuration (SMTP_HOST, SMTP_PORT, SMTP_SECURE, SMTP_FROM) continues to
+ *   be read from environment variables only, since it is not sensitive.
  *
  * SECURITY:
- *   – SMTP credentials live only in environment variables; never in logs or
- *     error messages exposed to the client.
+ *   – SMTP credentials are never accepted through any user-facing API of this
+ *     module; they come from the credential store or environment only.
+ *   – SMTP credentials are never written to logs or included in error
+ *     messages exposed to the client.
  *   – Email content is HTML-escaped before being placed inside the HTML body
  *     to prevent stored-XSS in email clients that render HTML.
  *   – Recipient addresses are validated before the transport is opened.
@@ -16,6 +25,7 @@
 import nodemailer from 'nodemailer'
 import type { Transporter, SentMessageInfo } from 'nodemailer'
 import type { TaskStatus, TaskType } from '../types.js'
+import { getCredentialSecret as getCredentialSecretFromStore } from './credentials.js'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -85,19 +95,119 @@ function escapeHtml(str: string): string {
   return str.replace(/[&<>"']/g, ch => HTML_ESCAPE[ch] ?? ch)
 }
 
+// ── Credential store integration ───────────────────────────────────────────────
+//
+// SMTP secrets (SMTP_USER, SMTP_PASS) are resolved from the encrypted
+// credential store FIRST, falling back to environment variables when nothing
+// is stored.  This mirrors the pattern established by the SSH and IMAP
+// services: secrets saved through the credentials API take precedence over
+// process environment variables, while the original env-var behaviour is
+// preserved as a default so existing deployments keep working unchanged.
+//
+// The credential store (services/credentials.ts) uses a synchronous
+// better-sqlite3 backend, so resolution here is synchronous too — keeping
+// `createTransporter` synchronous as the original API requires.  A store read
+// failure (e.g. the DB is not yet initialised, or a decryption error) is
+// non-fatal: it is logged server-side only and resolution falls back to
+// environment variables, so a transient store issue never breaks email
+// notifications that could otherwise run with env-based credentials.
+//
+// The resolver is injectable (see `setSmtpCredentialResolver`) so unit tests
+// can verify the store-first → env-var-fallback precedence without a live
+// database, mirroring the injectable-credential-provider pattern used by the
+// SSH and IMAP services.
+
+/**
+ * Resolves a single SMTP secret by name (e.g. "SMTP_USER").
+ *
+ * Implementations MUST check the encrypted credential store first and fall
+ * back to environment variables only when nothing is stored under `name`.
+ * Returning the empty string (not `undefined`) signals "not configured",
+ * matching the original `process.env[name] ?? ''` default.
+ *
+ * Resolving every secret through a single resolver keeps the lookup order
+ * (store-first → env-var fallback) consistent across all SMTP credentials.
+ */
+export type SmtpCredentialResolver = (name: string) => string
+
+/**
+ * Default credential resolver.
+ *
+ * Lookup order:
+ *   1. Encrypted credential store — checked first so that secrets saved
+ *      through the credentials API take precedence over process environment
+ *      variables.  SMTP credentials are system-scoped (global mail-server
+ *      configuration shared by all users), so they are looked up under the
+ *      `null` (system) userId — consistent with the AI API key handling in
+ *      settings.ts.
+ *   2. `process.env[name]` — the original source of SMTP credentials, kept as
+ *      a fallback so existing deployments that configure secrets via env
+ *      vars continue to work unchanged.
+ *
+ * Returns the empty string when neither source has a value.  Empty-string
+ * store values are treated as "not set" so a blank stored secret never
+ * shadows a real env-var value.
+ */
+const defaultSmtpCredentialResolver: SmtpCredentialResolver = (name: string): string => {
+  try {
+    const stored = getCredentialSecretFromStore(null, name)
+    if (stored && stored.trim() !== '') {
+      return stored
+    }
+  } catch (err) {
+    // A store read failure is non-fatal: fall through to the env-var fallback
+    // so a transient DB/decryption issue does not break email notifications
+    // that could otherwise run with env-based credentials.  Log server-side
+    // only; never include credential material in the message.
+    console.warn(
+      `[email] Credential store read failed for "${name}" — falling back to env var:`,
+      err instanceof Error ? err.message : 'unknown error',
+    )
+  }
+  return process.env[name] ?? ''
+}
+
+/**
+ * Active SMTP credential resolver.  Defaults to the store-first → env-var
+ * fallback implementation; unit tests may override it via
+ * `setSmtpCredentialResolver` to control precedence without a live database.
+ */
+let smtpCredentialResolver: SmtpCredentialResolver = defaultSmtpCredentialResolver
+
+/**
+ * Overrides the SMTP credential resolver.  Intended for unit tests that need
+ * to verify the store-first → env-var-fallback precedence without standing
+ * up a real credential store.  Pass `undefined` to restore the default
+ * resolver.
+ *
+ * @internal exported for tests; not part of the stable public API.
+ */
+export function setSmtpCredentialResolver(
+  resolver: SmtpCredentialResolver | undefined,
+): void {
+  smtpCredentialResolver = resolver ?? defaultSmtpCredentialResolver
+}
+
 // ── Transport factory ─────────────────────────────────────────────────────────
 
 /**
- * Builds a nodemailer transporter from environment variables.
+ * Builds a nodemailer transporter.
+ *
+ * Non-secret SMTP configuration (SMTP_HOST, SMTP_PORT, SMTP_SECURE) is read
+ * from environment variables.  Secret SMTP credentials (SMTP_USER, SMTP_PASS)
+ * are resolved from the encrypted credential store first, falling back to
+ * the matching environment variables when nothing is stored — mirroring the
+ * credential store fallback pattern used by the SSH and IMAP services so
+ * secrets saved through the credentials API take precedence over env vars.
  *
  * | Variable    | Description                                | Default             |
  * |-------------|--------------------------------------------|---------------------|
- * | SMTP_HOST   | Mail server hostname (required)            | —                   |
- * | SMTP_PORT   | Port                                       | 587                 |
+ * | SMTP_HOST   | Mail server hostname (required, env-only) | —                   |
+ * | SMTP_PORT   | Port (env-only)                            | 587                 |
  * | SMTP_SECURE | "true" for TLS (port 465); else STARTTLS   | false               |
- * | SMTP_USER   | Auth username / SendGrid "apikey" literal  | —                   |
- * | SMTP_PASS   | Auth password / SendGrid API key           | —                   |
- * | SMTP_FROM   | Envelope From address                      | noreply@routini.dev |
+ * | SMTP_USER   | Auth username / SendGrid "apikey" literal  | — (store or env)    |
+ * | SMTP_PASS   | Auth password / SendGrid API key           | — (store or env)    |
+ * | SMTP_FROM   | Envelope From address (env-only)           | noreply@routini.dev |
  *
  * For SendGrid SMTP relay:
  *   SMTP_HOST=smtp.sendgrid.net, SMTP_PORT=587,
@@ -111,8 +221,11 @@ export function createTransporter(): MailTransporter | null {
 
   const port = parseInt(process.env['SMTP_PORT'] ?? '587', 10)
   const secure = process.env['SMTP_SECURE'] === 'true'
-  const user = process.env['SMTP_USER'] ?? ''
-  const pass = process.env['SMTP_PASS'] ?? ''
+  // SMTP_USER and SMTP_PASS are secrets — resolve them through the SMTP
+  // credential resolver, which checks the encrypted credential store first
+  // and falls back to environment variables when nothing is stored.
+  const user = smtpCredentialResolver('SMTP_USER')
+  const pass = smtpCredentialResolver('SMTP_PASS')
 
   const transporter: Transporter<SentMessageInfo> = nodemailer.createTransport({
     host,

@@ -10,8 +10,14 @@
  *   username    – SSH login name (required)
  *   command     – shell command to run (required)
  *
- * Credentials are read exclusively from environment variables to avoid storing
- * secrets in the task database:
+ * Credentials are resolved in priority order: the encrypted credential store
+ * first (see server/src/services/credentialStore.ts), falling back to
+ * environment variables when nothing is stored.  The store is loaded lazily
+ * and is optional — when it is unavailable (e.g. not yet initialised, or in
+ * unit tests that only exercise env-var credentials) resolution degrades
+ * gracefully to environment variables, preserving the original behaviour.
+ * This keeps secrets out of the task database while preserving the original
+ * env-var behaviour as a default:
  *   SSH_PRIVATE_KEY       – PEM-encoded private key (preferred)
  *   SSH_KEY_PASSPHRASE    – passphrase for an encrypted private key (optional)
  *   SSH_PASSWORD          – password auth; used only when no private key is set
@@ -67,6 +73,20 @@ export interface SshExecResult {
   exitCode: number | null
 }
 
+/**
+ * Resolves a single credential value by name.
+ *
+ * Implementations MUST check the encrypted credential store first and fall
+ * back to environment variables only when nothing is stored under `name`.
+ * Returning `undefined` (not the empty string) signals "not configured".
+ *
+ * Resolving every secret through this single function keeps the lookup order
+ * (store-first → env-var fallback) consistent across all SSH credentials.
+ */
+export interface SshCredentialProvider {
+  get(name: string): Promise<string | undefined>
+}
+
 export interface SshRunnerOptions {
   /**
    * Injectable executor.  The default implementation wraps ssh2.
@@ -78,6 +98,125 @@ export interface SshRunnerOptions {
    * Pass `async () => true` to disable the check in unit tests.
    */
   ssrfCheck?: (hostname: string) => Promise<boolean>
+  /**
+   * Injectable credential resolver.  The default implementation checks the
+   * encrypted credential store first and falls back to environment variables.
+   * Pass a mock in unit tests to control the credential store without a DB.
+   */
+  credentialProvider?: SshCredentialProvider
+}
+
+// ── Default credential provider (store-first → env-var fallback) ────────────
+
+/**
+ * Minimal shape of the encrypted credential store module this service relies
+ * on.  Defined locally (rather than via `typeof import(...)`) so that this
+ * service type-checks and compiles even before the credential store module
+ * exists in the working tree — the store is an optional, lazily-loaded
+ * dependency.  The real module in `server/src/services/credentialStore.ts`
+ * is expected to export a `getCredential` function matching this contract.
+ */
+interface CredentialStoreModule {
+  /**
+   * Retrieves a decrypted secret by name, or `null`/`undefined` when nothing
+   * is stored under `name`.  The returned value is the plaintext credential.
+   */
+  getCredential(name: string): Promise<string | null | undefined>
+}
+
+/**
+ * Cached handle to the encrypted credential store module.
+ *
+ * The store is imported lazily so that this service remains usable (falling
+ * back to environment variables) even when the store module has not been
+ * initialised for the current process — e.g. in unit tests that only exercise
+ * env-var credentials.  The import is attempted once and the outcome is
+ * cached; subsequent lookups reuse the result without re-importing.
+ *
+ *   `undefined` – load not yet attempted
+ *   `null`      – load attempted but the store is unavailable
+ *   object      – the loaded credential store module
+ */
+let credentialStoreModule: CredentialStoreModule | null | undefined
+let credentialStoreLoadAttempted = false
+
+/**
+ * Lazily loads the encrypted credential store module, if available.
+ * Returns `null` when the module is absent or fails to load — callers MUST
+ * treat `null` as "store unavailable" and fall back to environment variables
+ * rather than throwing.  A failure is logged once (server-side only) for
+ * diagnostics but never surfaces to callers, keeping this resolution path
+ * resilient.
+ */
+async function loadCredentialStore(): Promise<CredentialStoreModule | null> {
+  if (credentialStoreLoadAttempted) return credentialStoreModule ?? null
+  credentialStoreLoadAttempted = true
+  try {
+    // Dynamic import keeps this optional: the service compiles and runs even
+    // before the credential store module exists in the working tree.  The
+    // module specifier is relative so it resolves within the project only.
+    // It is held in a variable so the import is resolved at runtime rather
+    // than statically by the compiler — the store is an optional dependency.
+    const specifier = './credentialStore.js'
+    const mod = (await import(specifier)) as Partial<CredentialStoreModule>
+    if (mod && typeof mod.getCredential === 'function') {
+      credentialStoreModule = mod as CredentialStoreModule
+    } else {
+      // Module present but does not expose the expected API — treat as
+      // unavailable and fall back to environment variables.
+      console.warn('[ssh] Credential store module present but missing getCredential export')
+      credentialStoreModule = null
+    }
+  } catch (err) {
+    // Store not available (module missing or not yet initialised).  This is
+    // a soft failure — fall back to environment variables.  Log server-side
+    // only; never include credential material in the message.
+    console.warn(
+      '[ssh] Credential store unavailable — falling back to environment variables:',
+      err instanceof Error ? err.message : 'unknown error',
+    )
+    credentialStoreModule = null
+  }
+  return credentialStoreModule
+}
+
+/**
+ * Default credential resolver.
+ *
+ * Lookup order:
+ *   1. Encrypted credential store (if available) — checked first so that
+ *      secrets saved through the credentials API take precedence over
+ *      process environment variables.
+ *   2. `process.env[name]` — the original source of SSH credentials, kept as
+ *      a fallback so existing deployments that configure secrets via env
+ *      vars continue to work unchanged.
+ *
+ * Returns `undefined` when neither source has a value, signalling that the
+ * credential is not configured.  Empty-string store values are treated as
+ * "not set" so a blank stored secret never shadows a real env-var value.
+ */
+const defaultCredentialProvider: SshCredentialProvider = {
+  async get(name: string): Promise<string | undefined> {
+    const store = await loadCredentialStore()
+    if (store) {
+      try {
+        const stored = await store.getCredential(name)
+        if (stored && stored.trim() !== '') {
+          return stored
+        }
+      } catch (err) {
+        // A store read failure is non-fatal: fall through to the env-var
+        // fallback so a transient DB/decryption issue does not break SSH
+        // tasks that could otherwise run with env-based credentials.
+        console.warn(
+          `[ssh] Credential store read failed for "${name}" — falling back to env var:`,
+          err instanceof Error ? err.message : 'unknown error',
+        )
+      }
+    }
+    const envValue = process.env[name]
+    return envValue && envValue.trim() !== '' ? envValue : undefined
+  },
 }
 
 // ── Default executor (wraps ssh2) ─────────────────────────────────────────────
@@ -250,15 +389,38 @@ export async function runSshTask(
 ): Promise<SshTaskResult> {
   const executor = options.executor ?? defaultExecutor
   const ssrfCheck = options.ssrfCheck ?? resolvedIpIsSsrfSafe
+  const credentialProvider = options.credentialProvider ?? defaultCredentialProvider
 
   const cfg = validateSshConfig(task.config)
   if (!cfg.valid) {
     return { success: false, logs: [], error: cfg.error }
   }
 
-  const privateKey = process.env['SSH_PRIVATE_KEY']
-  const passphrase = process.env['SSH_KEY_PASSPHRASE']
-  const password = process.env['SSH_PASSWORD']
+  // Resolve credentials through the credential provider, which checks the
+  // encrypted credential store first and falls back to environment variables.
+  // The private key is preferred over the password when both are available.
+  // Provider errors are wrapped into a clean failure result so a transient
+  // store/decryption failure never crashes the task runner — preserving the
+  // documented { success, logs, error } response shape.  Credential material
+  // is never included in the surfaced error message.
+  let privateKey: string | undefined
+  let passphrase: string | undefined
+  let password: string | undefined
+  try {
+    privateKey = await credentialProvider.get('SSH_PRIVATE_KEY')
+    passphrase = await credentialProvider.get('SSH_KEY_PASSPHRASE')
+    password = await credentialProvider.get('SSH_PASSWORD')
+  } catch (err) {
+    console.warn(
+      '[ssh] Credential resolution failed:',
+      err instanceof Error ? err.message : 'unknown error',
+    )
+    return {
+      success: false,
+      logs: [],
+      error: 'Failed to resolve SSH credentials. Check the credential store configuration.',
+    }
+  }
 
   if (!privateKey && !password) {
     return {

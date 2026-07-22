@@ -6,6 +6,7 @@ import { authRouter, requireAuth } from './routes/auth.js'
 import { tasksRouter } from './routes/tasks.js'
 import { settingsRouter } from './routes/settings.js'
 import { notificationsRouter } from './routes/notifications.js'
+import { credentialsRouter } from './routes/credentials.js'
 
 export const app = express()
 
@@ -51,6 +52,11 @@ app.use('/api/auth', authRouter)
 app.use('/api/tasks', requireAuth, tasksRouter)
 app.use('/api/settings', requireAuth, settingsRouter)
 app.use('/api/notifications', requireAuth, notificationsRouter)
+// Protected: credential CRUD.  Authentication (and CSRF for state-changing
+// methods) is enforced inside the credentials router itself, so it is mounted
+// without a mount-level requireAuth to keep CSRF handling colocated with the
+// route definitions.
+app.use('/api/credentials', credentialsRouter)
 
 // ── Health check (public) ─────────────────────────────────────────
 

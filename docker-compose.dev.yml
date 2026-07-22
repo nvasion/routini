@@ -31,6 +31,8 @@ services:
       PORT: "3001"
       CLIENT_URL: "${CLIENT_URL:-http://localhost:5173}"
       COOKIE_SECRET: "${COOKIE_SECRET:-dev-secret-change-in-production}"
+      ROUTINI_DB_PATH: "${ROUTINI_DB_PATH:-/app/data/routini.db}"
+      CREDENTIALS_MASTER_KEY: "${CREDENTIALS_MASTER_KEY:-dev-credentials-master-key-change-in-production}"
 
   client:
     build:

@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",
+    "better-sqlite3": "^11.8.1",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "dockerode": "^5.0.1",
@@ -24,6 +25,7 @@
   },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",
+    "@types/better-sqlite3": "^7.6.13",
     "@types/cookie-parser": "^1.4.10",
     "@types/cors": "^2.8.17",
     "@types/dockerode": "^4.0.1",

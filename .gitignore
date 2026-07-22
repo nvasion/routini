@@ -28,6 +28,7 @@ build/
 # Logs
 *.log
 .factory/worktrees/
+.factory/s3*
 
 # Test caches
 .vitest-cache/
