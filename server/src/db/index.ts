@@ -105,6 +105,15 @@ CREATE TABLE IF NOT EXISTS revoked_jwts (
   expires_at TEXT NOT NULL
 );
 
+-- Revoked JWT identifiers written by the auth route's SQLite repository
+-- (server/src/routes/auth.ts).  It records the revocation time (revoked_at)
+-- rather than the token expiry, and is the table the live logout flow reads
+-- and writes via createDbRepository().
+CREATE TABLE IF NOT EXISTS revoked_tokens (
+  jti        TEXT PRIMARY KEY,
+  revoked_at TEXT NOT NULL
+);
+
 -- Encrypted credential store.  Secrets (SSH keys, SMTP/IMAP passwords, AI
 -- API keys, …) are encrypted at rest with AES-256-GCM by the credentials
 -- service; only the ciphertext and nonce are persisted here.
@@ -136,7 +145,7 @@ interface Migration {
 const MIGRATIONS: Migration[] = [
   {
     version: 1,
-    description: 'Initial schema: users, revoked_jwts, credentials',
+    description: 'Initial schema: users, revoked_jwts, revoked_tokens, credentials',
     sql: SCHEMA_V1,
   },
 ]

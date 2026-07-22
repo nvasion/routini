@@ -27,6 +27,10 @@ const originalMasterKey = process.env['CREDENTIALS_MASTER_KEY']
 const originalNodeEnv = process.env['NODE_ENV']
 
 beforeEach(() => {
+  // The master-key-resolution tests below mutate NODE_ENV (production /
+  // development) and never restore it; force a clean test environment first so
+  // resetDb() — which is test-only — always succeeds.
+  process.env['NODE_ENV'] = 'test'
   // Fresh in-memory DB for each test.
   resetDb()
 })
@@ -320,49 +324,48 @@ describe('master key resolution', () => {
     expect(decryptSecret(ciphertext, iv)).toBe('test')
   })
 
-  it('throws for an invalid master key format (wrong length hex)', () => {
+  // The master key is resolved once at module load, so these tests re-import
+  // the module fresh (via vi.resetModules() + a dynamic import) after changing
+  // the environment.  A static `require` cannot be used here: the project is
+  // ESM and the source is TypeScript, so only Vite's `import()` resolves it.
+  const importFresh = () =>
+    import('../server/src/services/credentials.js') as Promise<
+      typeof import('../server/src/services/credentials.js')
+    >
+
+  it('throws for an invalid master key format (wrong length hex)', async () => {
     process.env['CREDENTIALS_MASTER_KEY'] = 'a'.repeat(32) // 16 bytes, too short
-    expect(() => {
-      vi.resetModules()
-      require('../server/src/services/credentials.js')
-    }).toThrow(/32 bytes/)
+    vi.resetModules()
+    await expect(importFresh()).rejects.toThrow(/32 bytes/)
   })
 
-  it('throws for an invalid master key format (junk)', () => {
+  it('throws for an invalid master key format (junk)', async () => {
     process.env['CREDENTIALS_MASTER_KEY'] = 'not-valid-key-material!'
-    expect(() => {
-      vi.resetModules()
-      require('../server/src/services/credentials.js')
-    }).toThrow(/32 bytes/)
+    vi.resetModules()
+    await expect(importFresh()).rejects.toThrow(/32 bytes/)
   })
 
-  it('throws when missing in production (fail-closed)', () => {
+  it('throws when missing in production (fail-closed)', async () => {
     process.env['NODE_ENV'] = 'production'
     delete process.env['CREDENTIALS_MASTER_KEY']
-    expect(() => {
-      vi.resetModules()
-      require('../server/src/services/credentials.js')
-    }).toThrow(/must be set in production/)
+    vi.resetModules()
+    await expect(importFresh()).rejects.toThrow(/must be set in production/)
   })
 
-  it('throws when empty in production (fail-closed)', () => {
+  it('throws when empty in production (fail-closed)', async () => {
     process.env['NODE_ENV'] = 'production'
     process.env['CREDENTIALS_MASTER_KEY'] = '   '
-    expect(() => {
-      vi.resetModules()
-      require('../server/src/services/credentials.js')
-    }).toThrow(/must be set in production/)
+    vi.resetModules()
+    await expect(importFresh()).rejects.toThrow(/must be set in production/)
   })
 
-  it('warns and uses an ephemeral key when unset in development', () => {
+  it('warns and uses an ephemeral key when unset in development', async () => {
     delete process.env['CREDENTIALS_MASTER_KEY']
     process.env['NODE_ENV'] = 'development'
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
     vi.resetModules()
     // Importing fresh triggers the ephemeral-key branch + warning.
-    const mod = require('../server/src/services/credentials.js') as typeof import(
-      '../server/src/services/credentials.js'
-    )
+    const mod = await importFresh()
     expect(warnSpy).toHaveBeenCalledWith(
       expect.stringContaining('ephemeral key'),
     )
@@ -372,16 +375,14 @@ describe('master key resolution', () => {
     warnSpy.mockRestore()
   })
 
-  it('uses different ciphertext for the same plaintext across master-key changes', () => {
+  it('uses different ciphertext for the same plaintext across master-key changes', async () => {
     // Re-deriving under a different key means the same plaintext produces a
     // different ciphertext blob (different derived key + fresh IV).
     process.env['CREDENTIALS_MASTER_KEY'] = 'a'.repeat(64)
     const a = encryptSecret('same')
     process.env['CREDENTIALS_MASTER_KEY'] = 'b'.repeat(64)
     vi.resetModules()
-    const mod = require('../server/src/services/credentials.js') as typeof import(
-      '../server/src/services/credentials.js'
-    )
+    const mod = await importFresh()
     const b = mod.encryptSecret('same')
     expect(a.ciphertext).not.toBe(b.ciphertext)
   })
