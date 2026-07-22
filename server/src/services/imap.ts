@@ -14,18 +14,28 @@
  *                     "FLAGGED" | "UNFLAGGED"; default "UNSEEN"
  *   tls             – "true" (default) or "false" for plain IMAP
  *
- * Credentials are read exclusively from environment variables:
- *   IMAP_PASS  – IMAP account password (required)
+ * Credential resolution:
+ *   The IMAP password is resolved from the encrypted credential store FIRST
+ *   (stored under the system scope with key "IMAP_PASS"), falling back to the
+ *   IMAP_PASS environment variable when nothing is stored.  This mirrors the
+ *   store-first → env-var-fallback pattern established by the SSH and SMTP
+ *   services so that secrets saved through the credentials API take
+ *   precedence over process environment variables, while the original
+ *   env-var behaviour is preserved as a default so existing deployments keep
+ *   working unchanged.
  *
  * SECURITY:
  *   – Host is validated with isSsrfSafeHostname to block private/loopback IPs.
  *   – The password is never written to logs or error messages.
  *   – The imapflow internal logger is disabled to prevent credential leakage.
+ *   – Credential values from the store are never logged; only the key NAME is
+ *     safe to surface in (non-fatal) store-read-failure warnings.
  */
 
 import { ImapFlow } from 'imapflow'
 import type { DailyTask } from '../types.js'
 import { isSsrfSafeHostname } from '../utils/network.js'
+import { getCredentialSecret as getCredentialSecretFromStore } from './credentials.js'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -71,12 +81,117 @@ export interface ImapCheckResult {
   matchingIds: number[]
 }
 
+/**
+ * Resolves the IMAP password.
+ *
+ * Implementations MUST check the encrypted credential store first and fall
+ * back to the IMAP_PASS environment variable only when nothing is stored.
+ * Returning `undefined` (not the empty string) signals "not configured",
+ * matching the original `process.env['IMAP_PASS']` lookup behaviour.
+ *
+ * Resolving the single secret through a dedicated resolver keeps the lookup
+ * order (store-first → env-var fallback) consistent with the SSH and SMTP
+ * services and makes the precedence unit-testable without a live database.
+ */
+export type ImapCredentialResolver = () => string | undefined
+
 export interface ImapRunnerOptions {
   /**
    * Injectable executor.  The default implementation uses imapflow.
    * Pass a mock in unit tests to avoid requiring a real IMAP server.
    */
   executor?: ImapExecutor
+  /**
+   * Injectable credential resolver for the IMAP password.  The default
+   * implementation checks the encrypted credential store first (system scope,
+   * key "IMAP_PASS") and falls back to the IMAP_PASS environment variable when
+   * nothing is stored.  Pass a mock in unit tests to control the credential
+   * source without standing up a real credential store.
+   */
+  credentialResolver?: ImapCredentialResolver
+}
+
+// ── Credential store integration ──────────────────────────────────────────────
+//
+// The IMAP password is resolved from the encrypted credential store FIRST,
+// falling back to the IMAP_PASS environment variable when nothing is stored.
+// This mirrors the pattern established by the SSH and SMTP services: secrets
+// saved through the credentials API take precedence over process environment
+// variables, while the original env-var behaviour is preserved as a default
+// so existing deployments keep working unchanged.
+//
+// The credential store (services/credentials.ts) uses a synchronous
+// better-sqlite3 backend, so resolution here is synchronous too.  A store read
+// failure (e.g. the DB is not yet initialised, or a decryption error) is
+// non-fatal: it is logged server-side only (the key NAME, never the value)
+// and resolution falls back to the environment variable, so a transient
+// store issue never breaks IMAP tasks that could otherwise run with
+// env-based credentials.
+//
+// The resolver is injectable (see `setImapCredentialResolver`) so unit tests
+// can verify the store-first → env-var-fallback precedence without a live
+// database, mirroring the injectable-resolver pattern used by the SMTP
+// service.
+
+/** Credential key under which the IMAP password is stored (system scope). */
+const IMAP_PASS_KEY = 'IMAP_PASS'
+
+/**
+ * Default credential resolver.
+ *
+ * Lookup order:
+ *   1. Encrypted credential store — checked first so that a password saved
+ *      through the credentials API takes precedence over the process
+ *      environment variable.  The IMAP password is system-scoped (shared
+ *      mail-server configuration), so it is looked up under the `null`
+ *      (system) userId — consistent with the SMTP credential handling in
+ *      email.ts.
+ *   2. `process.env['IMAP_PASS']` — the original source of the IMAP password,
+ *      kept as a fallback so existing deployments that configure the secret
+ *      via an env var continue to work unchanged.
+ *
+ * Returns `undefined` when neither source has a value.  Empty-string store
+ * values are treated as "not set" so a blank stored secret never shadows a
+ * real env-var value.
+ */
+const defaultImapCredentialResolver: ImapCredentialResolver = (): string | undefined => {
+  try {
+    const stored = getCredentialSecretFromStore(null, IMAP_PASS_KEY)
+    if (stored && stored.trim() !== '') {
+      return stored
+    }
+  } catch (err) {
+    // A store read failure is non-fatal: fall through to the env-var fallback
+    // so a transient DB/decryption issue does not break IMAP tasks that could
+    // otherwise run with env-based credentials.  Log server-side only; never
+    // include credential material in the message.
+    console.warn(
+      `[imap] Credential store read failed for "${IMAP_PASS_KEY}" — falling back to env var:`,
+      err instanceof Error ? err.message : 'unknown error',
+    )
+  }
+  const envValue = process.env['IMAP_PASS']
+  return envValue && envValue.trim() !== '' ? envValue : undefined
+}
+
+/**
+ * Active IMAP credential resolver.  Defaults to the store-first → env-var
+ * fallback implementation; unit tests may override it via
+ * `setImapCredentialResolver` to control precedence without a live database.
+ */
+let imapCredentialResolver: ImapCredentialResolver = defaultImapCredentialResolver
+
+/**
+ * Overrides the IMAP credential resolver.  Intended for unit tests that need
+ * to verify the store-first → env-var-fallback precedence without standing up
+ * a real credential store.  Pass `undefined` to restore the default resolver.
+ *
+ * @internal exported for tests; not part of the stable public API.
+ */
+export function setImapCredentialResolver(
+  resolver: ImapCredentialResolver | undefined,
+): void {
+  imapCredentialResolver = resolver ?? defaultImapCredentialResolver
 }
 
 // ── Search criteria mapping ───────────────────────────────────────────────────
@@ -214,7 +329,32 @@ export async function runImapTask(
     return { success: false, logs: [], error: cfg.error }
   }
 
-  const password = process.env['IMAP_PASS']
+  // Resolve the IMAP password through the credential resolver, which checks
+  // the encrypted credential store first and falls back to the IMAP_PASS
+  // environment variable when nothing is stored.  An injectable resolver
+  // (options.credentialResolver) takes precedence so unit tests can control
+  // the credential source without standing up a real store; otherwise the
+  // module-level resolver (defaulting to store-first → env-var fallback) is
+  // used.  Provider errors are wrapped into a clean failure result so a
+  // transient store/decryption failure never crashes the task runner —
+  // preserving the documented { success, logs, error } response shape.
+  // Credential material is never included in the surfaced error message.
+  const resolvePassword = options.credentialResolver ?? imapCredentialResolver
+  let password: string | undefined
+  try {
+    password = resolvePassword()
+  } catch (err) {
+    console.warn(
+      '[imap] Credential resolution failed:',
+      err instanceof Error ? err.message : 'unknown error',
+    )
+    return {
+      success: false,
+      logs: [],
+      error: 'Failed to resolve IMAP credentials. Check the credential store configuration.',
+    }
+  }
+
   if (!password) {
     return {
       success: false,
