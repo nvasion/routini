@@ -11,7 +11,14 @@ const request = supertest(app)
 let authToken: string
 
 beforeAll(async () => {
+beforeAll(async () => {
   const res = await request
+    .post('/api/auth/login')
+    .send({ email: 'admin@routini.dev', password: 'changeme' })
+  expect(res.status).toBe(200)
+  authToken = res.body.token as string
+  expect(authToken).toBeDefined()
+})
     .post('/api/auth/login')
     .send({ email: 'admin@routini.dev', password: 'changeme' })
   authToken = res.body.token as string

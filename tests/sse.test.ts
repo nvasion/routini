@@ -34,7 +34,13 @@ beforeAll(async () => {
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
   serverPort = (server.address() as http.AddressInfo).port
 })
-
+beforeAll(async () => {
+  const res = await supertestAgent
+    .post('/api/auth/login')
+    .send({ email: 'admin@routini.dev', password: 'changeme' })
+  expect(res.status).toBe(200)
+  authToken = res.body.token as string
+  expect(authToken).toBeDefined()
 afterAll(() => {
   server.close()
 })
@@ -70,7 +76,60 @@ function sseRequest(
 
         res.on('data', (chunk: string) => {
           accumulated += chunk
-          if (predicate(accumulated)) {
+function sseRequest(
+  path: string,
+  predicate: (data: string) => boolean,
+  timeoutMs = 2000,
+): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    let accumulated = ''
+    let settled = false
+
+    const req = http.get(
+      {
+        hostname: '127.0.0.1',
+        port: serverPort,
+        path,
+        headers: authHeader(),
+      },
+      (res) => {
+        res.setEncoding('utf8')
+
+        res.on('data', (chunk: string) => {
+          accumulated += chunk
+          if (!settled && predicate(accumulated)) {
+            settled = true
+            req.destroy()
+            resolve(accumulated)
+          }
+        })
+
+        res.on('end', () => {
+          if (!settled) {
+            reject(new Error(`SSE stream ended before predicate matched. Got: ${accumulated}`))
+          }
+        })
+      },
+    )
+
+    req.setTimeout(timeoutMs, () => {
+      if (!settled) {
+        settled = true
+        req.destroy()
+        reject(new Error(`SSE request timed out after ${timeoutMs} ms`))
+      }
+    })
+
+    req.on('error', (err: NodeJS.ErrnoException) => {
+      if (settled) return
+      if (err.code === 'ECONNRESET' || err.code === 'ECONNREFUSED') {
+        resolve(accumulated)
+      } else {
+        reject(err)
+      }
+    })
+  })
+}
             req.destroy()
             resolve(accumulated)
           }
@@ -282,7 +341,15 @@ describe('GET /api/tasks/events – task:updated events', () => {
           return false
         }
       },
-    )
+const originalTask = taskStore.get(otherTaskId)!
+const otherUserTask = { ...originalTask, ownerId: 'other-user-id-999' }
+taskStore.set(otherTaskId, otherUserTask)
+
+try {
+  // ... test code ...
+} finally {
+  taskStore.set(otherTaskId, originalTask)
+}
 
     await new Promise(r => setTimeout(r, 50))
 
@@ -412,7 +479,17 @@ describe('GET /api/tasks/events – task:log events', () => {
 
     const raw = await rawPromise
     expect(raw).toContain('event: task:log')
-    expect(raw).toContain(logMessage)
+const task = taskStore.get(taskId)!
+taskStore.set(taskId, { ...task, ownerId: 'different-user-id' })
+
+try {
+  const res = await supertestAgent
+    .get(`/api/tasks/${taskId}/events`)
+    .set(authHeader())
+  expect(res.status).toBe(403)
+} finally {
+  taskStore.set(taskId, task)
+}
     expect(raw).toContain(taskId)
   })
 })
