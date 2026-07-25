@@ -4,6 +4,26 @@ import { app } from '../server/src/app'
 
 const request = supertest(app)
 
+// ── Response shape helpers ────────────────────────────────────────
+// Minimal, test-local interfaces for the fields these tests actually read.
+// Keeping these in one place (rather than inline `{ name: string }` casts
+// scattered per-assertion) means a real API shape change only needs to be
+// reconciled here, not at every call site.
+
+interface TaskResponse {
+  id: string
+  name: string
+  type: 'daily' | 'developmental' | 'routine'
+  status: string
+  schedule?: string
+  actionType?: string
+  config?: Record<string, unknown>
+  repoUrl?: string
+  branch?: string
+  agentId?: string
+  steps?: unknown[]
+}
+
 // ── Auth helper ───────────────────────────────────────────────────
 // All task endpoints require a valid Bearer token. Obtain one from the
 // seed account before the test suite runs.
@@ -35,15 +55,31 @@ describe('GET /api/tasks', () => {
   it('returns only daily tasks when filtered by type=daily', async () => {
     const res = await request.get('/api/tasks?type=daily').set(auth())
     expect(res.status).toBe(200)
-    res.body.tasks.forEach((t: { type: string }) => {
+    ;(res.body.tasks as TaskResponse[]).forEach(t => {
       expect(t.type).toBe('daily')
+    })
+  })
+
+  it('returns only developmental tasks when filtered by type=developmental', async () => {
+    const res = await request.get('/api/tasks?type=developmental').set(auth())
+    expect(res.status).toBe(200)
+    ;(res.body.tasks as TaskResponse[]).forEach(t => {
+      expect(t.type).toBe('developmental')
+    })
+  })
+
+  it('returns only routine tasks when filtered by type=routine', async () => {
+    const res = await request.get('/api/tasks?type=routine').set(auth())
+    expect(res.status).toBe(200)
+    ;(res.body.tasks as TaskResponse[]).forEach(t => {
+      expect(t.type).toBe('routine')
     })
   })
 
   it('returns only idle tasks when filtered by status=idle', async () => {
     const res = await request.get('/api/tasks?status=idle').set(auth())
     expect(res.status).toBe(200)
-    res.body.tasks.forEach((t: { status: string }) => {
+    ;(res.body.tasks as TaskResponse[]).forEach(t => {
       expect(t.status).toBe('idle')
     })
   })
@@ -346,12 +382,12 @@ describe('GET /api/tasks – combined type and status filters', () => {
     const res = await request.get('/api/tasks?type=routine&status=idle').set(auth())
     expect(res.status).toBe(200)
     // All returned tasks must match BOTH criteria
-    for (const t of res.body.tasks as Array<{ type: string; status: string }>) {
+    for (const t of res.body.tasks as TaskResponse[]) {
       expect(t.type).toBe('routine')
       expect(t.status).toBe('idle')
     }
     // The developmental task must not appear
-    const names = (res.body.tasks as Array<{ name: string }>).map(t => t.name)
+    const names = (res.body.tasks as TaskResponse[]).map(t => t.name)
     expect(names).not.toContain('Combined Filter Dev')
   })
 
@@ -361,6 +397,110 @@ describe('GET /api/tasks – combined type and status filters', () => {
     expect(res.status).toBe(200)
     expect(res.body.tasks).toHaveLength(0)
     expect(res.body.count).toBe(0)
+  })
+})
+
+// ── GET /api/tasks – bucketing by type ────────────────────────────
+//
+// The dashboard renders three side-by-side buckets (daily / developmental /
+// routine), each populated via GET /api/tasks?type=<bucket>. These tests
+// confirm a freshly created task of each type lands in its own bucket only,
+// never leaking into the others.
+
+describe('GET /api/tasks – bucketing by type', () => {
+  it('places each newly created task into exactly one type bucket', async () => {
+    const unique = Date.now().toString(36)
+    const [dailyRes, devRes, routineRes] = await Promise.all([
+      request.post('/api/tasks').set(auth()).send({
+        name: `Bucket Daily ${unique}`,
+        type: 'daily',
+        schedule: '0 9 * * *',
+        actionType: 'http',
+      }),
+      request.post('/api/tasks').set(auth()).send({
+        name: `Bucket Dev ${unique}`,
+        type: 'developmental',
+        repoUrl: 'https://github.com/example/repo',
+        agentId: 'claude',
+      }),
+      request.post('/api/tasks').set(auth()).send({ name: `Bucket Routine ${unique}`, type: 'routine' }),
+    ])
+
+    const [dailyBucket, devBucket, routineBucket] = await Promise.all([
+      request.get('/api/tasks?type=daily').set(auth()),
+      request.get('/api/tasks?type=developmental').set(auth()),
+      request.get('/api/tasks?type=routine').set(auth()),
+    ])
+
+    const dailyNames = (dailyBucket.body.tasks as TaskResponse[]).map(t => t.name)
+    const devNames = (devBucket.body.tasks as TaskResponse[]).map(t => t.name)
+    const routineNames = (routineBucket.body.tasks as TaskResponse[]).map(t => t.name)
+
+    expect(dailyNames).toContain(dailyRes.body.name)
+    expect(dailyNames).not.toContain(devRes.body.name)
+    expect(dailyNames).not.toContain(routineRes.body.name)
+
+    expect(devNames).toContain(devRes.body.name)
+    expect(devNames).not.toContain(dailyRes.body.name)
+    expect(devNames).not.toContain(routineRes.body.name)
+
+    expect(routineNames).toContain(routineRes.body.name)
+    expect(routineNames).not.toContain(dailyRes.body.name)
+    expect(routineNames).not.toContain(devRes.body.name)
+  })
+})
+
+// ── GET /api/tasks/:id – type-specific fields ─────────────────────
+//
+// The config panel switches on task.type to render type-specific fields.
+// These tests confirm GET /:id returns the full field set each panel needs.
+
+describe('GET /api/tasks/:id – type-specific fields', () => {
+  it('returns schedule, actionType, and config for a daily task', async () => {
+    const created = await request.post('/api/tasks').set(auth()).send({
+      name: 'Daily Config Fields',
+      type: 'daily',
+      schedule: '30 6 * * *',
+      actionType: 'http',
+      config: { url: 'https://example.com/health' },
+    })
+
+    const res = await request.get(`/api/tasks/${created.body.id as string}`).set(auth())
+    expect(res.status).toBe(200)
+    expect(res.body.type).toBe('daily')
+    expect(res.body.schedule).toBe('30 6 * * *')
+    expect(res.body.actionType).toBe('http')
+    expect(res.body.config).toEqual({ url: 'https://example.com/health' })
+  })
+
+  it('returns repoUrl, branch, and agentId for a developmental task', async () => {
+    const created = await request.post('/api/tasks').set(auth()).send({
+      name: 'Dev Config Fields',
+      type: 'developmental',
+      repoUrl: 'https://github.com/example/repo',
+      branch: 'feature/config-fields',
+      agentId: 'claude',
+    })
+
+    const res = await request.get(`/api/tasks/${created.body.id as string}`).set(auth())
+    expect(res.status).toBe(200)
+    expect(res.body.type).toBe('developmental')
+    expect(res.body.repoUrl).toBe('https://github.com/example/repo')
+    expect(res.body.branch).toBe('feature/config-fields')
+    expect(res.body.agentId).toBe('claude')
+  })
+
+  it('returns a steps array for a routine task', async () => {
+    const created = await request.post('/api/tasks').set(auth()).send({
+      name: 'Routine Config Fields',
+      type: 'routine',
+    })
+
+    const res = await request.get(`/api/tasks/${created.body.id as string}`).set(auth())
+    expect(res.status).toBe(200)
+    expect(res.body.type).toBe('routine')
+    expect(Array.isArray(res.body.steps)).toBe(true)
+    expect(res.body.steps).toHaveLength(0)
   })
 })
 

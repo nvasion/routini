@@ -107,7 +107,7 @@
   cursor: not-allowed;
 }
 
-/* ── Edit-steps button ──────────────────────────────────────── */
+/* ── Edit-steps button (legacy, caller-managed editor) ─────────── */
 .edit-steps-btn:hover:not(:disabled) {
   border-color: var(--color-secondary);
   color: var(--color-secondary);
@@ -119,8 +119,20 @@
   color: var(--color-secondary);
 }
 
-/* ── Editing state outline ──────────────────────────────────── */
-.task-card--editing {
+/* ── Config button ──────────────────────────────────────────── */
+.config-btn:hover:not(:disabled) {
+  border-color: var(--color-secondary);
+  color: var(--color-secondary);
+}
+
+.config-btn.active {
+  background: rgba(255, 165, 0, 0.1);
+  border-color: var(--color-secondary);
+  color: var(--color-secondary);
+}
+
+/* ── Config panel / legacy step-editor open outline ────────────── */
+.task-card--config-open {
   border-color: var(--color-secondary);
   box-shadow: 0 0 0 2px rgba(255, 165, 0, 0.15);
 }

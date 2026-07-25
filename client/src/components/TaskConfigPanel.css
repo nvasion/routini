@@ -1,0 +1,164 @@
+/* ── TaskConfigPanel ───────────────────────────────────────────────────────
+   Fixed-position overlay + drawer. Deliberately taken out of normal document
+   flow (position: fixed) so opening a panel never resizes its TaskCard or
+   reflows sibling cards / dashboard buckets.
+   ────────────────────────────────────────────────────────────────────────── */
+
+.tcp-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.65);
+  display: flex;
+  justify-content: flex-end;
+  z-index: 100;
+  animation: tcp-fade-in 0.15s ease-out;
+}
+
+.tcp-panel {
+  position: relative;
+  height: 100vh;
+  width: min(420px, 92vw);
+  background: var(--color-bg-card);
+  border-left: 1px solid var(--color-border);
+  box-shadow: -8px 0 32px rgba(0, 0, 0, 0.6);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  animation: tcp-slide-in 0.18s ease-out;
+}
+
+/* Routines need RoutineBuilder's wider two-column layout (palette + steps). */
+.tcp-panel--routine {
+  width: min(960px, 96vw);
+  padding: 0;
+  background: transparent;
+}
+
+.tcp-panel--routine .rb {
+  height: 100%;
+  border-radius: 0;
+  border: none;
+  border-left: 1px solid var(--color-border);
+  margin-top: 0;
+}
+
+@keyframes tcp-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes tcp-slide-in {
+  from { transform: translateX(24px); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+
+/* ── Header ─────────────────────────────────────────────────────────────── */
+
+.tcp-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1.25rem 1.5rem;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-bg-elevated);
+}
+
+.tcp-title {
+  font-size: 1.1rem;
+  font-weight: 700;
+  background: linear-gradient(135deg, var(--color-primary), var(--color-secondary));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  margin-bottom: 0.15rem;
+}
+
+.tcp-subtitle {
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+}
+
+.tcp-close {
+  background: transparent;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  color: var(--color-text-muted);
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.75rem;
+  flex-shrink: 0;
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.tcp-close:hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+/* ── Body / fields ──────────────────────────────────────────────────────── */
+
+.tcp-body {
+  padding: 1.25rem 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.1rem;
+}
+
+.tcp-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.tcp-field-label {
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-text-muted);
+}
+
+.tcp-field-value {
+  font-size: 0.9rem;
+  color: var(--color-text);
+  word-break: break-word;
+}
+
+.tcp-field-value code,
+.tcp-field code {
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: 0.1rem 0.4rem;
+  font-size: 0.85rem;
+}
+
+.tcp-field-empty {
+  color: var(--color-text-muted);
+  font-style: italic;
+}
+
+.tcp-config-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+}
+
+.tcp-config-list code {
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: 0.05rem 0.35rem;
+}
+
+@media (max-width: 640px) {
+  .tcp-panel {
+    width: 100vw;
+  }
+}
