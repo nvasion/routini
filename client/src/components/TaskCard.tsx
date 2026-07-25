@@ -1,3 +1,4 @@
+import type { KeyboardEvent } from 'react'
 import type { Task, TaskStatus } from '../types'
 import { useOpenPanel } from '../hooks/useOpenPanel'
 import { TaskConfigPanel } from './TaskConfigPanel'
@@ -14,16 +15,6 @@ interface TaskCardProps {
    * routine's palette will be empty until the caller supplies the full list.
    */
   allTasks?: Task[]
-  /**
-   * @deprecated Legacy hook for a caller-managed routine step editor,
-   * preserved only so existing call sites keep compiling. Prefer the
-   * self-contained configuration panel (the ⚙ button) below, which handles
-   * every task type — including routines, via an embedded RoutineBuilder —
-   * without any wiring from the parent. Only provided for routine tasks.
-   */
-  onEditSteps?: () => void
-  /** @deprecated Paired with `onEditSteps`; see its deprecation note. */
-  isEditing?: boolean
 }
 
 function StatusBadge({ status }: { status: TaskStatus }) {
@@ -42,22 +33,32 @@ function TypeBadge({ type }: { type: Task['type'] }) {
   )
 }
 
-export function TaskCard({
-  task,
-  onTrigger,
-  onDelete,
-  allTasks = [],
-  onEditSteps,
-  isEditing = false,
-}: TaskCardProps) {
+export function TaskCard({ task, onTrigger, onDelete, allTasks = [] }: TaskCardProps) {
   const isBusy = task.status === 'running' || task.status === 'queued'
   const panel = useOpenPanel(task.id)
   const configLabel = task.type === 'routine' ? 'Edit routine steps' : 'View configuration'
-  const isHighlighted = panel.isOpen || isEditing
+
+  // The whole card (everything except the action buttons, which stop
+  // propagation below) opens the same TaskConfigPanel as the ⚙ button —
+  // it's just a larger, more discoverable hit target for the same action.
+  const handleCardKeyDown = (e: KeyboardEvent<HTMLElement>) => {
+    if (e.key !== 'Enter' && e.key !== ' ') return
+    e.preventDefault()
+    panel.toggle()
+  }
 
   return (
     <>
-      <article className={`task-card${isHighlighted ? ' task-card--config-open' : ''}`}>
+      <article
+        className={`task-card${panel.isOpen ? ' task-card--config-open' : ''}`}
+        role="button"
+        tabIndex={0}
+        aria-haspopup="dialog"
+        aria-expanded={panel.isOpen}
+        aria-label={panel.isOpen ? `Close configuration panel for ${task.name}` : `${configLabel}: ${task.name}`}
+        onClick={panel.toggle}
+        onKeyDown={handleCardKeyDown}
+      >
         <div className="task-card-header">
           <div className="task-card-title">
             <h3>{task.name}</h3>
@@ -67,18 +68,10 @@ export function TaskCard({
             </div>
           </div>
 
-          <div className="task-card-actions">
-            {onEditSteps && (
-              <button
-                className={`icon-btn edit-steps-btn${isEditing ? ' active' : ''}`}
-                onClick={onEditSteps}
-                title={isEditing ? 'Close step editor' : 'Edit steps'}
-                aria-label={isEditing ? 'Close step editor' : 'Edit routine steps'}
-                aria-pressed={isEditing}
-              >
-                ≡
-              </button>
-            )}
+          {/* Stops the click (and the native click a button emits in response
+              to a keyboard Enter/Space) from bubbling up to the card's own
+              onClick, so action buttons never also toggle the config panel. */}
+          <div className="task-card-actions" onClick={e => e.stopPropagation()}>
             <button
               className={`icon-btn config-btn${panel.isOpen ? ' active' : ''}`}
               onClick={panel.toggle}

@@ -39,13 +39,14 @@ routini/
 │   │   ├── types.ts             # Client-side domain types
 │   │   ├── components/
 │   │   │   ├── Navbar.tsx / .css
-│   │   │   ├── TaskCard.tsx / .css
+│   │   │   ├── TaskCard.tsx / .css / .test.tsx  # Clickable task card (see "Interacting with config panels")
 │   │   │   ├── TaskConfigPanel.tsx    # Type-specific config panel (daily/developmental/routine)
 │   │   │   └── RoutineBuilder.tsx     # Step editor for routine tasks
 │   │   └── pages/
 │   │       ├── Dashboard.tsx / .css   # Three-bucket task dashboard (see "Dashboard Layout" below)
 │   │       ├── Login.tsx / .css       # Login page
 │   │       └── Settings.tsx / .css   # AI settings page
+│   ├── vitest.config.ts         # Component-test runner config (jsdom + React), see "Running Tests"
 │   └── package.json
 ├── tests/                       # Integration tests (supertest)
 │   ├── api.test.ts              # Health + 404 tests
@@ -93,6 +94,24 @@ make test
 ```
 
 50 integration tests covering auth, tasks (CRUD + trigger), settings, and general API behaviour.
+These are server-side/integration tests (`tests/**`, `server/**`) run with the workspace-root
+Vitest config (`server/vitest.config.ts`) in a plain Node environment — most client-side logic is
+tested the same way, by exporting the pure logic a component needs (e.g.
+`client/src/hooks/openPanelStore.ts`, `client/src/components/taskConfigPanel.utils.ts`) into a
+module with no React/JSX so it's testable without a DOM.
+
+Components whose behavior can't reasonably be reduced to pure functions — e.g. `TaskCard`'s
+click/keyboard interactions — are covered separately with component tests
+(`client/src/components/TaskCard.test.tsx`) using Vitest + `@testing-library/react` in a jsdom
+environment, configured by `client/vitest.config.ts`:
+
+```bash
+cd client && npx vitest run --config vitest.config.ts
+```
+
+This requires `vitest`, `jsdom`, and `@testing-library/react` as `client` devDependencies (in
+addition to `@vitejs/plugin-react`, already present) — install them with `npm install` in `client/`
+if they're missing.
 
 ## Dashboard Layout
 
@@ -113,16 +132,25 @@ and an empty bucket shows a short hint instead of an empty column.
 
 ### Interacting with config panels
 
-Selecting a task card opens its `TaskConfigPanel` (`client/src/components/TaskConfigPanel.tsx`),
+The entire `TaskCard` is clickable — clicking anywhere on the card except its action buttons
+(⚙ / ▶ / ✕) opens that task's `TaskConfigPanel` (`client/src/components/TaskConfigPanel.tsx`),
 which switches on `task.type` to render the fields relevant to that task type:
 
 - **Daily** — `schedule` (cron expression), `actionType`, and the action-specific `config` map.
 - **Developmental** — `repoUrl`, `branch`, and `agentId`.
-- **Routine** — hands off to the existing `RoutineBuilder` step editor.
+- **Routine** — hands off to the existing `RoutineBuilder` step editor, with its available-task
+  palette populated from every non-routine task on the dashboard (routines cannot nest).
 
-Only one config panel is open at a time per bucket. Edits are saved with the same `apiFetch`
-helper (`client/src/api.ts`) used elsewhere in the dashboard, and changes propagate back to the
-task list either optimistically or via the SSE `task:updated` event (see `useTaskEvents`).
+The card exposes `role="button"` and `tabIndex={0}` so it's reachable by keyboard, and responds to
+both `Enter` and `Space` the same way it responds to a click. The ⚙ button remains as an explicit,
+smaller affordance for the same action — it stops event propagation (as do ▶ and ✕) so clicking or
+keyboard-activating an action button never also toggles the card's own panel.
+
+Only one config panel is open across the whole dashboard at a time — opening a second one closes
+whichever was previously open (see `useOpenPanel` / `openPanelStore.ts`). Edits are saved with the
+same `apiFetch` helper (`client/src/api.ts`) used elsewhere in the dashboard, and changes propagate
+back to the task list either optimistically or via the SSE `task:updated` event (see
+`useTaskEvents`).
 
 ### Search behavior across buckets
 

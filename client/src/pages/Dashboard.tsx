@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react'
-import type { Task, TaskType, Routine, RoutineStep } from '../types'
+import type { Task, TaskType } from '../types'
 import { TaskCard } from '../components/TaskCard'
-import { RoutineBuilder } from '../components/RoutineBuilder'
 import { apiFetch } from '../api'
 import { useTaskEvents } from '../hooks/useTaskEvents'
 import './Dashboard.css'
@@ -21,9 +20,6 @@ export function Dashboard() {
   const [error, setError] = useState<string | null>(null)
   const [search, setSearch] = useState('')
   const [sseConnected, setSseConnected] = useState(false)
-
-  // Routine builder: which routine is currently being edited (if any)
-  const [editingRoutine, setEditingRoutine] = useState<Routine | null>(null)
 
   // New routine creation form
   const [showNewForm, setShowNewForm] = useState(false)
@@ -56,12 +52,6 @@ export function Dashboard() {
         // Task was created by another session — append it to the list.
         return [...prev, updatedTask]
       })
-      // Keep the routine builder in sync if the open routine was updated.
-      setEditingRoutine(prev =>
-        prev?.id === updatedTask.id && updatedTask.type === 'routine'
-          ? (updatedTask as Routine)
-          : prev,
-      )
     },
     onError: () => {
       setSseConnected(false)
@@ -120,8 +110,6 @@ export function Dashboard() {
         throw new Error(body.error ?? `HTTP ${res.status}`)
       }
       setTasks(prev => prev.filter(t => t.id !== id))
-      // Close the routine builder if the deleted task was open
-      if (editingRoutine?.id === id) setEditingRoutine(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to delete task')
     }
@@ -157,28 +145,6 @@ export function Dashboard() {
       setCreating(false)
     }
   }
-
-  // ── Routine step save (called by RoutineBuilder) ───────────────────────────
-
-  const handleSaveSteps = useCallback(
-    async (steps: RoutineStep[]) => {
-      if (!editingRoutine) return
-
-      const res = await apiFetch(`/api/tasks/${editingRoutine.id}/steps`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ steps }),
-      })
-      const body = await res.json() as Routine & { error?: string }
-      if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`)
-
-      // Update both the task list and the active editing state; SSE will also
-      // deliver the update but applying it locally here prevents a flicker.
-      setTasks(prev => prev.map(t => (t.id === body.id ? body : t)))
-      setEditingRoutine(body)
-    },
-    [editingRoutine],
-  )
 
   // ── Filtering ─────────────────────────────────────────────────────────────
   //
@@ -323,12 +289,7 @@ export function Dashboard() {
                       task={task}
                       onTrigger={handleTrigger}
                       onDelete={handleDelete}
-                      onEditSteps={
-                        task.type === 'routine'
-                          ? () => setEditingRoutine(task as Routine)
-                          : undefined
-                      }
-                      isEditing={editingRoutine?.id === task.id}
+                      allTasks={tasks}
                     />
                   ))}
                 </div>
@@ -336,16 +297,6 @@ export function Dashboard() {
             </section>
           ))}
         </div>
-      )}
-
-      {/* Routine Builder panel — shown below the task grid when editing */}
-      {editingRoutine && (
-        <RoutineBuilder
-          routine={editingRoutine}
-          allTasks={tasks}
-          onSave={handleSaveSteps}
-          onClose={() => setEditingRoutine(null)}
-        />
       )}
     </div>
   )
