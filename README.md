@@ -39,9 +39,11 @@ routini/
 │   │   ├── types.ts             # Client-side domain types
 │   │   ├── components/
 │   │   │   ├── Navbar.tsx / .css
-│   │   │   └── TaskCard.tsx / .css
+│   │   │   ├── TaskCard.tsx / .css
+│   │   │   ├── TaskConfigPanel.tsx    # Type-specific config panel (daily/developmental/routine)
+│   │   │   └── RoutineBuilder.tsx     # Step editor for routine tasks
 │   │   └── pages/
-│   │       ├── Dashboard.tsx / .css   # Central task dashboard
+│   │       ├── Dashboard.tsx / .css   # Three-bucket task dashboard (see "Dashboard Layout" below)
 │   │       ├── Login.tsx / .css       # Login page
 │   │       └── Settings.tsx / .css   # AI settings page
 │   └── package.json
@@ -91,6 +93,53 @@ make test
 ```
 
 50 integration tests covering auth, tasks (CRUD + trigger), settings, and general API behaviour.
+
+## Dashboard Layout
+
+The task dashboard (`client/src/pages/Dashboard.tsx` / `Dashboard.css`) organizes tasks into three
+side-by-side buckets, one per `TaskType` (`daily`, `developmental`, `routine` — see
+`client/src/types.ts`). Each bucket renders its own column of `TaskCard` components
+(`client/src/components/TaskCard.tsx`) for tasks whose `type` matches that bucket.
+
+### Three-bucket structure
+
+- **Daily** — scheduled tasks driven by a cron `schedule` and `actionType` (`http` / `ssh` / `email`).
+- **Developmental** — AI-agent coding jobs tied to a `repoUrl`, `branch`, and `agentId`.
+- **Routine** — multi-step workflows composed of other tasks, edited via `RoutineBuilder.tsx`.
+
+Tasks are assigned to a bucket purely by their `type` field — there is no manual sorting or
+drag-and-drop between buckets. Each bucket header shows a live count of the tasks it contains,
+and an empty bucket shows a short hint instead of an empty column.
+
+### Interacting with config panels
+
+Selecting a task card opens its `TaskConfigPanel` (`client/src/components/TaskConfigPanel.tsx`),
+which switches on `task.type` to render the fields relevant to that task type:
+
+- **Daily** — `schedule` (cron expression), `actionType`, and the action-specific `config` map.
+- **Developmental** — `repoUrl`, `branch`, and `agentId`.
+- **Routine** — hands off to the existing `RoutineBuilder` step editor.
+
+Only one config panel is open at a time per bucket. Edits are saved with the same `apiFetch`
+helper (`client/src/api.ts`) used elsewhere in the dashboard, and changes propagate back to the
+task list either optimistically or via the SSE `task:updated` event (see `useTaskEvents`).
+
+### Search behavior across buckets
+
+The search input in `dashboard-controls` filters by task `name` and `description` (case-insensitive)
+and applies **simultaneously across all three buckets** — typing a query narrows every bucket's
+contents at once rather than a single active tab. A task must match the search term to remain
+visible in its bucket; buckets with no matching tasks show the standard empty-state hint. Search
+composes with the existing type filter tabs, so narrowing to a single type still searches within
+that bucket only.
+
+### Responsive design considerations
+
+The three buckets use a CSS Grid layout (`.dashboard-buckets` in `Dashboard.css`): three columns
+side-by-side on desktop viewports, collapsing to fewer columns on tablet widths and to a single
+stacked column on mobile so each bucket remains fully readable without horizontal scrolling.
+Within a bucket, `TaskCard`s reflow using the same `auto-fill`/`minmax` grid pattern already used
+by `.task-grid`, so card width adapts smoothly between breakpoints.
 
 ## API Reference
 
