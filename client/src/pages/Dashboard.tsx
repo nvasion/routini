@@ -323,6 +323,7 @@ export function Dashboard() {
                       task={task}
                       onTrigger={handleTrigger}
                       onDelete={handleDelete}
+                      allTasks={tasks}
                       onEditSteps={
                         task.type === 'routine'
                           ? () => setEditingRoutine(task as Routine)
