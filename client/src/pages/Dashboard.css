@@ -124,6 +124,102 @@
   gap: 1rem;
 }
 
+/* ── Buckets (daily / developmental / routine columns) ─────────
+   Mobile-first: buckets stack in a single column by default, and
+   switch to three side-by-side columns at the tablet breakpoint. */
+.dashboard-buckets {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1.5rem;
+  align-items: start;
+  margin-bottom: 1.5rem;
+}
+
+@media (min-width: 768px) {
+  .dashboard-buckets {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+.bucket {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--color-bg-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 1.1rem;
+}
+
+.bucket-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding-bottom: 0.75rem;
+  margin-bottom: 1rem;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.bucket-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 1rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.bucket-title::before {
+  content: '';
+  display: inline-block;
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+}
+
+.bucket-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.5rem;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  background: var(--color-bg-elevated);
+  color: var(--color-text-muted);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.bucket-tasks {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.bucket-empty {
+  color: var(--color-text-muted);
+  font-size: 0.85rem;
+  text-align: center;
+  padding: 1.5rem 0.5rem;
+}
+
+/* Distinct accent color per bucket type, matching the type badges
+   used elsewhere (TaskCard, RoutineBuilder). */
+.bucket--daily .bucket-title {
+  color: #60a5fa;
+}
+
+.bucket--developmental .bucket-title {
+  color: #c084fc;
+}
+
+.bucket--routine .bucket-title {
+  color: var(--color-secondary);
+}
+
 /* ── Header actions ─────────────────────────────────────────── */
 .dashboard-header-actions {
   display: flex;
