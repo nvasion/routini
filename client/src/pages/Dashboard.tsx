@@ -9,9 +9,9 @@ import './Dashboard.css'
 // single active tab — all three buckets render side by side and search
 // narrows each of them simultaneously.
 const BUCKETS: { type: TaskType; label: string }[] = [
-  { type: 'daily', label: 'Daily' },
-  { type: 'developmental', label: 'Developmental' },
-  { type: 'routine', label: 'Routines' },
+  { type: 'daily', label: 'Daily Tasks' },
+  { type: 'developmental', label: 'Developmental Tasks' },
+  { type: 'routine', label: 'Routine Automation' },
 ]
 
 export function Dashboard() {
