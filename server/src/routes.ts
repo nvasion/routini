@@ -1,5 +1,8 @@
 import { Router, Request, Response } from 'express'
-import { loginHandler, logoutHandler, meHandler, requireAuth, requireCsrf } from './auth.js'
+import { authRouter, requireAuth, requireCsrf } from './routes/auth.js'
+
+// Then mount the auth router:
+router.use('/auth', authRouter)
 
 export const router = Router()
 
