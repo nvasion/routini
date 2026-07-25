@@ -6,14 +6,19 @@ import { apiFetch } from '../api'
 import { useTaskEvents } from '../hooks/useTaskEvents'
 import './Dashboard.css'
 
-const FILTER_TYPES = ['all', 'daily', 'developmental', 'routine'] as const
-type FilterType = (typeof FILTER_TYPES)[number]
+// Tasks are grouped into fixed, type-based buckets rather than filtered by a
+// single active tab — all three buckets render side by side and search
+// narrows each of them simultaneously.
+const BUCKETS: { type: TaskType; label: string }[] = [
+  { type: 'daily', label: 'Daily' },
+  { type: 'developmental', label: 'Developmental' },
+  { type: 'routine', label: 'Routines' },
+]
 
 export function Dashboard() {
   const [tasks, setTasks] = useState<Task[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [filter, setFilter] = useState<FilterType>('all')
   const [search, setSearch] = useState('')
   const [sseConnected, setSseConnected] = useState(false)
 
@@ -176,16 +181,28 @@ export function Dashboard() {
   )
 
   // ── Filtering ─────────────────────────────────────────────────────────────
+  //
+  // Search matches by task name/ID (and description, to preserve prior
+  // behavior) and applies across all three buckets simultaneously — there is
+  // no separate type filter anymore since each bucket is already scoped to
+  // its own task type. Because this is derived directly from `tasks` and
+  // `search` on every render, results (and bucket membership) update in
+  // real-time as SSE events mutate `tasks` or the user types.
 
-  const visible = tasks.filter(task => {
-    const typeMatch = filter === 'all' || task.type === (filter as TaskType)
-    const searchLower = search.toLowerCase()
-    const searchMatch =
-      !search ||
-      task.name.toLowerCase().includes(searchLower) ||
-      task.description.toLowerCase().includes(searchLower)
-    return typeMatch && searchMatch
-  })
+  const searchLower = search.trim().toLowerCase()
+  const matchesSearch = (task: Task) =>
+    !searchLower ||
+    task.name.toLowerCase().includes(searchLower) ||
+    task.id.toLowerCase().includes(searchLower) ||
+    task.description.toLowerCase().includes(searchLower)
+
+  const filteredTasks = tasks.filter(matchesSearch)
+
+  const buckets = BUCKETS.map(({ type, label }) => ({
+    type,
+    label,
+    tasks: filteredTasks.filter(task => task.type === type),
+  }))
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
@@ -256,23 +273,11 @@ export function Dashboard() {
         <input
           type="search"
           className="search-input"
-          placeholder="Search tasks…"
+          placeholder="Search tasks by name or ID…"
           value={search}
           onChange={e => setSearch(e.target.value)}
           aria-label="Search tasks"
         />
-        <div className="filter-tabs" role="group" aria-label="Filter by type">
-          {FILTER_TYPES.map(type => (
-            <button
-              key={type}
-              className={`filter-tab${filter === type ? ' active' : ''}`}
-              onClick={() => setFilter(type)}
-              aria-pressed={filter === type}
-            >
-              {type === 'all' ? 'All' : type.charAt(0).toUpperCase() + type.slice(1)}
-            </button>
-          ))}
-        </div>
       </div>
 
       {error && (
@@ -283,30 +288,52 @@ export function Dashboard() {
 
       {loading ? (
         <div className="state-placeholder">Loading tasks…</div>
-      ) : visible.length === 0 ? (
+      ) : tasks.length === 0 ? (
         <div className="state-placeholder">
           <p>No tasks found</p>
-          <p className="state-hint">
-            {search || filter !== 'all'
-              ? 'Try adjusting your filters'
-              : 'Create a routine above to get started'}
-          </p>
+          <p className="state-hint">Create a routine above to get started</p>
+        </div>
+      ) : filteredTasks.length === 0 ? (
+        <div className="state-placeholder">
+          <p>No tasks found</p>
+          <p className="state-hint">Try adjusting your search</p>
         </div>
       ) : (
-        <div className="task-grid">
-          {visible.map(task => (
-            <TaskCard
-              key={task.id}
-              task={task}
-              onTrigger={handleTrigger}
-              onDelete={handleDelete}
-              onEditSteps={
-                task.type === 'routine'
-                  ? () => setEditingRoutine(task as Routine)
-                  : undefined
-              }
-              isEditing={editingRoutine?.id === task.id}
-            />
+        <div className="dashboard-buckets">
+          {buckets.map(bucket => (
+            <section
+              key={bucket.type}
+              className="dashboard-bucket"
+              aria-label={`${bucket.label} tasks`}
+            >
+              <div className="dashboard-bucket-header">
+                <h2>{bucket.label}</h2>
+                <span className="dashboard-bucket-count">{bucket.tasks.length}</span>
+              </div>
+
+              {bucket.tasks.length === 0 ? (
+                <div className="state-placeholder state-placeholder--bucket">
+                  <p className="state-hint">No matching tasks</p>
+                </div>
+              ) : (
+                <div className="task-grid">
+                  {bucket.tasks.map(task => (
+                    <TaskCard
+                      key={task.id}
+                      task={task}
+                      onTrigger={handleTrigger}
+                      onDelete={handleDelete}
+                      onEditSteps={
+                        task.type === 'routine'
+                          ? () => setEditingRoutine(task as Routine)
+                          : undefined
+                      }
+                      isEditing={editingRoutine?.id === task.id}
+                    />
+                  ))}
+                </div>
+              )}
+            </section>
           ))}
         </div>
       )}
