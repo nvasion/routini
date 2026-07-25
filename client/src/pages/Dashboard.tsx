@@ -6,21 +6,14 @@ import { apiFetch } from '../api'
 import { useTaskEvents } from '../hooks/useTaskEvents'
 import './Dashboard.css'
 
-// The three fixed buckets tasks are grouped into. Order here determines the
-// left-to-right (desktop) / top-to-bottom (mobile) render order.
-const BUCKET_TYPES: TaskType[] = ['daily', 'developmental', 'routine']
-
-const BUCKET_LABELS: Record<TaskType, string> = {
-  daily: 'Daily Tasks',
-  developmental: 'Developmental Tasks',
-  routine: 'Routines',
-}
-
-const BUCKET_EMPTY_HINTS: Record<TaskType, string> = {
-  daily: 'No daily tasks yet. Scheduled tasks will show up here.',
-  developmental: 'No developmental tasks yet. Agent-driven dev tasks will show up here.',
-  routine: 'No routines yet. Create one above to get started.',
-}
+// Tasks are grouped into fixed, type-based buckets rather than filtered by a
+// single active tab — all three buckets render side by side and search
+// narrows each of them simultaneously.
+const BUCKETS: { type: TaskType; label: string }[] = [
+  { type: 'daily', label: 'Daily' },
+  { type: 'developmental', label: 'Developmental' },
+  { type: 'routine', label: 'Routines' },
+]
 
 export function Dashboard() {
   const [tasks, setTasks] = useState<Task[]>([])
@@ -189,22 +182,27 @@ export function Dashboard() {
 
   // ── Filtering ─────────────────────────────────────────────────────────────
   //
-  // The search box applies across all three buckets simultaneously — there is
-  // no separate type filter anymore, buckets themselves are the type split.
+  // Search matches by task name/ID (and description, to preserve prior
+  // behavior) and applies across all three buckets simultaneously — there is
+  // no separate type filter anymore since each bucket is already scoped to
+  // its own task type. Because this is derived directly from `tasks` and
+  // `search` on every render, results (and bucket membership) update in
+  // real-time as SSE events mutate `tasks` or the user types.
 
-  const searchLower = search.toLowerCase()
+  const searchLower = search.trim().toLowerCase()
   const matchesSearch = (task: Task) =>
-    !search ||
+    !searchLower ||
     task.name.toLowerCase().includes(searchLower) ||
+    task.id.toLowerCase().includes(searchLower) ||
     task.description.toLowerCase().includes(searchLower)
 
-  const visible = tasks.filter(matchesSearch)
+  const filteredTasks = tasks.filter(matchesSearch)
 
-  const bucketedTasks: Record<TaskType, Task[]> = {
-    daily: visible.filter(task => task.type === 'daily'),
-    developmental: visible.filter(task => task.type === 'developmental'),
-    routine: visible.filter(task => task.type === 'routine'),
-  }
+  const buckets = BUCKETS.map(({ type, label }) => ({
+    type,
+    label,
+    tasks: filteredTasks.filter(task => task.type === type),
+  }))
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
@@ -275,7 +273,7 @@ export function Dashboard() {
         <input
           type="search"
           className="search-input"
-          placeholder="Search tasks…"
+          placeholder="Search tasks by name or ID…"
           value={search}
           onChange={e => setSearch(e.target.value)}
           aria-label="Search tasks"
@@ -290,45 +288,53 @@ export function Dashboard() {
 
       {loading ? (
         <div className="state-placeholder">Loading tasks…</div>
+      ) : tasks.length === 0 ? (
+        <div className="state-placeholder">
+          <p>No tasks found</p>
+          <p className="state-hint">Create a routine above to get started</p>
+        </div>
+      ) : filteredTasks.length === 0 ? (
+        <div className="state-placeholder">
+          <p>No tasks found</p>
+          <p className="state-hint">Try adjusting your search</p>
+        </div>
       ) : (
         <div className="dashboard-buckets">
-          {BUCKET_TYPES.map(type => {
-            const bucketTasks = bucketedTasks[type]
-            return (
-              <section className="bucket" key={type} aria-label={BUCKET_LABELS[type]}>
-                <header className="bucket-header">
-                  <h2 className="bucket-title">{BUCKET_LABELS[type]}</h2>
-                  <span className="bucket-count">{bucketTasks.length}</span>
-                </header>
+          {buckets.map(bucket => (
+            <section
+              key={bucket.type}
+              className="dashboard-bucket"
+              aria-label={`${bucket.label} tasks`}
+            >
+              <div className="dashboard-bucket-header">
+                <h2>{bucket.label}</h2>
+                <span className="dashboard-bucket-count">{bucket.tasks.length}</span>
+              </div>
 
-                <div className="bucket-body">
-                  {bucketTasks.length === 0 ? (
-                    <div className="state-placeholder bucket-empty">
-                      <p>No tasks found</p>
-                      <p className="state-hint">
-                        {search ? 'Try adjusting your search' : BUCKET_EMPTY_HINTS[type]}
-                      </p>
-                    </div>
-                  ) : (
-                    bucketTasks.map(task => (
-                      <TaskCard
-                        key={task.id}
-                        task={task}
-                        onTrigger={handleTrigger}
-                        onDelete={handleDelete}
-                        onEditSteps={
-                          task.type === 'routine'
-                            ? () => setEditingRoutine(task as Routine)
-                            : undefined
-                        }
-                        isEditing={editingRoutine?.id === task.id}
-                      />
-                    ))
-                  )}
+              {bucket.tasks.length === 0 ? (
+                <div className="state-placeholder state-placeholder--bucket">
+                  <p className="state-hint">No matching tasks</p>
                 </div>
-              </section>
-            )
-          })}
+              ) : (
+                <div className="task-grid">
+                  {bucket.tasks.map(task => (
+                    <TaskCard
+                      key={task.id}
+                      task={task}
+                      onTrigger={handleTrigger}
+                      onDelete={handleDelete}
+                      onEditSteps={
+                        task.type === 'routine'
+                          ? () => setEditingRoutine(task as Routine)
+                          : undefined
+                      }
+                      isEditing={editingRoutine?.id === task.id}
+                    />
+                  ))}
+                </div>
+              )}
+            </section>
+          ))}
         </div>
       )}
 
