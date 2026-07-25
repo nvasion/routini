@@ -1,7 +1,8 @@
 .dashboard {
-  max-width: 1200px;
+  width: 100%;
   margin: 0 auto;
   padding: 2rem;
+  box-sizing: border-box;
 }
 
 /* ── Header ─────────────────────────────────────────────────── */
@@ -52,35 +53,6 @@
   color: var(--color-text-muted);
 }
 
-.filter-tabs {
-  display: flex;
-  gap: 0.2rem;
-  background: var(--color-bg-elevated);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius);
-  padding: 0.2rem;
-}
-
-.filter-tab {
-  padding: 0.35rem 0.85rem;
-  border: none;
-  border-radius: calc(var(--radius) - 2px);
-  background: transparent;
-  color: var(--color-text-muted);
-  font-size: 0.8rem;
-  font-weight: 500;
-  transition: color 0.15s, background 0.15s;
-}
-
-.filter-tab:hover {
-  color: var(--color-text);
-}
-
-.filter-tab.active {
-  background: var(--color-primary);
-  color: #fff;
-}
-
 /* ── Error ──────────────────────────────────────────────────── */
 .error-banner {
   background: rgba(255, 0, 0, 0.08);
@@ -104,6 +76,10 @@
   font-size: 0.875rem;
 }
 
+.bucket-empty {
+  padding: 2rem 1rem;
+}
+
 /* ── New Routine form ───────────────────────────────────────── */
 .new-routine-form {
   display: flex;
@@ -117,11 +93,62 @@
   min-width: 180px;
 }
 
-/* ── Grid ───────────────────────────────────────────────────── */
-.task-grid {
+/* ── Buckets ────────────────────────────────────────────────── */
+/* Three side-by-side buckets (daily / developmental / routine) on desktop,
+   collapsing to a single column on narrow viewports. */
+.dashboard-buckets {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-  gap: 1rem;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1.5rem;
+  align-items: start;
+}
+
+.bucket {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  min-width: 0;
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 1rem;
+}
+
+.bucket-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.bucket-title {
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.bucket-count {
+  flex-shrink: 0;
+  min-width: 1.5rem;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  background: var(--color-bg-card);
+  border: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-align: center;
+}
+
+.bucket-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+@media (max-width: 900px) {
+  .dashboard-buckets {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* ── Header actions ─────────────────────────────────────────── */
