@@ -314,18 +314,28 @@ describe('executeRoutine', () => {
 // ── PUT /api/tasks/:id/steps ──────────────────────────────────────────────────
 
 describe('PUT /api/tasks/:id/steps', () => {
-  // Helper: create a routine and two non-routine tasks to reference
+  // Helper: create a routine and non-routine tasks to reference.
+  // Mirrors what RoutineBuilder's "Available Tasks" palette offers — daily
+  // and developmental tasks (routines are excluded, since they cannot be
+  // nested via the builder UI).
   async function setup() {
-    const [routineRes, dailyRes] = await Promise.all([
+    const [routineRes, dailyRes, devRes] = await Promise.all([
       request.post('/api/tasks').set(auth()).send({ name: 'My Routine', type: 'routine' }),
       request
         .post('/api/tasks')
         .set(auth())
         .send({ name: 'Daily Task', type: 'daily', schedule: '0 9 * * *', actionType: 'http' }),
+      request.post('/api/tasks').set(auth()).send({
+        name: 'Dev Task',
+        type: 'developmental',
+        repoUrl: 'https://github.com/example/repo',
+        agentId: 'claude',
+      }),
     ])
     return {
       routineId: routineRes.body.id as string,
       dailyId: dailyRes.body.id as string,
+      devId: devRes.body.id as string,
     }
   }
 
@@ -427,6 +437,159 @@ describe('PUT /api/tasks/:id/steps', () => {
       .send({ steps: [{ taskId: dailyId, order: 1 }] })
 
     expect(res.body.updatedAt).not.toBe(before)
+  })
+
+  // ── RoutineBuilder-style editing flows ────────────────────────────────────
+  //
+  // These mirror the interactions exposed by client/src/components/RoutineBuilder.tsx:
+  // building a routine from mixed task types, reordering steps by drag-and-drop,
+  // editing a step's condition in place, and removing a step from the middle of
+  // the list (which reassigns consecutive `order` values via reassignOrders()).
+
+  it('builds a routine referencing mixed task types (daily + developmental)', async () => {
+    const { routineId, dailyId, devId } = await setup()
+
+    const res = await request
+      .put(`/api/tasks/${routineId}/steps`)
+      .set(auth())
+      .send({
+        steps: [
+          { taskId: dailyId, order: 1 },
+          { taskId: devId, order: 2, condition: "previous.status === 'succeeded'" },
+        ],
+      })
+
+    expect(res.status).toBe(200)
+    expect(res.body.steps).toHaveLength(2)
+    expect(res.body.steps[0].taskId).toBe(dailyId)
+    expect(res.body.steps[1].taskId).toBe(devId)
+    expect(res.body.steps[1].condition).toBe("previous.status === 'succeeded'")
+  })
+
+  it('reorders steps by swapping order values (drag-and-drop reorder)', async () => {
+    const { routineId, dailyId, devId } = await setup()
+
+    // Initial order: daily(1), dev(2)
+    await request
+      .put(`/api/tasks/${routineId}/steps`)
+      .set(auth())
+      .send({
+        steps: [
+          { taskId: dailyId, order: 1 },
+          { taskId: devId, order: 2 },
+        ],
+      })
+
+    // Reorder: dev(1), daily(2) — as if the user dragged the dev step above the daily step.
+    const res = await request
+      .put(`/api/tasks/${routineId}/steps`)
+      .set(auth())
+      .send({
+        steps: [
+          { taskId: devId, order: 1 },
+          { taskId: dailyId, order: 2 },
+        ],
+      })
+
+    expect(res.status).toBe(200)
+    expect(res.body.steps).toHaveLength(2)
+    // The API preserves submission order verbatim (it does not re-sort by
+    // the `order` field before storing/returning), so assert the raw
+    // per-index order values directly rather than sorting first — sorting
+    // would mask a bug where the server silently reordered the array.
+    expect(res.body.steps[0].taskId).toBe(devId)
+    expect(res.body.steps[0].order).toBe(1)
+    expect(res.body.steps[1].taskId).toBe(dailyId)
+    expect(res.body.steps[1].order).toBe(2)
+  })
+
+  it('generates distinct ids for steps created without an explicit id', async () => {
+    const { routineId, dailyId, devId } = await setup()
+
+    const res = await request
+      .put(`/api/tasks/${routineId}/steps`)
+      .set(auth())
+      .send({
+        steps: [
+          { taskId: dailyId, order: 1 },
+          { taskId: devId, order: 2 },
+        ],
+      })
+
+    expect(res.status).toBe(200)
+    expect(res.body.steps).toHaveLength(2)
+    const ids = res.body.steps.map((s: { id: string }) => s.id)
+    expect(typeof ids[0]).toBe('string')
+    expect(typeof ids[1]).toBe('string')
+    expect(ids[0].length).toBeGreaterThan(0)
+    expect(ids[1].length).toBeGreaterThan(0)
+    expect(ids[0]).not.toBe(ids[1])
+  })
+
+  it('edits an existing step condition while preserving its id and taskId', async () => {
+    const { routineId, dailyId } = await setup()
+    const stepId = 'condition-edit-step'
+
+    await request
+      .put(`/api/tasks/${routineId}/steps`)
+      .set(auth())
+      .send({ steps: [{ id: stepId, taskId: dailyId, order: 1 }] })
+
+    const res = await request
+      .put(`/api/tasks/${routineId}/steps`)
+      .set(auth())
+      .send({
+        steps: [
+          { id: stepId, taskId: dailyId, order: 1, condition: "previous.status === 'failed'" },
+        ],
+      })
+
+    expect(res.status).toBe(200)
+    expect(res.body.steps).toHaveLength(1)
+    expect(res.body.steps[0].id).toBe(stepId)
+    expect(res.body.steps[0].taskId).toBe(dailyId)
+    expect(res.body.steps[0].condition).toBe("previous.status === 'failed'")
+  })
+
+  it('removes a middle step and reassigns consecutive order values', async () => {
+    const { routineId, dailyId, devId } = await setup()
+    const firstStepId = 'remove-step-first'
+    const middleStepId = 'remove-step-middle'
+    const lastStepId = 'remove-step-last'
+
+    // Three-step routine: daily(1), dev(2), daily(3), each with an explicit
+    // id so we can confirm exactly which step survives the removal below.
+    await request
+      .put(`/api/tasks/${routineId}/steps`)
+      .set(auth())
+      .send({
+        steps: [
+          { id: firstStepId, taskId: dailyId, order: 1 },
+          { id: middleStepId, taskId: devId, order: 2 },
+          { id: lastStepId, taskId: dailyId, order: 3 },
+        ],
+      })
+
+    // Remove the middle step and reassign orders 1..N, matching
+    // RoutineBuilder's removeStep() + reassignOrders() behavior. The
+    // remaining steps keep their original ids so we can verify the correct
+    // step (not just a same-taskId stand-in) survived the removal.
+    const res = await request
+      .put(`/api/tasks/${routineId}/steps`)
+      .set(auth())
+      .send({
+        steps: [
+          { id: firstStepId, taskId: dailyId, order: 1 },
+          { id: lastStepId, taskId: dailyId, order: 2 },
+        ],
+      })
+
+    expect(res.status).toBe(200)
+    expect(res.body.steps).toHaveLength(2)
+    expect(res.body.steps.map((s: { id: string }) => s.id)).toEqual([firstStepId, lastStepId])
+    expect(res.body.steps.map((s: { order: number }) => s.order)).toEqual([1, 2])
+    expect(res.body.steps.every((s: { taskId: string }) => s.taskId === dailyId)).toBe(true)
+    expect(res.body.steps.map((s: { id: string }) => s.id)).not.toContain(middleStepId)
   })
 
   // ── Error cases ─────────────────────────────────────────────────────────────
