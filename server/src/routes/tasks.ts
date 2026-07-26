@@ -5,6 +5,7 @@ import type {
   TaskType,
   TaskStatus,
   DailyTask,
+  DailyActionType,
   DevTask,
   Routine,
   RoutineStep,
@@ -36,6 +37,7 @@ export const taskLogs = new Map<string, TaskLog[]>()
 
 const VALID_TYPES: TaskType[] = ['daily', 'developmental', 'routine']
 const VALID_STATUSES: TaskStatus[] = ['queued', 'running', 'succeeded', 'failed', 'idle']
+const VALID_ACTION_TYPES: DailyActionType[] = ['ssh', 'email', 'http']
 
 /** Maximum number of steps a single routine may have. */
 const MAX_STEPS = 20
@@ -538,6 +540,91 @@ tasksRouter.post('/', requireCsrf, (req: Request, res: Response) => {
 
 // ── PUT /api/tasks/:id ────────────────────────────────────────────────────────
 
+/**
+ * Validates the daily-task-specific fields present in an update body.
+ *
+ * Only keys that are actually present in `body` are validated and returned —
+ * this is a partial-update helper, so omitted fields simply mean "leave the
+ * stored value unchanged." Returns `{ error }` on the first invalid field
+ * found, or the normalized subset of fields to merge into the task.
+ */
+function validateDailyUpdateFields(
+  body: Record<string, unknown>,
+): { error: string } | Partial<Pick<DailyTask, 'schedule' | 'actionType' | 'config'>> {
+  const fields: Partial<Pick<DailyTask, 'schedule' | 'actionType' | 'config'>> = {}
+
+  if (body.schedule !== undefined) {
+    if (typeof body.schedule !== 'string' || body.schedule.trim() === '') {
+      return { error: 'schedule must be a non-empty string' }
+    }
+    fields.schedule = body.schedule.trim()
+  }
+
+  if (body.actionType !== undefined) {
+    if (!VALID_ACTION_TYPES.includes(body.actionType as DailyActionType)) {
+      return { error: `actionType must be one of: ${VALID_ACTION_TYPES.join(', ')}` }
+    }
+    fields.actionType = body.actionType as DailyActionType
+  }
+
+  if (body.config !== undefined) {
+    if (typeof body.config !== 'object' || body.config === null || Array.isArray(body.config)) {
+      return { error: 'config must be an object of string key/value pairs' }
+    }
+    const entries = Object.entries(body.config as Record<string, unknown>)
+    for (const [key, value] of entries) {
+      if (typeof value !== 'string') {
+        return { error: `config.${key} must be a string` }
+      }
+    }
+    fields.config = Object.fromEntries(entries) as Record<string, string>
+  }
+
+  return fields
+}
+
+/**
+ * Validates the developmental-task-specific fields present in an update body,
+ * reusing the same `validateRepoUrl` / `validateAgentId` guards the POST
+ * handler relies on so a PUT can never persist an SSRF-unsafe repoUrl or an
+ * unsupported agentId. Only keys present in `body` are validated/returned.
+ */
+function validateDevUpdateFields(
+  body: Record<string, unknown>,
+): { error: string } | Partial<Pick<DevTask, 'repoUrl' | 'branch' | 'agentId'>> {
+  const fields: Partial<Pick<DevTask, 'repoUrl' | 'branch' | 'agentId'>> = {}
+
+  if (body.repoUrl !== undefined) {
+    if (typeof body.repoUrl !== 'string' || body.repoUrl.trim() === '') {
+      return { error: 'repoUrl must be a non-empty string' }
+    }
+    const repoCheck = validateRepoUrl(body.repoUrl)
+    if (!repoCheck.valid) {
+      return { error: repoCheck.error }
+    }
+    fields.repoUrl = body.repoUrl.trim()
+  }
+
+  if (body.branch !== undefined) {
+    if (typeof body.branch !== 'string' || body.branch.trim() === '') {
+      return { error: 'branch must be a non-empty string' }
+    }
+    fields.branch = body.branch.trim()
+  }
+
+  if (body.agentId !== undefined) {
+    const resolvedAgent = typeof body.agentId === 'string' ? body.agentId.trim() : ''
+    if (!validateAgentId(resolvedAgent)) {
+      return {
+        error: `Unsupported agentId "${resolvedAgent}". Must be one of: ${[...VALID_AGENTS].join(', ')}`,
+      }
+    }
+    fields.agentId = resolvedAgent
+  }
+
+  return fields
+}
+
 tasksRouter.put('/:id', requireCsrf, (req: Request, res: Response) => {
   const task = tasks.get(req.params.id)
 
@@ -549,14 +636,43 @@ tasksRouter.put('/:id', requireCsrf, (req: Request, res: Response) => {
   const body = req.body as Record<string, unknown>
   const { name, description } = body
 
-  const updated: Task = {
-    ...task,
+  const metaFields: Partial<Pick<Task, 'name' | 'description'>> = {
     ...(name !== undefined &&
       typeof name === 'string' &&
       name.trim() !== '' && { name: name.trim() }),
     ...(description !== undefined && { description: String(description).trim() }),
-    updatedAt: new Date().toISOString(),
   }
+
+  // Type-specific fields: each task type owns a disjoint set of extra fields
+  // (schedule/actionType/config for daily, repoUrl/branch/agentId for
+  // developmental, steps — managed separately via PUT /:id/steps — for
+  // routines). Validate only the fields relevant to this task's type; any
+  // other type-specific keys present in the body are silently ignored, same
+  // as the previous behavior for all non-name/description fields.
+  let typeFields: Record<string, unknown> = {}
+
+  if (task.type === 'daily') {
+    const result = validateDailyUpdateFields(body)
+    if ('error' in result) {
+      res.status(400).json({ error: result.error })
+      return
+    }
+    typeFields = result
+  } else if (task.type === 'developmental') {
+    const result = validateDevUpdateFields(body)
+    if ('error' in result) {
+      res.status(400).json({ error: result.error })
+      return
+    }
+    typeFields = result
+  }
+
+  const updated: Task = {
+    ...task,
+    ...metaFields,
+    ...typeFields,
+    updatedAt: new Date().toISOString(),
+  } as Task
 
   setTaskAndNotify(updated)
   res.json(updated)

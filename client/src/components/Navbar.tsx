@@ -39,6 +39,7 @@ export function Navbar() {
       {isLoggedIn && (
         <ul className="navbar-links" role="list">
           {navLink('/', 'Dashboard')}
+          {navLink('/metrics', 'Metrics')}
           {navLink('/settings', 'Settings')}
         </ul>
       )}

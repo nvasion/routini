@@ -34,6 +34,20 @@ export interface DailyTask extends BaseTask {
   config: Record<string, string>
 }
 
+/**
+ * Write-only view of a DailyTask's `config` for API responses that must not
+ * echo back the values a client just wrote (e.g. the response to
+ * `PUT /api/tasks/:id`). Each configured key is present, mapped to `true`,
+ * so callers can confirm what was set without the value being readable back
+ * over the API.
+ */
+export type SanitizedDailyConfig = Record<string, true>
+
+/** DailyTask API response shape where `config` has been reduced to key names only. */
+export interface DailyTaskResponse extends Omit<DailyTask, 'config'> {
+  config: SanitizedDailyConfig
+}
+
 export interface DevTask extends BaseTask {
   type: 'developmental'
   repoUrl: string

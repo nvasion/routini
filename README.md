@@ -35,15 +35,17 @@ routini/
 ├── client/                      # React frontend
 │   ├── src/
 │   │   ├── main.tsx             # React entry point
-│   │   ├── App.tsx              # Router shell
+│   │   ├── App.tsx              # Router shell — see "Navigation & Pages" below
 │   │   ├── types.ts             # Client-side domain types
 │   │   ├── components/
-│   │   │   ├── Navbar.tsx / .css
-│   │   │   ├── TaskCard.tsx / .css / .test.tsx  # Clickable task card (see "Interacting with config panels")
-│   │   │   ├── TaskConfigPanel.tsx    # Type-specific config panel (daily/developmental/routine)
-│   │   │   └── RoutineBuilder.tsx     # Step editor for routine tasks
+│   │   │   ├── Navbar.tsx / .css      # Top nav: Dashboard / Metrics / Settings tabs
+│   │   │   ├── TaskCard.tsx / .css / .test.tsx  # Clickable task card (see "Interacting with the config modal")
+│   │   │   ├── ConfigModal.tsx / .css / .test.tsx  # Centered, editable task config modal (see below)
+│   │   │   ├── configModal.utils.ts / (tested via tests/configModal.utils.test.ts)  # Pure form validation/payload helpers backing ConfigModal
+│   │   │   └── RoutineBuilder.tsx     # Step editor for routine tasks (embedded in ConfigModal)
 │   │   └── pages/
-│   │       ├── Dashboard.tsx / .css   # Three-bucket task dashboard (see "Dashboard Layout" below)
+│   │       ├── Dashboard.tsx / .css / .test.tsx  # Three-bucket task dashboard (see "Dashboard Layout" below)
+│   │       ├── MetricsPage.tsx / .css / .test.tsx  # Read-only task health metrics (see "Metrics Page" below)
 │   │       ├── Login.tsx / .css       # Login page
 │   │       └── Settings.tsx / .css   # AI settings page
 │   ├── vitest.config.ts         # Component-test runner config (jsdom + React), see "Running Tests"
@@ -56,6 +58,9 @@ routini/
 ├── Makefile
 └── package.json
 ```
+
+> Note: the original read-only side-drawer config panel (`TaskConfigPanel.tsx`) has been replaced
+> by the editable, centered `ConfigModal.tsx` (see "Interacting with the config modal" below).
 
 ## Getting Started
 
@@ -93,17 +98,28 @@ make start   # Runs compiled server
 make test
 ```
 
-50 integration tests covering auth, tasks (CRUD + trigger), settings, and general API behaviour.
-These are server-side/integration tests (`tests/**`, `server/**`) run with the workspace-root
-Vitest config (`server/vitest.config.ts`) in a plain Node environment — most client-side logic is
-tested the same way, by exporting the pure logic a component needs (e.g.
-`client/src/hooks/openPanelStore.ts`, `client/src/components/taskConfigPanel.utils.ts`) into a
-module with no React/JSX so it's testable without a DOM.
+`make test` runs the server-side/integration suite: 866+ tests covering auth, tasks (CRUD,
+type-specific `PUT` validation, and trigger), settings, notifications, credentials, and general API
+behaviour. These live under `tests/**`, `server/tests/**`, and `server/src/**/*.test.ts` and run
+with the workspace-root Vitest config (`server/vitest.config.ts`) in a plain Node environment.
+Task validation in particular is covered across three files that stay independently readable:
+
+- `tests/tasks.test.ts` — CRUD + trigger happy paths and generic 404/401 handling.
+- `server/src/routes/tasks.put-validation.test.ts` — type-specific `PUT` field validation
+  (daily's `schedule`/`actionType`/`config`, developmental's `repoUrl`/`branch`/`agentId`).
+- `server/src/tests/tasks.test.ts` — edge cases: type coercion quirks, immutability of
+  server-managed fields (`id`/`status`/`createdAt`/`type`), malformed JSON bodies, and
+  injection/prototype-pollution-style inputs.
+
+Where possible, client-side logic is tested the same way, by exporting the pure logic a component
+needs (e.g. `client/src/hooks/openPanelStore.ts`, `client/src/components/configModal.utils.ts`)
+into a module with no React/JSX so it's testable without a DOM.
 
 Components whose behavior can't reasonably be reduced to pure functions — e.g. `TaskCard`'s
-click/keyboard interactions — are covered separately with component tests
-(`client/src/components/TaskCard.test.tsx`) using Vitest + `@testing-library/react` in a jsdom
-environment, configured by `client/vitest.config.ts`:
+click/keyboard interactions, `ConfigModal`'s editable save flow, `Dashboard`'s per-bucket create
+forms and drill-in navigation, and `MetricsPage`'s summary/table rendering — are covered separately
+with component tests (`client/src/**/*.test.tsx`) using Vitest + `@testing-library/react` in a
+jsdom environment, configured by `client/vitest.config.ts`:
 
 ```bash
 cd client && npx vitest run --config vitest.config.ts
@@ -111,63 +127,117 @@ cd client && npx vitest run --config vitest.config.ts
 
 This requires `vitest`, `jsdom`, and `@testing-library/react` as `client` devDependencies (in
 addition to `@vitejs/plugin-react`, already present) — install them with `npm install` in `client/`
-if they're missing.
+if they're missing. Note that `@testing-library/jest-dom` is **not** installed, so client tests use
+plain DOM assertions (`.textContent`, `.getAttribute(...)`, `.toHaveProperty(...)`) rather than
+jest-dom matchers like `toHaveTextContent`.
+
+## Navigation & Pages
+
+Every authenticated page is wrapped in `Navbar` (`client/src/components/Navbar.tsx`), which exposes
+three tabs and highlights whichever one matches the current route:
+
+| Tab | Route | Page |
+|-----|-------|------|
+| Dashboard | `/` (and `/?bucket=<type>` — see "Bucket drill-in" below) | `pages/Dashboard.tsx` |
+| Metrics | `/metrics` | `pages/MetricsPage.tsx` |
+| Settings | `/settings` | `pages/Settings.tsx` |
+
+All three are protected routes (see `App.tsx`'s `Protected` wrapper) — an unauthenticated visitor is
+redirected to `/login`, and any unmatched path redirects back to `/`.
 
 ## Dashboard Layout
 
 The task dashboard (`client/src/pages/Dashboard.tsx` / `Dashboard.css`) organizes tasks into three
-side-by-side buckets, one per `TaskType` (`daily`, `developmental`, `routine` — see
-`client/src/types.ts`). Each bucket renders its own column of `TaskCard` components
-(`client/src/components/TaskCard.tsx`) for tasks whose `type` matches that bucket.
+buckets, one per `TaskType` (`daily`, `developmental`, `routine` — see `client/src/types.ts`). Each
+bucket renders its own column of `TaskCard` components (`client/src/components/TaskCard.tsx`) for
+tasks whose `type` matches that bucket.
 
 ### Three-bucket structure
 
-- **Daily** — scheduled tasks driven by a cron `schedule` and `actionType` (`http` / `ssh` / `email`).
-- **Developmental** — AI-agent coding jobs tied to a `repoUrl`, `branch`, and `agentId`.
-- **Routine** — multi-step workflows composed of other tasks, edited via `RoutineBuilder.tsx`.
+- **Daily Tasks** — scheduled tasks driven by a cron `schedule` and `actionType` (`http` / `ssh` / `email`).
+- **Developmental Tasks** — AI-agent coding jobs tied to a `repoUrl`, `branch`, and `agentId`.
+- **Routine Automation** — multi-step workflows composed of other tasks, edited via `RoutineBuilder.tsx`.
 
 Tasks are assigned to a bucket purely by their `type` field — there is no manual sorting or
 drag-and-drop between buckets. Each bucket header shows a live count of the tasks it contains,
 and an empty bucket shows a short hint instead of an empty column.
 
-### Interacting with config panels
+### Per-bucket task creation
+
+Rather than a single global "+ New Routine" action, each bucket owns its own type-specific "New"
+button (`+ New Daily Task` / `+ New Developmental Task` / `+ New Routine`) which expands an inline
+create form scoped to that bucket. Only one bucket's create form can be open at a time — opening a
+different bucket's form closes whichever was previously open. Submitting posts a type-specific body
+to `POST /api/tasks` (see "Task body by type" below) and the newly created task is appended to its
+bucket immediately, without waiting for the SSE `task:updated` broadcast to arrive.
+
+### Bucket drill-in
+
+Clicking a bucket's title (e.g. "Daily Tasks") focuses that bucket full-width, with a "← Back"
+control to return to the three-bucket grid. This focused view is reflected in the URL as a
+`?bucket=daily|developmental|routine` query parameter on the dashboard route rather than a separate
+page, so it's bookmarkable, survives a page refresh, and responds to the browser's back/forward
+buttons. The search input (see below) still applies while drilled into a single bucket.
+
+### Interacting with the config modal
 
 The entire `TaskCard` is clickable — clicking anywhere on the card except its action buttons
-(⚙ / ▶ / ✕) opens that task's `TaskConfigPanel` (`client/src/components/TaskConfigPanel.tsx`),
-which switches on `task.type` to render the fields relevant to that task type:
+(⚙ / ▶ / ✕) opens that task's `ConfigModal` (`client/src/components/ConfigModal.tsx`): a centered,
+dimmed-backdrop dialog (never an inline side panel, so opening it never resizes the card or reflows
+sibling cards). Unlike the read-only panel it replaced, every field is editable and persisted via an
+explicit **Save** button that calls `PUT /api/tasks/:id`:
 
-- **Daily** — `schedule` (cron expression), `actionType`, and the action-specific `config` map.
-- **Developmental** — `repoUrl`, `branch`, and `agentId`.
-- **Routine** — hands off to the existing `RoutineBuilder` step editor, with its available-task
-  palette populated from every non-routine task on the dashboard (routines cannot nest).
+- **Daily** — `name`, `description`, `schedule` (cron expression), `actionType`, and config
+  key/value rows. Existing config values are never echoed back to the browser (they may hold
+  credentials), so blank rows mean "leave stored config unchanged," not "clear it."
+- **Developmental** — `name`, `description`, `repoUrl`, `branch`, and `agentId`.
+- **Routine** — a small `name`/`description` form saved independently, plus the existing
+  `RoutineBuilder` step editor (`PUT /api/tasks/:id/steps`), with its available-task palette
+  populated from every non-routine task on the dashboard (routines cannot nest).
+
+Saves do not auto-close the modal, so the user can keep editing/saving without losing their place;
+a "Saved" status message confirms success, and a server-provided error is shown inline on failure.
+The modal closes via its ✕ button, a backdrop click, or the `Escape` key.
 
 The card exposes `role="button"` and `tabIndex={0}` so it's reachable by keyboard, and responds to
 both `Enter` and `Space` the same way it responds to a click. The ⚙ button remains as an explicit,
 smaller affordance for the same action — it stops event propagation (as do ▶ and ✕) so clicking or
-keyboard-activating an action button never also toggles the card's own panel.
+keyboard-activating an action button never also toggles the card's own modal.
 
-Only one config panel is open across the whole dashboard at a time — opening a second one closes
-whichever was previously open (see `useOpenPanel` / `openPanelStore.ts`). Edits are saved with the
-same `apiFetch` helper (`client/src/api.ts`) used elsewhere in the dashboard, and changes propagate
-back to the task list either optimistically or via the SSE `task:updated` event (see
-`useTaskEvents`).
+Only one config modal is open across the whole dashboard at a time — opening a second one closes
+whichever was previously open (see `useOpenPanel` / `openPanelStore.ts`). Changes propagate back to
+the task list either optimistically (via the modal's own save) or via the SSE `task:updated` event
+(see `useTaskEvents`).
 
 ### Search behavior across buckets
 
-The search input in `dashboard-controls` filters by task `name` and `description` (case-insensitive)
-and applies **simultaneously across all three buckets** — typing a query narrows every bucket's
-contents at once rather than a single active tab. A task must match the search term to remain
-visible in its bucket; buckets with no matching tasks show the standard empty-state hint. Search
-composes with the existing type filter tabs, so narrowing to a single type still searches within
-that bucket only.
+The search input in `dashboard-controls` filters by task `name`, `id`, and `description`
+(case-insensitive) and applies **simultaneously across all three buckets** — typing a query narrows
+every bucket's contents at once, whether viewing the full grid or drilled into a single bucket. A
+task must match the search term to remain visible in its bucket; buckets with no matching tasks show
+the standard empty-state hint.
 
 ### Responsive design considerations
 
-The three buckets use a CSS Grid layout (`.dashboard-buckets` in `Dashboard.css`): three columns
-side-by-side on desktop viewports, collapsing to fewer columns on tablet widths and to a single
-stacked column on mobile so each bucket remains fully readable without horizontal scrolling.
-Within a bucket, `TaskCard`s reflow using the same `auto-fill`/`minmax` grid pattern already used
-by `.task-grid`, so card width adapts smoothly between breakpoints.
+The bucket grid uses CSS Grid (`.dashboard-buckets` in `Dashboard.css`): three columns side-by-side
+on desktop viewports, collapsing to fewer columns on tablet widths and to a single stacked column on
+mobile so each bucket remains fully readable without horizontal scrolling. The drilled-in focused
+view (`.dashboard-buckets--focused`) instead renders a single full-width bucket. Within a bucket,
+`TaskCard`s reflow using the same `auto-fill`/`minmax` grid pattern already used by `.task-grid`, so
+card width adapts smoothly between breakpoints.
+
+## Metrics Page
+
+`client/src/pages/MetricsPage.tsx` (`/metrics`) is a read-only view of task health at a glance. It
+reuses the same data-loading pattern as the Dashboard — an initial `GET /api/tasks` snapshot kept
+live via the `/api/tasks/events` SSE stream (`useTaskEvents`) — and introduces no new backend
+endpoints.
+
+- **Summary cards** — total task count, plus counts of `succeeded`, `running`, and `failed` tasks.
+- **Failed Tasks table** — every task currently in `failed` status, sorted most-recently-updated
+  first, with a link to `GET /api/tasks/:id/logs` (opened in a new tab) for quick triage.
+- An empty-state message ("No failed tasks") replaces the table when there are no failures, and an
+  error banner surfaces a failed initial fetch without crashing the page.
 
 ## API Reference
 
@@ -193,9 +263,30 @@ by `.task-grid`, so card width adapts smoothly between breakpoints.
 | `GET` | `/api/tasks` | Query: `?type=daily\|developmental\|routine`, `?status=idle\|queued\|running\|succeeded\|failed` |
 | `GET` | `/api/tasks/:id` | Single task |
 | `POST` | `/api/tasks` | Create task (type-specific body) |
-| `PUT` | `/api/tasks/:id` | Update `name` / `description` |
+| `PUT` | `/api/tasks/:id` | Partial update — see below |
 | `DELETE` | `/api/tasks/:id` | Remove task |
 | `POST` | `/api/tasks/:id/trigger` | Queue a task for execution |
+
+#### `PUT /api/tasks/:id` — updatable fields
+
+All fields are optional; only keys present in the request body are validated and applied — omitted
+fields keep their existing stored value. Fields outside the task's own type are silently ignored
+(e.g. sending `repoUrl` for a `daily` task has no effect). Server-managed fields (`id`, `type`,
+`status`, `createdAt`) can never be changed via this endpoint.
+
+| Field(s) | Applies to | Validation |
+|----------|-----------|------------|
+| `name` | all types | Ignored unless a non-empty string (blank/omitted keeps the existing name) |
+| `description` | all types | Coerced to a string when present |
+| `schedule` | `daily` | Non-empty string |
+| `actionType` | `daily` | One of `ssh` / `email` / `http` |
+| `config` | `daily` | Object of string key/value pairs (rejects arrays and non-string values) |
+| `repoUrl` | `developmental` | Non-empty `https://` URL on an allow-listed git host, no embedded credentials (SSRF guard — see `validateRepoUrl`) |
+| `branch` | `developmental` | Non-empty string |
+| `agentId` | `developmental` | One of the supported agent IDs (see `AGENT_OPTIONS` / `VALID_AGENTS`) |
+
+Routine `steps` are managed separately via `PUT /api/tasks/:id/steps` (see `RoutineBuilder.tsx`),
+not through this endpoint.
 
 #### Task body by type
 
