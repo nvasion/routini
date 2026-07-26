@@ -132,6 +132,17 @@ function setTaskAndNotify(task: Task): void {
 }
 
 /**
+ * Lifecycle-transition writer for the async execution engines (which are
+ * fire-and-forget from the trigger route). Unlike setTaskAndNotify, this
+ * drops the update when the task no longer exists — otherwise an engine
+ * completing after DELETE /api/tasks/:id would resurrect the deleted task.
+ */
+function updateTaskIfPresent(task: Task): void {
+  if (!tasks.has(task.id)) return
+  setTaskAndNotify(task)
+}
+
+/**
  * Write a single SSE frame (event + data) to the response stream.
  * No-op when the connection has already ended to avoid write-after-close errors.
  */
@@ -752,7 +763,7 @@ async function dispatchDailyHandler(
  */
 async function executeDailyTask(task: DailyTask): Promise<void> {
   const running: Task = { ...task, status: 'running', updatedAt: new Date().toISOString() }
-  setTaskAndNotify(running)
+  updateTaskIfPresent(running)
   appendLog(task.id, `Starting daily task (actionType: ${task.actionType})…`)
 
   let success = false
@@ -783,9 +794,14 @@ async function executeDailyTask(task: DailyTask): Promise<void> {
     success = false
   }
 
+  // The task may have been deleted while the handler ran — skip the final
+  // transition and outcome notification instead of resurrecting it.
+  const current = tasks.get(task.id)
+  if (!current) return
+
   const finalStatus = success ? 'succeeded' : 'failed'
   const finished: Task = {
-    ...(tasks.get(task.id) ?? task),
+    ...current,
     status: finalStatus,
     updatedAt: new Date().toISOString(),
   }
@@ -807,7 +823,7 @@ async function executeDailyTask(task: DailyTask): Promise<void> {
 async function executeDevTask(task: DevTask): Promise<void> {
   // Transition to 'running' before the container starts.
   const running: Task = { ...task, status: 'running', updatedAt: new Date().toISOString() }
-  setTaskAndNotify(running)
+  updateTaskIfPresent(running)
   appendLog(task.id, 'Starting developmental task container…')
 
   try {
@@ -826,7 +842,7 @@ async function executeDevTask(task: DevTask): Promise<void> {
         lastRunAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       }
-      setTaskAndNotify(succeeded)
+      updateTaskIfPresent(succeeded)
     } else {
       appendLog(task.id, `Container failed: ${result.error ?? 'unknown error'}`)
       const failed: DevTask = {
@@ -835,7 +851,7 @@ async function executeDevTask(task: DevTask): Promise<void> {
         lastRunAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       }
-      setTaskAndNotify(failed)
+      updateTaskIfPresent(failed)
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
@@ -845,7 +861,7 @@ async function executeDevTask(task: DevTask): Promise<void> {
       status: 'failed',
       updatedAt: new Date().toISOString(),
     }
-    setTaskAndNotify(failed)
+    updateTaskIfPresent(failed)
   }
 }
 
@@ -866,7 +882,7 @@ async function executeRoutineTask(routine: Routine): Promise<void> {
     status: 'running',
     updatedAt: new Date().toISOString(),
   }
-  setTaskAndNotify(running)
+  updateTaskIfPresent(running)
   appendLog(routine.id, 'Routine execution starting…')
 
   try {
@@ -877,7 +893,7 @@ async function executeRoutineTask(routine: Routine): Promise<void> {
       status: finalStatus,
       updatedAt: new Date().toISOString(),
     }
-    setTaskAndNotify(finished)
+    updateTaskIfPresent(finished)
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     appendLog(routine.id, `Unexpected error during routine execution: ${msg}`)
@@ -886,6 +902,6 @@ async function executeRoutineTask(routine: Routine): Promise<void> {
       status: 'failed',
       updatedAt: new Date().toISOString(),
     }
-    setTaskAndNotify(failed)
+    updateTaskIfPresent(failed)
   }
 }
