@@ -301,3 +301,29 @@
   0%, 100% { opacity: 1; transform: scale(1); }
   50%       { opacity: 0.4; transform: scale(0.75); }
 }
+
+/* ── Bucket drill-in title button ──────────────────────────────
+   Renders as plain text inside the bucket's <h2>, but is a real
+   <button> so it's keyboard/screen-reader accessible. Reset to
+   look like inline text, then restore a pointer cursor and a
+   focus ring so it still reads as interactive. */
+.dashboard-bucket-title-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.dashboard-bucket-title-btn:hover {
+  color: var(--color-secondary);
+}
+
+.dashboard-bucket-title-btn:focus-visible {
+  outline: 2px solid var(--color-secondary);
+  outline-offset: 2px;
+  border-radius: var(--radius);
+}

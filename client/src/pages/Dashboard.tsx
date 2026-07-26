@@ -14,12 +14,69 @@ const BUCKETS: { type: TaskType; label: string }[] = [
   { type: 'routine', label: 'Routine Automation' },
 ]
 
+const BUCKET_TYPES = new Set(BUCKETS.map(b => b.type))
+
+function isBucketType(value: string | null): value is TaskType {
+  return value !== null && BUCKET_TYPES.has(value as TaskType)
+}
+
+// The drill-in view is reflected in the URL as a `?bucket=<type>` query
+// parameter on the dashboard route ("/", see App.tsx) rather than a
+// dedicated route. This keeps the route table untouched (the same
+// Dashboard component still serves "/") while making the focused view
+// bookmarkable and navigable via the browser's back/forward buttons.
+// We use the History API directly instead of a router hook so Dashboard
+// keeps working when rendered outside a Router (e.g. in unit tests).
+function getBucketTypeFromLocation(): TaskType | null {
+  const param = new URLSearchParams(window.location.search).get('bucket')
+  return isBucketType(param) ? param : null
+}
+
 export function Dashboard() {
   const [tasks, setTasks] = useState<Task[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [search, setSearch] = useState('')
   const [sseConnected, setSseConnected] = useState(false)
+
+  // Drill-in view: when set, the dashboard shows a single bucket full-width
+  // (with a back control) instead of the three-column grid. Cleared whenever
+  // the user clicks "Back" or the focused bucket's type no longer exists.
+  // Initialized from (and kept in sync with) the `?bucket=` URL query
+  // parameter so the view survives a refresh and responds to browser
+  // back/forward navigation — see navigateToBucket and the popstate
+  // listener below.
+  const [focusedType, setFocusedType] = useState<TaskType | null>(() => getBucketTypeFromLocation())
+
+  // Keep `focusedType` in sync when the user navigates with the browser's
+  // back/forward buttons (popstate is not fired for our own pushState calls,
+  // only for actual history navigation).
+  useEffect(() => {
+    const onPopState = () => setFocusedType(getBucketTypeFromLocation())
+    window.addEventListener('popstate', onPopState)
+    return () => window.removeEventListener('popstate', onPopState)
+  }, [])
+
+  // Updates both the in-memory focus state and the URL so the two never
+  // drift apart. Pushes a new history entry (rather than replacing) so the
+  // browser's back button steps out of the drill-in view.
+  const navigateToBucket = useCallback((type: TaskType | null) => {
+    setFocusedType(type)
+    const url = new URL(window.location.href)
+    if (type) {
+      url.searchParams.set('bucket', type)
+    } else {
+      url.searchParams.delete('bucket')
+    }
+    // Preserve the existing history.state (React Router stores its own
+    // idx/key bookkeeping there) instead of clobbering it with `{}`, so we
+    // don't desync the router's internal navigation index.
+    window.history.pushState(
+      { ...window.history.state },
+      '',
+      `${url.pathname}${url.search}${url.hash}`
+    )
+  }, [])
 
   // New routine creation form
   const [showNewForm, setShowNewForm] = useState(false)
@@ -170,6 +227,10 @@ export function Dashboard() {
     tasks: filteredTasks.filter(task => task.type === type),
   }))
 
+  // The bucket currently drilled into, if any. Falls back to the grid view
+  // if the focused type somehow no longer matches a known bucket.
+  const focusedBucket = focusedType ? buckets.find(b => b.type === focusedType) ?? null : null
+
   // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
@@ -264,6 +325,44 @@ export function Dashboard() {
           <p>No tasks found</p>
           <p className="state-hint">Try adjusting your search</p>
         </div>
+      ) : focusedBucket ? (
+        <div className="dashboard-buckets dashboard-buckets--focused">
+          <section
+            className="dashboard-bucket dashboard-bucket--focused"
+            aria-label={`${focusedBucket.label} tasks`}
+          >
+            <div className="dashboard-bucket-header">
+              <button
+                type="button"
+                className="btn btn-outline dashboard-bucket-back"
+                onClick={() => navigateToBucket(null)}
+                aria-label="Back to all buckets"
+              >
+                ← Back
+              </button>
+              <h2>{focusedBucket.label}</h2>
+              <span className="dashboard-bucket-count">{focusedBucket.tasks.length}</span>
+            </div>
+
+            {focusedBucket.tasks.length === 0 ? (
+              <div className="state-placeholder state-placeholder--bucket">
+                <p className="state-hint">No matching tasks</p>
+              </div>
+            ) : (
+              <div className="task-grid">
+                {focusedBucket.tasks.map(task => (
+                  <TaskCard
+                    key={task.id}
+                    task={task}
+                    onTrigger={handleTrigger}
+                    onDelete={handleDelete}
+                    allTasks={tasks}
+                  />
+                ))}
+              </div>
+            )}
+          </section>
+        </div>
       ) : (
         <div className="dashboard-buckets">
           {buckets.map(bucket => (
@@ -273,7 +372,16 @@ export function Dashboard() {
               aria-label={`${bucket.label} tasks`}
             >
               <div className="dashboard-bucket-header">
-                <h2>{bucket.label}</h2>
+                <h2>
+                  <button
+                    type="button"
+                    className="dashboard-bucket-title-btn"
+                    onClick={() => navigateToBucket(bucket.type)}
+                    aria-label={`View ${bucket.label} in full width`}
+                  >
+                    {bucket.label}
+                  </button>
+                </h2>
                 <span className="dashboard-bucket-count">{bucket.tasks.length}</span>
               </div>
 

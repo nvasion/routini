@@ -2,10 +2,17 @@
  * App root — sets up React Router and renders the appropriate page.
  *
  * Route structure:
- *   /login     — public login page (pages/Login.tsx)
- *   /          — protected dashboard  (pages/Dashboard.tsx)
- *   /settings  — protected AI settings (pages/Settings.tsx)
- *   *          — redirect to /
+ *   /login             — public login page (pages/Login.tsx)
+ *   /                  — protected dashboard  (pages/Dashboard.tsx)
+ *   /?bucket=<type>    — dashboard, drilled into a single bucket
+ *                        (daily | developmental | routine). This is a query
+ *                        parameter rather than a distinct <Route> because the
+ *                        drill-in view is a display mode of the same
+ *                        Dashboard page, not a different page — Dashboard
+ *                        reads/writes it via the History API so the view is
+ *                        bookmarkable and works with back/forward.
+ *   /settings          — protected AI settings (pages/Settings.tsx)
+ *   *                  — redirect to /
  *
  * Session architecture:
  *   - The JWT is stored in an HTTP-only, SameSite=Strict cookie set by the
