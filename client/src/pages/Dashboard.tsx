@@ -3,7 +3,59 @@ import type { DailyActionType, Task, TaskType } from '../types'
 import { TaskCard } from '../components/TaskCard'
 import { apiFetch } from '../api'
 import { useTaskEvents } from '../hooks/useTaskEvents'
+import {
+  AGENT_OPTIONS,
+  DAILY_ACTION_TYPES,
+  configRowsToRecord,
+  type ConfigRow,
+} from '../components/configModal.utils'
 import './Dashboard.css'
+
+// Per-bucket "create" form state. Kept local to Dashboard (rather than in
+// configModal.utils, which backs the per-task *edit* forms in ConfigModal)
+// since these shapes are creation-only — e.g. they have no `description`
+// field, matching the minimal POST /api/tasks payloads built below.
+interface DailyFormState {
+  name: string
+  schedule: string
+  actionType: DailyActionType
+  config: ConfigRow[]
+}
+
+interface DevFormState {
+  name: string
+  repoUrl: string
+  branch: string
+  agentId: string
+}
+
+interface RoutineFormState {
+  name: string
+}
+
+const EMPTY_DAILY_FORM: DailyFormState = {
+  name: '',
+  schedule: '',
+  actionType: DAILY_ACTION_TYPES[0],
+  config: [],
+}
+
+const EMPTY_DEV_FORM: DevFormState = {
+  name: '',
+  repoUrl: '',
+  branch: '',
+  agentId: AGENT_OPTIONS[0].value,
+}
+
+const EMPTY_ROUTINE_FORM: RoutineFormState = { name: '' }
+
+// Maps each bucket's TaskType to the type-specific modifier class defined in
+// Dashboard.css (dashboard-bucket--daily / --developmental / --routine).
+const BUCKET_PANEL_CLASS: Record<TaskType, string> = {
+  daily: 'dashboard-bucket--daily',
+  developmental: 'dashboard-bucket--developmental',
+  routine: 'dashboard-bucket--routine',
+}
 
 // Tasks are grouped into fixed, type-based buckets rather than filtered by a
 // single active tab — all three buckets render side by side and search
@@ -81,9 +133,9 @@ export function Dashboard() {
     )
   }, [])
 
-  // New routine creation form
-  const [showNewForm, setShowNewForm] = useState(false)
-  const [newRoutineName, setNewRoutineName] = useState('')
+  // Per-bucket "create" forms: at most one bucket's create form is open at a
+  // time, tracked by which bucket type (if any) is currently expanded.
+  const [openBucket, setOpenBucket] = useState<TaskType | null>(null)
   const [creating, setCreating] = useState(false)
   const [dailyForm, setDailyForm] = useState<DailyFormState>(EMPTY_DAILY_FORM)
   const [devForm, setDevForm] = useState<DevFormState>(EMPTY_DEV_FORM)
@@ -229,7 +281,7 @@ export function Dashboard() {
       type: 'daily',
       schedule: dailyForm.schedule.trim() || undefined,
       actionType: dailyForm.actionType,
-      config: configEntriesToRecord(dailyForm.config),
+      config: configRowsToRecord(dailyForm.config),
     })
     if (ok) {
       setDailyForm(EMPTY_DAILY_FORM)
@@ -422,6 +474,14 @@ export function Dashboard() {
                   </button>
                 </h2>
                 <span className="dashboard-bucket-count">{bucket.tasks.length}</span>
+                <button
+                  type="button"
+                  className="btn btn-outline dashboard-bucket-add"
+                  onClick={() => toggleCreateForm(bucket.type)}
+                  aria-label={`${openBucket === bucket.type ? 'Cancel' : 'New'} ${bucket.singular}`}
+                >
+                  {openBucket === bucket.type ? '✕' : `+ New ${bucket.singular}`}
+                </button>
               </div>
 
               {openBucket === bucket.type && bucket.type === 'daily' && (
@@ -458,9 +518,9 @@ export function Dashboard() {
                     disabled={creating}
                     aria-label="Daily task action type"
                   >
-                    {DAILY_ACTION_TYPES.map(opt => (
-                      <option key={opt.value} value={opt.value}>
-                        {opt.label}
+                    {DAILY_ACTION_TYPES.map(actionType => (
+                      <option key={actionType} value={actionType}>
+                        {actionType}
                       </option>
                     ))}
                   </select>
