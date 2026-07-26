@@ -4,6 +4,7 @@
  * Route structure:
  *   /login     — public login page (pages/Login.tsx)
  *   /          — protected dashboard  (pages/Dashboard.tsx)
+ *   /metrics   — protected task metrics (pages/MetricsPage.tsx)
  *   /settings  — protected AI settings (pages/Settings.tsx)
  *   *          — redirect to /
  *
@@ -24,6 +25,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { Navbar } from './components/Navbar'
 import { Login } from './pages/Login'
 import { Dashboard } from './pages/Dashboard'
+import { MetricsPage } from './pages/MetricsPage'
 import { Settings } from './pages/Settings'
 import { getToken } from './api'
 
@@ -65,6 +67,15 @@ function App() {
           element={
             <Protected>
               <Dashboard />
+            </Protected>
+          }
+        />
+
+        <Route
+          path="/metrics"
+          element={
+            <Protected>
+              <MetricsPage />
             </Protected>
           }
         />
