@@ -1,0 +1,303 @@
+/* ── ConfigModal ────────────────────────────────────────────────────────────
+   Centered dialog + dimmed backdrop. Replaces the old TaskConfigPanel side
+   drawer. Taken out of normal document flow (position: fixed) so opening the
+   modal never resizes its TaskCard or reflows sibling cards / dashboard
+   buckets.
+   ────────────────────────────────────────────────────────────────────────── */
+
+.cm-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.65);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+  z-index: 100;
+  animation: cm-fade-in 0.15s ease-out;
+}
+
+.cm-panel {
+  position: relative;
+  width: min(480px, 100%);
+  max-height: 90vh;
+  background: var(--color-bg-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.6);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  animation: cm-pop-in 0.18s ease-out;
+}
+
+/* Routines need RoutineBuilder's wider two-column layout (palette + steps),
+   plus a meta bar above it for name/description — see .cm-routine-meta. */
+.cm-panel--routine {
+  width: min(960px, 100%);
+  padding: 0;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+}
+
+.cm-panel--routine .rb {
+  margin-top: 0;
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+
+@keyframes cm-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes cm-pop-in {
+  from { transform: scale(0.96) translateY(8px); opacity: 0; }
+  to { transform: scale(1) translateY(0); opacity: 1; }
+}
+
+/* ── Header ─────────────────────────────────────────────────────────────── */
+
+.cm-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1.25rem 1.5rem;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-bg-elevated);
+}
+
+.cm-title {
+  font-size: 1.1rem;
+  font-weight: 700;
+  background: linear-gradient(135deg, var(--color-primary), var(--color-secondary));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  margin-bottom: 0.15rem;
+}
+
+.cm-subtitle {
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+}
+
+.cm-close {
+  background: transparent;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  color: var(--color-text-muted);
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.75rem;
+  flex-shrink: 0;
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.cm-close:hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+/* ── Body / form ────────────────────────────────────────────────────────── */
+
+.cm-body {
+  padding: 1.25rem 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.1rem;
+}
+
+.cm-form-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.cm-form-label {
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-text-muted);
+}
+
+.cm-form-hint {
+  font-size: 0.78rem;
+  color: var(--color-text-muted);
+}
+
+.cm-input {
+  padding: 0.6rem 0.75rem;
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  color: var(--color-text);
+  font-size: 0.9rem;
+  outline: none;
+  transition: border-color 0.15s;
+  width: 100%;
+  font-family: inherit;
+}
+
+.cm-input:focus {
+  border-color: var(--color-secondary);
+}
+
+.cm-textarea {
+  resize: vertical;
+  min-height: 4.5rem;
+}
+
+select.cm-input option {
+  background: var(--color-bg-elevated);
+}
+
+/* ── Config key/value rows (daily tasks) ───────────────────────────────── */
+
+.cm-config-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.cm-config-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.cm-row-remove {
+  background: transparent;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  color: var(--color-text-muted);
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+}
+
+.cm-row-remove:hover:not(:disabled) {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+.cm-row-remove:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.cm-add-row {
+  align-self: flex-start;
+  background: transparent;
+  border: 1px dashed var(--color-border);
+  border-radius: var(--radius);
+  color: var(--color-text-muted);
+  padding: 0.4rem 0.75rem;
+  font-size: 0.82rem;
+}
+
+.cm-add-row:hover {
+  border-color: var(--color-secondary);
+  color: var(--color-text);
+}
+
+/* ── Status / footer ────────────────────────────────────────────────────── */
+
+.cm-error {
+  color: var(--color-error);
+  font-size: 0.85rem;
+}
+
+.cm-success {
+  color: var(--color-success);
+  font-size: 0.85rem;
+}
+
+.cm-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  padding-top: 0.25rem;
+}
+
+.cm-btn-ghost {
+  background: transparent;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  color: var(--color-text-muted);
+  padding: 0.55rem 1.1rem;
+  font-size: 0.85rem;
+}
+
+.cm-btn-ghost:hover:not(:disabled) {
+  border-color: var(--color-text-muted);
+  color: var(--color-text);
+}
+
+.cm-btn-save {
+  background: var(--color-primary);
+  color: #fff;
+  border: none;
+  border-radius: var(--radius);
+  padding: 0.55rem 1.4rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  transition: background 0.15s;
+}
+
+.cm-btn-save:hover:not(:disabled) {
+  background: var(--color-primary-dark);
+}
+
+.cm-btn-save:disabled,
+.cm-btn-ghost:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.cm-btn-sm {
+  padding: 0.45rem 1rem;
+  font-size: 0.8rem;
+}
+
+/* ── Routine meta bar — sits above the embedded RoutineBuilder ────────────── */
+
+.cm-routine-meta {
+  background: var(--color-bg-card);
+  border: 1px solid var(--color-border);
+  border-bottom: none;
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  padding: 1rem 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.cm-routine-meta-fields {
+  display: grid;
+  grid-template-columns: 1fr 2fr;
+  gap: 1rem;
+}
+
+.cm-routine-meta-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+@media (max-width: 640px) {
+  .cm-panel {
+    width: 100%;
+    max-height: 95vh;
+  }
+
+  .cm-routine-meta-fields {
+    grid-template-columns: 1fr;
+  }
+}

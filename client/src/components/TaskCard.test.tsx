@@ -83,7 +83,7 @@ describe('TaskCard', () => {
       const task = makeDailyTask()
       render(<TaskCard task={task} onTrigger={vi.fn()} onDelete={vi.fn()} />)
 
-      const card = screen.getByRole('button', { name: 'View configuration: Morning sync' })
+      const card = screen.getByRole('button', { name: 'Edit configuration: Morning sync' })
       expect(card.tagName).toBe('ARTICLE')
       expect(card.getAttribute('tabindex')).toBe('0')
       expect(card.getAttribute('aria-expanded')).toBe('false')
@@ -93,7 +93,7 @@ describe('TaskCard', () => {
       const task = makeDailyTask()
       render(<TaskCard task={task} onTrigger={vi.fn()} onDelete={vi.fn()} />)
 
-      const card = screen.getByRole('button', { name: 'View configuration: Morning sync' })
+      const card = screen.getByRole('button', { name: 'Edit configuration: Morning sync' })
       fireEvent.keyDown(card, { key: 'Enter' })
 
       expect(screen.getByRole('dialog')).toBeTruthy()
@@ -103,7 +103,7 @@ describe('TaskCard', () => {
       const task = makeDailyTask()
       render(<TaskCard task={task} onTrigger={vi.fn()} onDelete={vi.fn()} />)
 
-      const card = screen.getByRole('button', { name: 'View configuration: Morning sync' })
+      const card = screen.getByRole('button', { name: 'Edit configuration: Morning sync' })
       fireEvent.keyDown(card, { key: ' ' })
 
       expect(screen.getByRole('dialog')).toBeTruthy()
@@ -113,7 +113,7 @@ describe('TaskCard', () => {
       const task = makeDailyTask()
       render(<TaskCard task={task} onTrigger={vi.fn()} onDelete={vi.fn()} />)
 
-      const card = screen.getByRole('button', { name: 'View configuration: Morning sync' })
+      const card = screen.getByRole('button', { name: 'Edit configuration: Morning sync' })
       fireEvent.keyDown(card, { key: 'a' })
 
       expect(screen.queryByRole('dialog')).toBeNull()
@@ -186,7 +186,7 @@ describe('TaskCard', () => {
       const task = makeDailyTask()
       render(<TaskCard task={task} onTrigger={vi.fn()} onDelete={vi.fn()} />)
 
-      fireEvent.click(screen.getByRole('button', { name: 'View configuration' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Edit configuration' }))
 
       // If the click bubbled past the action-buttons wrapper it would also
       // hit the card's own onClick and immediately toggle the panel closed
@@ -199,12 +199,12 @@ describe('TaskCard', () => {
       const { container } = render(
         <TaskCard task={task} onTrigger={vi.fn()} onDelete={vi.fn()} />,
       )
-      // Scope to the card itself: once open, the TaskConfigPanel also
+      // Scope to the card itself: once open, the ConfigModal also
       // renders a "Close configuration panel" labelled button (its own ✕),
       // so an unscoped query would be ambiguous.
       const card = within(container).getByRole('button', { name: /configuration: Morning sync/i })
 
-      fireEvent.click(within(card).getByRole('button', { name: 'View configuration' }))
+      fireEvent.click(within(card).getByRole('button', { name: 'Edit configuration' }))
       expect(screen.getByRole('dialog')).toBeTruthy()
 
       fireEvent.click(within(card).getByRole('button', { name: 'Close configuration panel' }))
