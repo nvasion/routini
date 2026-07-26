@@ -5,6 +5,9 @@ import type {
   TaskType,
   TaskStatus,
   DailyTask,
+  DailyActionType,
+  DailyTaskResponse,
+  SanitizedDailyConfig,
   DevTask,
   Routine,
   RoutineStep,
@@ -527,6 +530,53 @@ tasksRouter.post('/', requireCsrf, (req: Request, res: Response) => {
 
 // ── PUT /api/tasks/:id ────────────────────────────────────────────────────────
 
+/** Action types accepted for daily tasks. */
+const VALID_DAILY_ACTION_TYPES: DailyActionType[] = ['ssh', 'email', 'http']
+
+/**
+ * Allowed `config` keys per daily task `actionType`, mirroring the fields
+ * each action's service reads from `DailyTask.config`:
+ *   - ssh   → server/src/services/ssh.ts  (validateSshConfig)
+ *   - email → server/src/services/imap.ts (validateImapConfig)
+ *   - http  → server/src/services/http.ts (validateHttpUrl + config reads)
+ *
+ * Keeping this allowlist at the route layer lets PUT reject unknown or
+ * misspelled config keys with a 400 before they ever reach an executor.
+ */
+const DAILY_CONFIG_KEYS: Record<DailyActionType, readonly string[]> = {
+  ssh: ['host', 'port', 'username', 'command'],
+  email: ['host', 'port', 'username', 'mailbox', 'searchCriteria', 'tls'],
+  http: ['url', 'method', 'expectedStatus', 'timeout', 'headers', 'body'],
+}
+
+/** Body fields that only make sense on a daily task. */
+const DAILY_ONLY_FIELDS = ['schedule', 'actionType', 'config'] as const
+
+/** Body fields that only make sense on a developmental task. */
+const DEV_ONLY_FIELDS = ['repoUrl', 'branch', 'agentId'] as const
+
+/** Returns the names of `fields` that are present (not undefined) on `body`. */
+function presentFields(body: Record<string, unknown>, fields: readonly string[]): string[] {
+  return fields.filter(field => body[field] !== undefined)
+}
+
+/**
+ * Produces a write-only view of a daily task's config for API responses.
+ *
+ * Config values (e.g. SSH host/command, HTTP url/headers) were just supplied
+ * by the caller in the request body, so echoing them back in the response
+ * provides no value and needlessly re-exposes data that should be treated as
+ * write-only from the API's perspective. Every configured key is retained
+ * (mapped to `true`) so the caller can still confirm which fields are set.
+ */
+function sanitizeDailyConfigForResponse(config: Record<string, string>): SanitizedDailyConfig {
+  const sanitized: SanitizedDailyConfig = {}
+  for (const key of Object.keys(config)) {
+    sanitized[key] = true
+  }
+  return sanitized
+}
+
 tasksRouter.put('/:id', requireCsrf, (req: Request, res: Response) => {
   const task = tasks.get(req.params.id)
 
@@ -538,12 +588,165 @@ tasksRouter.put('/:id', requireCsrf, (req: Request, res: Response) => {
   const body = req.body as Record<string, unknown>
   const { name, description } = body
 
-  const updated: Task = {
-    ...task,
+  // Shared name/description patch applied regardless of task type.
+  const commonPatch = {
     ...(name !== undefined &&
       typeof name === 'string' &&
       name.trim() !== '' && { name: name.trim() }),
     ...(description !== undefined && { description: String(description).trim() }),
+  }
+
+  if (task.type === 'daily') {
+    const invalidFields = presentFields(body, DEV_ONLY_FIELDS)
+    if (invalidFields.length > 0) {
+      res.status(400).json({
+        error: `Field(s) not valid for a daily task: ${invalidFields.join(', ')}`,
+      })
+      return
+    }
+
+    const { schedule, actionType, config } = body
+
+    let nextActionType: DailyActionType = task.actionType
+    if (actionType !== undefined) {
+      if (typeof actionType !== 'string' || !VALID_DAILY_ACTION_TYPES.includes(actionType as DailyActionType)) {
+        res.status(400).json({
+          error: `actionType must be one of: ${VALID_DAILY_ACTION_TYPES.join(', ')}`,
+        })
+        return
+      }
+      nextActionType = actionType as DailyActionType
+    }
+
+    let nextSchedule = task.schedule
+    if (schedule !== undefined) {
+      if (typeof schedule !== 'string' || schedule.trim() === '') {
+        res.status(400).json({ error: 'schedule must be a non-empty string' })
+        return
+      }
+      nextSchedule = schedule.trim()
+    }
+
+    let nextConfig = task.config
+    if (config !== undefined) {
+      if (typeof config !== 'object' || config === null || Array.isArray(config)) {
+        res.status(400).json({ error: 'config must be an object of string key/value pairs' })
+        return
+      }
+
+      const configRecord = config as Record<string, unknown>
+      const allowedKeys = DAILY_CONFIG_KEYS[nextActionType]
+      const unknownKeys = Object.keys(configRecord).filter(key => !allowedKeys.includes(key))
+      if (unknownKeys.length > 0) {
+        res.status(400).json({
+          error: `Invalid config key(s) for actionType "${nextActionType}": ${unknownKeys.join(', ')}. Allowed: ${allowedKeys.join(', ')}`,
+        })
+        return
+      }
+
+      const nonStringKeys = Object.entries(configRecord)
+        .filter(([, value]) => typeof value !== 'string')
+        .map(([key]) => key)
+      if (nonStringKeys.length > 0) {
+        res.status(400).json({ error: `Config value(s) must be strings: ${nonStringKeys.join(', ')}` })
+        return
+      }
+
+      nextConfig = configRecord as Record<string, string>
+    }
+
+    const updated: DailyTask = {
+      ...task,
+      ...commonPatch,
+      actionType: nextActionType,
+      schedule: nextSchedule,
+      config: nextConfig,
+      updatedAt: new Date().toISOString(),
+    }
+
+    setTaskAndNotify(updated)
+    const response: DailyTaskResponse = {
+      ...updated,
+      config: sanitizeDailyConfigForResponse(updated.config),
+    }
+    res.json(response)
+    return
+  }
+
+  if (task.type === 'developmental') {
+    const invalidFields = presentFields(body, DAILY_ONLY_FIELDS)
+    if (invalidFields.length > 0) {
+      res.status(400).json({
+        error: `Field(s) not valid for a developmental task: ${invalidFields.join(', ')}`,
+      })
+      return
+    }
+
+    const { repoUrl, branch, agentId } = body
+
+    let nextRepoUrl = task.repoUrl
+    if (repoUrl !== undefined) {
+      if (typeof repoUrl !== 'string') {
+        res.status(400).json({ error: 'repoUrl must be a string' })
+        return
+      }
+      const repoCheck = validateRepoUrl(repoUrl)
+      if (!repoCheck.valid) {
+        res.status(400).json({ error: repoCheck.error })
+        return
+      }
+      nextRepoUrl = repoUrl.trim()
+    }
+
+    let nextBranch = task.branch
+    if (branch !== undefined) {
+      if (typeof branch !== 'string' || branch.trim() === '') {
+        res.status(400).json({ error: 'branch must be a non-empty string' })
+        return
+      }
+      nextBranch = branch.trim()
+    }
+
+    let nextAgentId = task.agentId
+    if (agentId !== undefined) {
+      const trimmedAgentId = typeof agentId === 'string' ? agentId.trim() : ''
+      if (!trimmedAgentId || !validateAgentId(trimmedAgentId)) {
+        res.status(400).json({
+          error: `Unsupported agentId "${String(agentId)}". Must be one of: ${[...VALID_AGENTS].join(', ')}`,
+        })
+        return
+      }
+      nextAgentId = trimmedAgentId
+    }
+
+    const updated: DevTask = {
+      ...task,
+      ...commonPatch,
+      repoUrl: nextRepoUrl,
+      branch: nextBranch,
+      agentId: nextAgentId,
+      updatedAt: new Date().toISOString(),
+    }
+
+    setTaskAndNotify(updated)
+    res.json(updated)
+    return
+  }
+
+  // routine — steps are managed separately via PUT /api/tasks/:id/steps, so
+  // daily/developmental-only fields never apply here. Reject them explicitly
+  // rather than silently ignoring them, so a misdirected request is surfaced.
+  const invalidFields = presentFields(body, [...DAILY_ONLY_FIELDS, ...DEV_ONLY_FIELDS])
+  if (invalidFields.length > 0) {
+    res.status(400).json({
+      error: `Field(s) not valid for a routine task: ${invalidFields.join(', ')}`,
+    })
+    return
+  }
+
+  const updated: Routine = {
+    ...task,
+    ...commonPatch,
     updatedAt: new Date().toISOString(),
   }
 
