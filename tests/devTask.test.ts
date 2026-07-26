@@ -554,4 +554,30 @@ describe('POST /api/tasks/:id/trigger – developmental task', () => {
     const logsRes = await request.get(`/api/tasks/${id}/logs`).set(auth())
     expect(logsRes.status).toBe(404)
   })
+
+  it('does not resurrect a task deleted while it was executing', async () => {
+    // Regression test: the async execution engine used to call
+    // setTaskAndNotify unconditionally on completion, re-inserting a task
+    // that had been deleted mid-run back into the store.
+    const created = await request.post('/api/tasks').set(auth()).send({
+      name: 'Delete During Run Test',
+      type: 'developmental',
+      repoUrl: 'https://github.com/owner/repo',
+      agentId: 'claude',
+    })
+    const id = created.body.id as string
+
+    await request.post(`/api/tasks/${id}/trigger`).set(auth())
+    const del = await request.delete(`/api/tasks/${id}`).set(auth())
+    expect(del.status).toBe(200)
+
+    // Give the fire-and-forget engine time to finish; it must not re-add
+    // the deleted task on its final status transition.
+    await new Promise(r => setTimeout(r, 200))
+
+    const getRes = await request.get(`/api/tasks/${id}`).set(auth())
+    expect(getRes.status).toBe(404)
+    const logsRes = await request.get(`/api/tasks/${id}/logs`).set(auth())
+    expect(logsRes.status).toBe(404)
+  })
 })
