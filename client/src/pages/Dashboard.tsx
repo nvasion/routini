@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react'
-import type { Task, TaskType } from '../types'
+import type { DailyActionType, Task, TaskType } from '../types'
 import { TaskCard } from '../components/TaskCard'
 import { apiFetch } from '../api'
 import { useTaskEvents } from '../hooks/useTaskEvents'
@@ -7,12 +7,74 @@ import './Dashboard.css'
 
 // Tasks are grouped into fixed, type-based buckets rather than filtered by a
 // single active tab — all three buckets render side by side and search
-// narrows each of them simultaneously.
-const BUCKETS: { type: TaskType; label: string }[] = [
-  { type: 'daily', label: 'Daily Tasks' },
-  { type: 'developmental', label: 'Developmental Tasks' },
-  { type: 'routine', label: 'Routine Automation' },
+// narrows each of them simultaneously. Each bucket also owns its own
+// type-specific "create" form (see per-bucket create state below) rather
+// than a single global "+ New Routine" action, since the fields required to
+// create a task differ per type.
+const BUCKETS: { type: TaskType; label: string; singular: string }[] = [
+  { type: 'daily', label: 'Daily Tasks', singular: 'Daily Task' },
+  { type: 'developmental', label: 'Developmental Tasks', singular: 'Developmental Task' },
+  { type: 'routine', label: 'Routine Automation', singular: 'Routine' },
 ]
+
+const DAILY_ACTION_TYPES: { value: DailyActionType; label: string }[] = [
+  { value: 'http', label: 'HTTP' },
+  { value: 'ssh', label: 'SSH' },
+  { value: 'email', label: 'Email (IMAP)' },
+]
+
+const AGENT_OPTIONS: { value: string; label: string }[] = [
+  { value: 'claude', label: 'Claude' },
+  { value: 'opencode', label: 'OpenCode' },
+  { value: 'omnimancer', label: 'Omnimancer' },
+]
+
+interface ConfigEntry {
+  key: string
+  value: string
+}
+
+interface DailyFormState {
+  name: string
+  schedule: string
+  actionType: DailyActionType
+  config: ConfigEntry[]
+}
+
+interface DevFormState {
+  name: string
+  repoUrl: string
+  branch: string
+  agentId: string
+}
+
+interface RoutineFormState {
+  name: string
+}
+
+const EMPTY_DAILY_FORM: DailyFormState = {
+  name: '',
+  schedule: '0 9 * * *',
+  actionType: 'http',
+  config: [],
+}
+
+const EMPTY_DEV_FORM: DevFormState = {
+  name: '',
+  repoUrl: '',
+  branch: 'main',
+  agentId: 'claude',
+}
+
+const EMPTY_ROUTINE_FORM: RoutineFormState = { name: '' }
+
+/** Converts the config key/value rows into the Record<string, string> shape
+ * the API expects, dropping rows with a blank key. */
+function configEntriesToRecord(entries: ConfigEntry[]): Record<string, string> {
+  return Object.fromEntries(
+    entries.filter(entry => entry.key.trim() !== '').map(entry => [entry.key.trim(), entry.value])
+  )
+}
 
 export function Dashboard() {
   const [tasks, setTasks] = useState<Task[]>([])
@@ -21,10 +83,12 @@ export function Dashboard() {
   const [search, setSearch] = useState('')
   const [sseConnected, setSseConnected] = useState(false)
 
-  // New routine creation form
-  const [showNewForm, setShowNewForm] = useState(false)
-  const [newRoutineName, setNewRoutineName] = useState('')
+  // Per-bucket create forms — only one bucket's form is open at a time.
+  const [openBucket, setOpenBucket] = useState<TaskType | null>(null)
   const [creating, setCreating] = useState(false)
+  const [dailyForm, setDailyForm] = useState<DailyFormState>(EMPTY_DAILY_FORM)
+  const [devForm, setDevForm] = useState<DevFormState>(EMPTY_DEV_FORM)
+  const [routineForm, setRoutineForm] = useState<RoutineFormState>(EMPTY_ROUTINE_FORM)
 
   // ── Real-time SSE subscription ────────────────────────────────────────────
   //
@@ -115,35 +179,108 @@ export function Dashboard() {
     }
   }
 
-  // ── Routine creation ──────────────────────────────────────────────────────
+  // ── Task creation ─────────────────────────────────────────────────────────
+  //
+  // Shared by all three per-bucket forms: posts the type-specific body to
+  // POST /api/tasks and merges the created task into local state. The SSE
+  // 'task:updated' event will also arrive and keep the list in sync; adding
+  // here provides immediate feedback without waiting for SSE.
 
-  const handleCreateRoutine = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!newRoutineName.trim()) return
-
+  const createTask = useCallback(async (body: Record<string, unknown>): Promise<boolean> => {
     try {
       setCreating(true)
       setError(null)
       const res = await apiFetch('/api/tasks', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: newRoutineName.trim(), type: 'routine' }),
+        body: JSON.stringify(body),
       })
-      const body = await res.json() as Task & { error?: string }
-      if (!res.ok) throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`)
-      // The SSE 'task:updated' event will also arrive and keep the list in
-      // sync; adding here provides immediate feedback without waiting for SSE.
-      setTasks(prev => {
-        if (prev.some(t => t.id === body.id)) return prev
-        return [...prev, body]
-      })
-      setNewRoutineName('')
-      setShowNewForm(false)
+      const data = (await res.json()) as Task & { error?: string }
+      if (!res.ok) throw new Error((data as { error?: string }).error ?? `HTTP ${res.status}`)
+      setTasks(prev => (prev.some(t => t.id === data.id) ? prev : [...prev, data]))
+      return true
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create routine')
+      setError(err instanceof Error ? err.message : 'Failed to create task')
+      return false
     } finally {
       setCreating(false)
     }
+  }, [])
+
+  const toggleCreateForm = (type: TaskType) => {
+    setError(null)
+    if (openBucket === type) {
+      setOpenBucket(null)
+      return
+    }
+    setOpenBucket(type)
+    // Reset only the form being opened so switching buckets never leaves
+    // stale input from a previously-abandoned form.
+    if (type === 'daily') setDailyForm(EMPTY_DAILY_FORM)
+    if (type === 'developmental') setDevForm(EMPTY_DEV_FORM)
+    if (type === 'routine') setRoutineForm(EMPTY_ROUTINE_FORM)
+  }
+
+  const handleCreateDaily = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!dailyForm.name.trim()) return
+
+    const ok = await createTask({
+      name: dailyForm.name.trim(),
+      type: 'daily',
+      schedule: dailyForm.schedule.trim() || undefined,
+      actionType: dailyForm.actionType,
+      config: configEntriesToRecord(dailyForm.config),
+    })
+    if (ok) {
+      setDailyForm(EMPTY_DAILY_FORM)
+      setOpenBucket(null)
+    }
+  }
+
+  const handleCreateDev = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!devForm.name.trim() || !devForm.repoUrl.trim()) return
+
+    const ok = await createTask({
+      name: devForm.name.trim(),
+      type: 'developmental',
+      repoUrl: devForm.repoUrl.trim(),
+      branch: devForm.branch.trim() || undefined,
+      agentId: devForm.agentId.trim() || undefined,
+    })
+    if (ok) {
+      setDevForm(EMPTY_DEV_FORM)
+      setOpenBucket(null)
+    }
+  }
+
+  const handleCreateRoutine = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!routineForm.name.trim()) return
+
+    const ok = await createTask({ name: routineForm.name.trim(), type: 'routine' })
+    if (ok) {
+      setRoutineForm(EMPTY_ROUTINE_FORM)
+      setOpenBucket(null)
+    }
+  }
+
+  // ── Daily task config row helpers ─────────────────────────────────────────
+
+  const addConfigEntry = () => {
+    setDailyForm(f => ({ ...f, config: [...f.config, { key: '', value: '' }] }))
+  }
+
+  const updateConfigEntry = (index: number, field: 'key' | 'value', value: string) => {
+    setDailyForm(f => ({
+      ...f,
+      config: f.config.map((entry, i) => (i === index ? { ...entry, [field]: value } : entry)),
+    }))
+  }
+
+  const removeConfigEntry = (index: number) => {
+    setDailyForm(f => ({ ...f, config: f.config.filter((_, i) => i !== index) }))
   }
 
   // ── Filtering ─────────────────────────────────────────────────────────────
@@ -164,9 +301,10 @@ export function Dashboard() {
 
   const filteredTasks = tasks.filter(matchesSearch)
 
-  const buckets = BUCKETS.map(({ type, label }) => ({
+  const buckets = BUCKETS.map(({ type, label, singular }) => ({
     type,
     label,
+    singular,
     tasks: filteredTasks.filter(task => task.type === type),
   }))
 
@@ -191,49 +329,8 @@ export function Dashboard() {
             <span className="sse-indicator__dot" aria-hidden="true" />
             {sseConnected ? 'Live' : 'Connecting…'}
           </span>
-
-          <button
-            className="btn btn-primary"
-            onClick={() => {
-              setShowNewForm(v => !v)
-              setNewRoutineName('')
-              setError(null)
-            }}
-          >
-            + New Routine
-          </button>
         </div>
       </header>
-
-      {/* New routine creation form */}
-      {showNewForm && (
-        <form className="new-routine-form" onSubmit={handleCreateRoutine}>
-          <input
-            type="text"
-            className="search-input"
-            placeholder="Routine name…"
-            value={newRoutineName}
-            onChange={e => setNewRoutineName(e.target.value)}
-            autoFocus
-            disabled={creating}
-          />
-          <button
-            type="submit"
-            className="btn btn-primary"
-            disabled={creating || !newRoutineName.trim()}
-          >
-            {creating ? 'Creating…' : 'Create'}
-          </button>
-          <button
-            type="button"
-            className="btn btn-outline"
-            onClick={() => setShowNewForm(false)}
-            disabled={creating}
-          >
-            Cancel
-          </button>
-        </form>
-      )}
 
       <div className="dashboard-controls">
         <input
@@ -257,7 +354,7 @@ export function Dashboard() {
       ) : tasks.length === 0 ? (
         <div className="state-placeholder">
           <p>No tasks found</p>
-          <p className="state-hint">Create a routine above to get started</p>
+          <p className="state-hint">Use the + button on a bucket below to create your first task</p>
         </div>
       ) : filteredTasks.length === 0 ? (
         <div className="state-placeholder">
@@ -274,8 +371,220 @@ export function Dashboard() {
             >
               <div className="dashboard-bucket-header">
                 <h2>{bucket.label}</h2>
-                <span className="dashboard-bucket-count">{bucket.tasks.length}</span>
+                <div className="dashboard-bucket-header-actions">
+                  <span className="dashboard-bucket-count">{bucket.tasks.length}</span>
+                  <button
+                    type="button"
+                    className="btn btn-outline dashboard-bucket-add"
+                    onClick={() => toggleCreateForm(bucket.type)}
+                    aria-label={`Add ${bucket.singular}`}
+                    aria-expanded={openBucket === bucket.type}
+                    title={`Add ${bucket.singular}`}
+                  >
+                    +
+                  </button>
+                </div>
               </div>
+
+              {openBucket === bucket.type && bucket.type === 'daily' && (
+                <form
+                  className="new-routine-form new-task-form"
+                  onSubmit={handleCreateDaily}
+                  aria-label="Create daily task"
+                >
+                  <input
+                    type="text"
+                    className="search-input"
+                    placeholder="Task name…"
+                    value={dailyForm.name}
+                    onChange={e => setDailyForm(f => ({ ...f, name: e.target.value }))}
+                    autoFocus
+                    disabled={creating}
+                    aria-label="Daily task name"
+                  />
+                  <input
+                    type="text"
+                    className="search-input"
+                    placeholder="Schedule (cron expression)…"
+                    value={dailyForm.schedule}
+                    onChange={e => setDailyForm(f => ({ ...f, schedule: e.target.value }))}
+                    disabled={creating}
+                    aria-label="Daily task schedule"
+                  />
+                  <select
+                    className="search-input"
+                    value={dailyForm.actionType}
+                    onChange={e =>
+                      setDailyForm(f => ({ ...f, actionType: e.target.value as DailyActionType }))
+                    }
+                    disabled={creating}
+                    aria-label="Daily task action type"
+                  >
+                    {DAILY_ACTION_TYPES.map(opt => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+
+                  <div className="config-editor">
+                    {dailyForm.config.map((entry, index) => (
+                      <div className="config-entry-row" key={index}>
+                        <input
+                          type="text"
+                          className="search-input"
+                          placeholder="Config key…"
+                          value={entry.key}
+                          onChange={e => updateConfigEntry(index, 'key', e.target.value)}
+                          disabled={creating}
+                          aria-label={`Config key ${index + 1}`}
+                        />
+                        <input
+                          type="text"
+                          className="search-input"
+                          placeholder="Config value…"
+                          value={entry.value}
+                          onChange={e => updateConfigEntry(index, 'value', e.target.value)}
+                          disabled={creating}
+                          aria-label={`Config value ${index + 1}`}
+                        />
+                        <button
+                          type="button"
+                          className="btn btn-outline"
+                          onClick={() => removeConfigEntry(index)}
+                          disabled={creating}
+                          aria-label={`Remove config entry ${index + 1}`}
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ))}
+                    <button
+                      type="button"
+                      className="btn btn-outline"
+                      onClick={addConfigEntry}
+                      disabled={creating}
+                    >
+                      + Add config entry
+                    </button>
+                  </div>
+
+                  <button
+                    type="submit"
+                    className="btn btn-primary"
+                    disabled={creating || !dailyForm.name.trim()}
+                  >
+                    {creating ? 'Creating…' : 'Create'}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-outline"
+                    onClick={() => setOpenBucket(null)}
+                    disabled={creating}
+                  >
+                    Cancel
+                  </button>
+                </form>
+              )}
+
+              {openBucket === bucket.type && bucket.type === 'developmental' && (
+                <form
+                  className="new-routine-form new-task-form"
+                  onSubmit={handleCreateDev}
+                  aria-label="Create developmental task"
+                >
+                  <input
+                    type="text"
+                    className="search-input"
+                    placeholder="Task name…"
+                    value={devForm.name}
+                    onChange={e => setDevForm(f => ({ ...f, name: e.target.value }))}
+                    autoFocus
+                    disabled={creating}
+                    aria-label="Developmental task name"
+                  />
+                  <input
+                    type="text"
+                    className="search-input"
+                    placeholder="Repository URL…"
+                    value={devForm.repoUrl}
+                    onChange={e => setDevForm(f => ({ ...f, repoUrl: e.target.value }))}
+                    disabled={creating}
+                    aria-label="Repository URL"
+                  />
+                  <input
+                    type="text"
+                    className="search-input"
+                    placeholder="Branch…"
+                    value={devForm.branch}
+                    onChange={e => setDevForm(f => ({ ...f, branch: e.target.value }))}
+                    disabled={creating}
+                    aria-label="Branch"
+                  />
+                  <select
+                    className="search-input"
+                    value={devForm.agentId}
+                    onChange={e => setDevForm(f => ({ ...f, agentId: e.target.value }))}
+                    disabled={creating}
+                    aria-label="Agent"
+                  >
+                    {AGENT_OPTIONS.map(opt => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="submit"
+                    className="btn btn-primary"
+                    disabled={creating || !devForm.name.trim() || !devForm.repoUrl.trim()}
+                  >
+                    {creating ? 'Creating…' : 'Create'}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-outline"
+                    onClick={() => setOpenBucket(null)}
+                    disabled={creating}
+                  >
+                    Cancel
+                  </button>
+                </form>
+              )}
+
+              {openBucket === bucket.type && bucket.type === 'routine' && (
+                <form
+                  className="new-routine-form new-task-form"
+                  onSubmit={handleCreateRoutine}
+                  aria-label="Create routine"
+                >
+                  <input
+                    type="text"
+                    className="search-input"
+                    placeholder="Routine name…"
+                    value={routineForm.name}
+                    onChange={e => setRoutineForm({ name: e.target.value })}
+                    autoFocus
+                    disabled={creating}
+                    aria-label="Routine name"
+                  />
+                  <button
+                    type="submit"
+                    className="btn btn-primary"
+                    disabled={creating || !routineForm.name.trim()}
+                  >
+                    {creating ? 'Creating…' : 'Create'}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-outline"
+                    onClick={() => setOpenBucket(null)}
+                    disabled={creating}
+                  >
+                    Cancel
+                  </button>
+                </form>
+              )}
 
               {bucket.tasks.length === 0 ? (
                 <div className="state-placeholder state-placeholder--bucket">
