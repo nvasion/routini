@@ -14,6 +14,17 @@ const BUCKETS: { type: TaskType; label: string }[] = [
   { type: 'routine', label: 'Routine Automation' },
 ]
 
+// Bucket panel styling is looked up from this fixed, exhaustively-typed map
+// rather than built via string interpolation of `bucket.type` — this keeps
+// the set of class names emitted into the DOM statically enumerable instead
+// of dynamically constructed from data, even though `type` is already
+// constrained to a known TaskType union.
+const BUCKET_PANEL_CLASS: Record<TaskType, string> = {
+  daily: 'dashboard-bucket--daily',
+  developmental: 'dashboard-bucket--developmental',
+  routine: 'dashboard-bucket--routine',
+}
+
 export function Dashboard() {
   const [tasks, setTasks] = useState<Task[]>([])
   const [loading, setLoading] = useState(true)
@@ -269,12 +280,17 @@ export function Dashboard() {
           {buckets.map(bucket => (
             <section
               key={bucket.type}
-              className="dashboard-bucket"
+              className={`dashboard-bucket ${BUCKET_PANEL_CLASS[bucket.type]}`}
               aria-label={`${bucket.label} tasks`}
             >
               <div className="dashboard-bucket-header">
-                <h2>{bucket.label}</h2>
-                <span className="dashboard-bucket-count">{bucket.tasks.length}</span>
+                <h2 className="dashboard-bucket-title">{bucket.label}</h2>
+                <span
+                  className="dashboard-bucket-badge"
+                  aria-label={`${bucket.tasks.length} ${bucket.tasks.length === 1 ? 'task' : 'tasks'}`}
+                >
+                  {bucket.tasks.length}
+                </span>
               </div>
 
               {bucket.tasks.length === 0 ? (
