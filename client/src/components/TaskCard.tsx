@@ -1,7 +1,7 @@
 import type { KeyboardEvent } from 'react'
 import type { Task, TaskStatus } from '../types'
 import { useOpenPanel } from '../hooks/useOpenPanel'
-import { TaskConfigPanel } from './TaskConfigPanel'
+import { ConfigModal } from './ConfigModal'
 import './TaskCard.css'
 
 interface TaskCardProps {
@@ -9,9 +9,9 @@ interface TaskCardProps {
   onTrigger: (id: string) => void
   onDelete: (id: string) => void
   /**
-   * Every task in the system. Passed through to this card's TaskConfigPanel
+   * Every task in the system. Passed through to this card's ConfigModal
    * to populate RoutineBuilder's available-task palette when task.type is
-   * 'routine'. Defaults to an empty list — the panel still opens, but a
+   * 'routine'. Defaults to an empty list — the modal still opens, but a
    * routine's palette will be empty until the caller supplies the full list.
    */
   allTasks?: Task[]
@@ -36,10 +36,10 @@ function TypeBadge({ type }: { type: Task['type'] }) {
 export function TaskCard({ task, onTrigger, onDelete, allTasks = [] }: TaskCardProps) {
   const isBusy = task.status === 'running' || task.status === 'queued'
   const panel = useOpenPanel(task.id)
-  const configLabel = task.type === 'routine' ? 'Edit routine steps' : 'View configuration'
+  const configLabel = task.type === 'routine' ? 'Edit routine steps' : 'Edit configuration'
 
   // The whole card (everything except the action buttons, which stop
-  // propagation below) opens the same TaskConfigPanel as the ⚙ button —
+  // propagation below) opens the same ConfigModal as the ⚙ button —
   // it's just a larger, more discoverable hit target for the same action.
   const handleCardKeyDown = (e: KeyboardEvent<HTMLElement>) => {
     if (e.key !== 'Enter' && e.key !== ' ') return
@@ -121,10 +121,10 @@ export function TaskCard({ task, onTrigger, onDelete, allTasks = [] }: TaskCardP
         </footer>
       </article>
 
-      {/* Rendered as a fixed overlay by TaskConfigPanel itself — never
+      {/* Rendered as a fixed overlay by ConfigModal itself — never
           affects this card's or its siblings' layout in the grid. */}
       {panel.isOpen && (
-        <TaskConfigPanel task={task} allTasks={allTasks} onClose={panel.close} />
+        <ConfigModal task={task} allTasks={allTasks} onClose={panel.close} />
       )}
     </>
   )

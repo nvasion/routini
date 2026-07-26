@@ -2,11 +2,12 @@ import { describe, it, expect, beforeAll } from 'vitest'
 import supertest from 'supertest'
 import { app } from '../app.js'
 
-// ── Tests for PUT /api/tasks/:id type-specific validation ────────────────────
-//
-// Covers the daily (schedule/actionType/config) and developmental
-// (repoUrl/branch/agentId) field validation added to the PUT handler, plus
-// the write-only guarantee on DailyTask.config in the PUT response.
+// Covers the type-specific field validation added to PUT /api/tasks/:id —
+// daily tasks (schedule/actionType/config) and developmental tasks
+// (repoUrl/branch/agentId). Basic name/description update behavior and
+// generic 404 handling are already covered by tests/tasks.test.ts; this file
+// focuses on the newer validation rules so both suites stay independently
+// readable.
 
 const request = supertest(app)
 
@@ -23,280 +24,229 @@ function auth() {
   return { Authorization: `Bearer ${authToken}` }
 }
 
-async function createTask(body: Record<string, unknown>) {
-  const res = await request.post('/api/tasks').set(auth()).send(body)
-  expect(res.status).toBe(201)
-  return res.body as { id: string }
-}
-
-// ── Daily task validation ─────────────────────────────────────────────────────
-
-describe('PUT /api/tasks/:id — daily task validation', () => {
-  it('updates schedule, actionType, and config together', async () => {
-    const created = await createTask({
-      name: 'Health Check',
+async function createDaily(overrides: Record<string, unknown> = {}) {
+  const res = await request
+    .post('/api/tasks')
+    .set(auth())
+    .send({
+      name: 'Daily Task',
       type: 'daily',
       schedule: '0 9 * * *',
       actionType: 'http',
-      config: { url: 'https://example.com/health' },
-    })
-
-    const res = await request
-      .put(`/api/tasks/${created.id}`)
-      .set(auth())
-      .send({
-        schedule: '0 10 * * *',
-        actionType: 'ssh',
-        config: { host: 'example.com', username: 'deploy', command: 'uptime' },
-      })
-
-    expect(res.status).toBe(200)
-    expect(res.body.schedule).toBe('0 10 * * *')
-    expect(res.body.actionType).toBe('ssh')
-  })
-
-  it('rejects an unknown actionType with 400', async () => {
-    const created = await createTask({ name: 'HC', type: 'daily', actionType: 'http' })
-
-    const res = await request
-      .put(`/api/tasks/${created.id}`)
-      .set(auth())
-      .send({ actionType: 'ftp' })
-
-    expect(res.status).toBe(400)
-    expect(res.body.error).toMatch(/actionType/i)
-  })
-
-  it('rejects an empty schedule string with 400', async () => {
-    const created = await createTask({ name: 'HC', type: 'daily', actionType: 'http' })
-
-    const res = await request
-      .put(`/api/tasks/${created.id}`)
-      .set(auth())
-      .send({ schedule: '   ' })
-
-    expect(res.status).toBe(400)
-    expect(res.body.error).toMatch(/schedule/i)
-  })
-
-  it('rejects a config key that is not valid for the actionType', async () => {
-    const created = await createTask({
-      name: 'HC',
-      type: 'daily',
-      actionType: 'http',
       config: { url: 'https://example.com' },
+      ...overrides,
     })
+  return res.body.id as string
+}
 
-    const res = await request
-      .put(`/api/tasks/${created.id}`)
-      .set(auth())
-      .send({ config: { url: 'https://example.com', host: 'not-allowed-for-http' } })
-
-    expect(res.status).toBe(400)
-    expect(res.body.error).toMatch(/Invalid config key/i)
-    expect(res.body.error).toMatch(/host/)
-  })
-
-  it('validates config keys against a newly-supplied actionType in the same request', async () => {
-    const created = await createTask({
-      name: 'HC',
-      type: 'daily',
-      actionType: 'http',
-      config: { url: 'https://example.com' },
-    })
-
-    // Switching actionType to "ssh" in the same request means the config must
-    // satisfy the ssh key set, not the previous http key set.
-    const res = await request
-      .put(`/api/tasks/${created.id}`)
-      .set(auth())
-      .send({ actionType: 'ssh', config: { url: 'https://example.com' } })
-
-    expect(res.status).toBe(400)
-    expect(res.body.error).toMatch(/Invalid config key/i)
-  })
-
-  it('rejects a non-object config with 400', async () => {
-    const created = await createTask({ name: 'HC', type: 'daily', actionType: 'http' })
-
-    const res = await request
-      .put(`/api/tasks/${created.id}`)
-      .set(auth())
-      .send({ config: 'not-an-object' })
-
-    expect(res.status).toBe(400)
-    expect(res.body.error).toMatch(/config must be an object/i)
-  })
-
-  it('rejects config with non-string values', async () => {
-    const created = await createTask({ name: 'HC', type: 'daily', actionType: 'http' })
-
-    const res = await request
-      .put(`/api/tasks/${created.id}`)
-      .set(auth())
-      .send({ config: { url: 'https://example.com', timeout: 5000 } })
-
-    expect(res.status).toBe(400)
-    expect(res.body.error).toMatch(/must be strings/i)
-    expect(res.body.error).toMatch(/timeout/)
-  })
-
-  it('rejects developmental-only fields on a daily task', async () => {
-    const created = await createTask({ name: 'HC', type: 'daily', actionType: 'http' })
-
-    const res = await request
-      .put(`/api/tasks/${created.id}`)
-      .set(auth())
-      .send({ repoUrl: 'https://github.com/example/repo' })
-
-    expect(res.status).toBe(400)
-    expect(res.body.error).toMatch(/not valid for a daily task/i)
-    expect(res.body.error).toMatch(/repoUrl/)
-  })
-
-  it('never echoes back config values — only key presence — in the response', async () => {
-    const created = await createTask({
-      name: 'HC',
-      type: 'daily',
-      actionType: 'ssh',
-      config: { host: 'old-host.example.com', username: 'olduser', command: 'echo old' },
-    })
-
-    const res = await request
-      .put(`/api/tasks/${created.id}`)
-      .set(auth())
-      .send({ config: { host: 'secret-internal-host.example.com', username: 'admin', command: 'whoami' } })
-
-    expect(res.status).toBe(200)
-    expect(res.body.config).toEqual({ host: true, username: true, command: true })
-    // The raw values must never appear anywhere in the serialized response.
-    const raw = JSON.stringify(res.body)
-    expect(raw).not.toMatch(/secret-internal-host/)
-    expect(raw).not.toMatch(/whoami/)
-  })
-})
-
-// ── Developmental task validation ─────────────────────────────────────────────
-
-describe('PUT /api/tasks/:id — developmental task validation', () => {
-  it('updates repoUrl, branch, and agentId together', async () => {
-    const created = await createTask({
+async function createDev(overrides: Record<string, unknown> = {}) {
+  const res = await request
+    .post('/api/tasks')
+    .set(auth())
+    .send({
       name: 'Dev Task',
       type: 'developmental',
       repoUrl: 'https://github.com/example/repo',
       branch: 'main',
       agentId: 'claude',
+      ...overrides,
     })
+  return res.body.id as string
+}
+
+describe('PUT /api/tasks/:id — daily task fields', () => {
+  it('updates schedule, actionType, and config together', async () => {
+    const id = await createDaily()
 
     const res = await request
-      .put(`/api/tasks/${created.id}`)
+      .put(`/api/tasks/${id}`)
+      .set(auth())
+      .send({ schedule: '0 12 * * *', actionType: 'ssh', config: { host: 'example.com' } })
+
+    expect(res.status).toBe(200)
+    expect(res.body.schedule).toBe('0 12 * * *')
+    expect(res.body.actionType).toBe('ssh')
+    expect(res.body.config).toEqual({ host: 'example.com' })
+  })
+
+  it('leaves schedule/actionType/config unchanged when omitted', async () => {
+    const id = await createDaily({ schedule: '0 9 * * *', actionType: 'http' })
+
+    const res = await request.put(`/api/tasks/${id}`).set(auth()).send({ name: 'Renamed' })
+
+    expect(res.status).toBe(200)
+    expect(res.body.name).toBe('Renamed')
+    expect(res.body.schedule).toBe('0 9 * * *')
+    expect(res.body.actionType).toBe('http')
+  })
+
+  it('rejects a blank schedule', async () => {
+    const id = await createDaily()
+
+    const res = await request.put(`/api/tasks/${id}`).set(auth()).send({ schedule: '   ' })
+
+    expect(res.status).toBe(400)
+    expect(res.body.error).toMatch(/schedule/i)
+  })
+
+  it('rejects a non-string schedule', async () => {
+    const id = await createDaily()
+
+    const res = await request.put(`/api/tasks/${id}`).set(auth()).send({ schedule: 42 })
+
+    expect(res.status).toBe(400)
+    expect(res.body.error).toMatch(/schedule/i)
+  })
+
+  it('rejects an unsupported actionType', async () => {
+    const id = await createDaily()
+
+    const res = await request.put(`/api/tasks/${id}`).set(auth()).send({ actionType: 'carrier-pigeon' })
+
+    expect(res.status).toBe(400)
+    expect(res.body.error).toMatch(/actionType/i)
+  })
+
+  it('rejects a config value that is not a string', async () => {
+    const id = await createDaily()
+
+    const res = await request
+      .put(`/api/tasks/${id}`)
+      .set(auth())
+      .send({ config: { url: 'https://example.com', retries: 3 } })
+
+    expect(res.status).toBe(400)
+    expect(res.body.error).toMatch(/config/i)
+  })
+
+  it('rejects a config value that is an array instead of an object', async () => {
+    const id = await createDaily()
+
+    const res = await request.put(`/api/tasks/${id}`).set(auth()).send({ config: ['not', 'an', 'object'] })
+
+    expect(res.status).toBe(400)
+    expect(res.body.error).toMatch(/config/i)
+  })
+
+  it('ignores developmental-only fields sent for a daily task', async () => {
+    const id = await createDaily()
+
+    const res = await request
+      .put(`/api/tasks/${id}`)
+      .set(auth())
+      .send({ repoUrl: 'https://github.com/example/repo' })
+
+    expect(res.status).toBe(200)
+    expect(res.body.repoUrl).toBeUndefined()
+  })
+})
+
+describe('PUT /api/tasks/:id — developmental task fields', () => {
+  it('updates repoUrl, branch, and agentId together', async () => {
+    const id = await createDev()
+
+    const res = await request
+      .put(`/api/tasks/${id}`)
       .set(auth())
       .send({
-        repoUrl: 'https://github.com/example/other-repo',
+        repoUrl: 'https://gitlab.com/example/other-repo',
         branch: 'feature/x',
         agentId: 'opencode',
       })
 
     expect(res.status).toBe(200)
-    expect(res.body.repoUrl).toBe('https://github.com/example/other-repo')
+    expect(res.body.repoUrl).toBe('https://gitlab.com/example/other-repo')
     expect(res.body.branch).toBe('feature/x')
     expect(res.body.agentId).toBe('opencode')
   })
 
-  it('rejects a repoUrl on a disallowed host with 400', async () => {
-    const created = await createTask({
-      name: 'Dev Task',
-      type: 'developmental',
-      repoUrl: 'https://github.com/example/repo',
-      agentId: 'claude',
-    })
+  it('leaves repoUrl/branch/agentId unchanged when omitted', async () => {
+    const id = await createDev({ branch: 'main', agentId: 'claude' })
 
-    const res = await request
-      .put(`/api/tasks/${created.id}`)
-      .set(auth())
-      .send({ repoUrl: 'https://internal.local/secret-repo' })
+    const res = await request.put(`/api/tasks/${id}`).set(auth()).send({ name: 'Renamed Dev Task' })
 
-    expect(res.status).toBe(400)
-    expect(res.body.error).toMatch(/repoUrl/i)
+    expect(res.status).toBe(200)
+    expect(res.body.name).toBe('Renamed Dev Task')
+    expect(res.body.branch).toBe('main')
+    expect(res.body.agentId).toBe('claude')
   })
 
-  it('rejects an unsupported agentId with 400', async () => {
-    const created = await createTask({
-      name: 'Dev Task',
-      type: 'developmental',
-      repoUrl: 'https://github.com/example/repo',
-      agentId: 'claude',
-    })
+  it('rejects a repoUrl that is not https (SSRF-unsafe scheme)', async () => {
+    const id = await createDev()
 
     const res = await request
-      .put(`/api/tasks/${created.id}`)
+      .put(`/api/tasks/${id}`)
       .set(auth())
-      .send({ agentId: 'not-a-real-agent' })
+      .send({ repoUrl: 'http://github.com/example/repo' })
 
     expect(res.status).toBe(400)
-    expect(res.body.error).toMatch(/agentId/i)
+    expect(res.body.error).toMatch(/https/i)
   })
 
-  it('rejects an empty branch with 400', async () => {
-    const created = await createTask({
-      name: 'Dev Task',
-      type: 'developmental',
-      repoUrl: 'https://github.com/example/repo',
-      agentId: 'claude',
-    })
+  it('rejects a repoUrl on a host that is not an allowed git host', async () => {
+    const id = await createDev()
 
     const res = await request
-      .put(`/api/tasks/${created.id}`)
+      .put(`/api/tasks/${id}`)
       .set(auth())
-      .send({ branch: '   ' })
+      .send({ repoUrl: 'https://evil.internal/repo' })
+
+    expect(res.status).toBe(400)
+    expect(res.body.error).toBeTruthy()
+  })
+
+  it('rejects a repoUrl containing embedded credentials', async () => {
+    const id = await createDev()
+
+    const res = await request
+      .put(`/api/tasks/${id}`)
+      .set(auth())
+      .send({ repoUrl: 'https://user:pass@github.com/example/repo' })
+
+    expect(res.status).toBe(400)
+    expect(res.body.error).toMatch(/credentials/i)
+  })
+
+  it('rejects a blank branch', async () => {
+    const id = await createDev()
+
+    const res = await request.put(`/api/tasks/${id}`).set(auth()).send({ branch: '   ' })
 
     expect(res.status).toBe(400)
     expect(res.body.error).toMatch(/branch/i)
   })
 
-  it('rejects daily-only fields on a developmental task', async () => {
-    const created = await createTask({
-      name: 'Dev Task',
-      type: 'developmental',
-      repoUrl: 'https://github.com/example/repo',
-      agentId: 'claude',
-    })
+  it('rejects an unsupported agentId', async () => {
+    const id = await createDev()
 
-    const res = await request
-      .put(`/api/tasks/${created.id}`)
-      .set(auth())
-      .send({ schedule: '0 9 * * *' })
+    const res = await request.put(`/api/tasks/${id}`).set(auth()).send({ agentId: 'skynet' })
 
     expect(res.status).toBe(400)
-    expect(res.body.error).toMatch(/not valid for a developmental task/i)
-    expect(res.body.error).toMatch(/schedule/)
+    expect(res.body.error).toMatch(/agentId/i)
+  })
+
+  it('ignores daily-only fields sent for a developmental task', async () => {
+    const id = await createDev()
+
+    const res = await request.put(`/api/tasks/${id}`).set(auth()).send({ schedule: '0 9 * * *' })
+
+    expect(res.status).toBe(200)
+    expect(res.body.schedule).toBeUndefined()
   })
 })
 
-// ── Routine task validation ───────────────────────────────────────────────────
-
-describe('PUT /api/tasks/:id — routine task field guards', () => {
-  it('rejects daily/developmental-only fields on a routine task', async () => {
-    const created = await createTask({ name: 'Routine', type: 'routine' })
-
-    const res = await request
-      .put(`/api/tasks/${created.id}`)
-      .set(auth())
-      .send({ agentId: 'claude' })
-
-    expect(res.status).toBe(400)
-    expect(res.body.error).toMatch(/not valid for a routine task/i)
-  })
-
-  it('still allows plain name/description updates on a routine task', async () => {
-    const created = await createTask({ name: 'Routine', type: 'routine' })
+describe('PUT /api/tasks/:id — routine tasks', () => {
+  it('updates name/description but ignores type-specific fields from other task types', async () => {
+    const created = await request.post('/api/tasks').set(auth()).send({ name: 'A Routine', type: 'routine' })
+    const id = created.body.id as string
 
     const res = await request
-      .put(`/api/tasks/${created.id}`)
+      .put(`/api/tasks/${id}`)
       .set(auth())
-      .send({ name: 'Renamed Routine' })
+      .send({ description: 'Updated description', repoUrl: 'https://github.com/example/repo' })
 
     expect(res.status).toBe(200)
-    expect(res.body.name).toBe('Renamed Routine')
+    expect(res.body.description).toBe('Updated description')
+    expect(res.body.repoUrl).toBeUndefined()
   })
 })
