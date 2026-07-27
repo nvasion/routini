@@ -59,6 +59,27 @@ export interface CredentialRow {
   updated_at: string
 }
 
+/**
+ * Non-secret metadata for one catalog integration, as stored in the
+ * `integration_metadata` table. The credential values themselves live in the
+ * encrypted `credentials` table (see server/src/routes/integrations.ts).
+ */
+export interface IntegrationMetadataRow {
+  /** Catalog integration id, e.g. "github". */
+  id: string
+  /** ISO timestamp of first successful connect, or null when never connected. */
+  connected_at: string | null
+  /** ISO timestamp of the most recent connection test, or null when untested. */
+  last_test_at: string | null
+  /** 1 = last test passed, 0 = last test failed, null = never tested. */
+  last_test_ok: number | null
+  /** JSON-encoded array of allowed TaskType values. */
+  scope_task_types: string
+  /** JSON-encoded array of allowed agent ids. */
+  scope_agents: string
+  updated_at: string
+}
+
 // ── Database path resolution ──────────────────────────────────────────────────
 
 const MEMORY_PATH = ':memory:'
@@ -129,6 +150,21 @@ CREATE TABLE IF NOT EXISTS credentials (
 );
 `
 
+// Non-secret status/scoping metadata for catalog integrations (see
+// server/src/routes/integrations.ts). Secrets never live here — only in the
+// `credentials` table above, under keys of the form `integration_<id>_<field>`.
+const SCHEMA_V2 = `
+CREATE TABLE IF NOT EXISTS integration_metadata (
+  id                TEXT PRIMARY KEY,
+  connected_at      TEXT,
+  last_test_at      TEXT,
+  last_test_ok      INTEGER,
+  scope_task_types  TEXT NOT NULL DEFAULT '[]',
+  scope_agents      TEXT NOT NULL DEFAULT '[]',
+  updated_at        TEXT NOT NULL
+);
+`
+
 // ── Migrations ────────────────────────────────────────────────────────────────
 
 interface Migration {
@@ -147,6 +183,11 @@ const MIGRATIONS: Migration[] = [
     version: 1,
     description: 'Initial schema: users, revoked_jwts, revoked_tokens, credentials',
     sql: SCHEMA_V1,
+  },
+  {
+    version: 2,
+    description: 'Add integration_metadata table for the Integrations tab',
+    sql: SCHEMA_V2,
   },
 ]
 
@@ -374,5 +415,46 @@ export function deleteCredential(
   const result = getDb()
     .prepare('DELETE FROM credentials WHERE user_id IS ? AND key = ?')
     .run(userId, key)
+  return result.changes
+}
+
+// ── Integration metadata accessors ──────────────────────────────────────────
+//
+// Non-secret status/scoping metadata for catalog integrations (see
+// server/src/routes/integrations.ts). Kept separate from the credentials
+// table so listing/status checks never touch encrypted secret material.
+
+/** Insert or replace an integration's metadata row, keyed by integration id. */
+export function upsertIntegrationMetadata(row: IntegrationMetadataRow): void {
+  getDb()
+    .prepare(
+      `INSERT INTO integration_metadata
+         (id, connected_at, last_test_at, last_test_ok, scope_task_types, scope_agents, updated_at)
+       VALUES (@id, @connected_at, @last_test_at, @last_test_ok, @scope_task_types, @scope_agents, @updated_at)
+       ON CONFLICT(id) DO UPDATE SET
+         connected_at = @connected_at,
+         last_test_at = @last_test_at,
+         last_test_ok = @last_test_ok,
+         scope_task_types = @scope_task_types,
+         scope_agents = @scope_agents,
+         updated_at = @updated_at`,
+    )
+    .run(row)
+}
+
+/** Look up an integration's metadata by id. Returns undefined when never connected. */
+export function getIntegrationMetadata(id: string): IntegrationMetadataRow | undefined {
+  return getDb()
+    .prepare(
+      `SELECT id, connected_at, last_test_at, last_test_ok, scope_task_types, scope_agents, updated_at
+       FROM integration_metadata
+       WHERE id = ?`,
+    )
+    .get(id) as IntegrationMetadataRow | undefined
+}
+
+/** Delete an integration's metadata row. Returns the number of rows removed. */
+export function deleteIntegrationMetadata(id: string): number {
+  const result = getDb().prepare('DELETE FROM integration_metadata WHERE id = ?').run(id)
   return result.changes
 }

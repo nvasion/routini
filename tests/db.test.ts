@@ -64,18 +64,21 @@ describe('getDb() connection', () => {
     expect(names).toContain('users')
     expect(names).toContain('revoked_jwts')
     expect(names).toContain('credentials')
+    expect(names).toContain('integration_metadata')
     expect(names).toContain('schema_migrations')
   })
 
   it('does not error when schema is applied twice (idempotent)', () => {
     const db = getDb()
-    // Re-running the migration ledger query should be a no-op: v1 already
-    // recorded, so the pending list is empty and nothing re-runs.
+    // Re-running the migration ledger query should be a no-op: every
+    // migration is already recorded, so the pending list is empty and
+    // nothing re-runs (no duplicate ledger rows for the same version).
     const applied = db
       .prepare('SELECT version FROM schema_migrations')
       .all() as { version: number }[]
-    expect(applied).toHaveLength(1)
-    expect(applied[0].version).toBe(1)
+    const versions = applied.map((row) => row.version)
+    expect(new Set(versions).size).toBe(versions.length)
+    expect(versions).toContain(1)
   })
 })
 
