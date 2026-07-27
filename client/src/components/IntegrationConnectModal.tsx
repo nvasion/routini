@@ -149,7 +149,7 @@ export function IntegrationConnectModal({ integration, onClose, onSaved }: Integ
             <FormRow
               key={field.key}
               id={`icm-${integration.id}-${field.key}`}
-              label={field.required ? field.label : `${field.label} (optional)`}
+              label={field.required === false ? `${field.label} (optional)` : field.label}
             >
               <input
                 id={`icm-${integration.id}-${field.key}`}
