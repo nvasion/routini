@@ -58,9 +58,9 @@ app.use('/api/notifications', requireAuth, notificationsRouter)
 // without a mount-level requireAuth to keep CSRF handling colocated with the
 // route definitions.
 app.use('/api/credentials', credentialsRouter)
-// Protected: integrations catalog + connect/disconnect. Authentication (and
-// CSRF for state-changing methods) is enforced inside the router itself, so
-// it is mounted without a mount-level requireAuth, mirroring credentialsRouter.
+// Protected: integrations catalog/CRUD/test. Authentication (and CSRF for
+// state-changing methods) is enforced inside the router itself, mirroring
+// the credentials router above.
 app.use('/api/integrations', integrationsRouter)
 
 // ── Health check (public) ─────────────────────────────────────────

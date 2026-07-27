@@ -323,18 +323,41 @@ not through this endpoint.
 
 ### Integrations – `/api/integrations`
 
-v1 catalog (`server/src/routes/integrations.ts`): GitHub, Slack, Jira, Notion, Linear, monday.com,
-HubSpot. `GET` (catalog + status), `PUT` (save credentials/scopes), and `POST /:id/test` (live
-provider check) land as separate follow-up work; disconnect is implemented now.
+Server-side catalog of the v1 token/API-key integrations (GitHub, Slack, Jira, Notion, Linear,
+monday.com, HubSpot). Credentials are write-only: they are encrypted at rest via the credential
+store (see [Credential Store](#credential-store--credentials_master_key) below) under
+`integration_<id>_<field>` (system scope) and are **never** returned by any endpoint.
 
 | Method | Endpoint | Notes |
 |--------|----------|-------|
-| `DELETE` | `/api/integrations/:id` | Disconnect: removes every stored credential field for the integration and resets its persisted metadata. Idempotent — always returns 200 with the default `not_connected` view, including for an integration that was never connected. Unknown `:id` → 404. |
+| `GET` | `/api/integrations` | Catalog + per-integration `{ status, connectedAt, lastTestAt, lastTestOk, scopes }` |
+| `PUT` | `/api/integrations/:id` | Write-only credential fields (all required fields must be sent together) and/or `scopes` |
+| `POST` | `/api/integrations/:id/test` | Live provider health check; persists `lastTestAt` / `lastTestOk` |
+| `DELETE` | `/api/integrations/:id` | Disconnects: removes stored credentials, resets metadata |
 
-Credential fields are stored write-only in the encrypted credential store (system scope) under
-`integration_<id>_<field>` keys — never returned by any endpoint. Non-secret status
-(`status`/`connectedAt`/`lastTestAt`/`lastTestOk`/`scopes`) is persisted in the `integration_metadata`
-SQLite table; a missing row means the integration has never been connected.
+`status` is derived server-side: `not_connected` (missing required credentials), `connected`
+(credentials stored and the last test — if any — succeeded), or `error` (the last test failed).
+`scopes` is `{ taskTypes: ('daily'|'developmental'|'routine')[], agents: string[] }` and defaults to
+all task types and all agents when an integration is first connected.
+
+`POST /:id/test` performs one read-only call per provider and never accepts a user-supplied URL
+except for Jira, whose `siteUrl` is validated against SSRF (scheme, embedded credentials, and both
+the literal hostname and its DNS-resolved IP are checked against private/loopback ranges) before any
+request is made:
+
+| Integration | Live check |
+|-------------|------------|
+| GitHub | `GET https://api.github.com/user` |
+| Slack | `POST https://slack.com/api/auth.test` |
+| Jira | `GET <siteUrl>/rest/api/3/myself` (Basic auth) |
+| Notion | `GET https://api.notion.com/v1/users/me` |
+| Linear | `POST https://api.linear.app/graphql` (`{ viewer { id } }`) |
+| monday.com | `POST https://api.monday.com/v2` (`{ me { id } }`) |
+| HubSpot | `GET https://api.hubapi.com/account-info/v3/details` |
+
+Non-secret integration metadata (connection/test state, scoping) currently lives in an in-memory
+store, matching the other skeleton routers in this codebase (`settings`, `notifications`, `tasks`);
+durable sqlite persistence for it is tracked as a follow-up.
 
 ## Environment Variables
 
