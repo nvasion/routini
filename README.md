@@ -24,13 +24,14 @@ routini/
 │   │   ├── db/
 │   │   │   └── index.ts         # SQLite persistence module (ROUTINI_DB_PATH)
 │   │   ├── services/
-│   │   │   └── credentialStore.ts # Encrypted credential store (CREDENTIALS_MASTER_KEY)
+│   │   │   ├── credentials.ts   # Encrypted credential store (CREDENTIALS_MASTER_KEY)
+│   │   │   └── integrations.ts  # Integrations catalog + status derivation
 │   │   └── routes/
 │   │       ├── auth.ts          # POST /login, /logout  GET /me
 │   │       ├── tasks.ts         # CRUD + trigger for tasks
 │   │       ├── settings.ts      # GET/PUT AI settings
 │   │       ├── credentials.ts   # CRUD for stored credentials
-│   │       └── integrations.ts  # Integration catalog + credential/scoping management
+│   │       └── integrations.ts  # GET catalog + status for user-facing integrations
 │   ├── vitest.config.ts         # Test runner config
 │   └── package.json
 ├── client/                      # React frontend
@@ -315,46 +316,39 @@ not through this endpoint.
 
 ### Integrations – `/api/integrations`
 
-v1 catalog (`server/src/routes/integrations.ts`): `github`, `slack`, `jira`, `notion`, `linear`,
-`monday`, `hubspot` — each with a fixed set of write-only credential fields (see the `INTEGRATIONS`
-export for per-integration field specs and setup URLs).
+The integrations catalog (GitHub, Slack, Jira, Notion, Linear, monday.com, HubSpot — see
+`server/src/services/integrations.ts`) lets tasks and coding-agent containers reach external tools
+via token/API-key credentials. Credential material is stored write-only in the existing encrypted
+credential store (`integration_<id>_<field>`, system scope) and is **never** included in any
+response; connection status is derived from whether an integration's required fields are present.
 
 | Method | Endpoint | Notes |
 |--------|----------|-------|
-| `PUT` | `/api/integrations/:id` | Connect/update an integration — see below |
+| `GET` | `/api/integrations` | `Authorization: Bearer <token>` → `{ integrations: IntegrationSummary[] }` |
 
-`GET /api/integrations` (catalog + status listing), `POST /api/integrations/:id/test` (live
-provider health check), and `DELETE /api/integrations/:id` (disconnect) are specified in the
-Integrations PRD and land in separate implementation passes.
-
-#### `PUT /api/integrations/:id`
-
-Request body:
+Each `IntegrationSummary` includes the catalog fields (`id`, `name`, `description`, `setupUrl`,
+`fields`) plus live status:
 
 ```json
 {
-  "credentials": { "token": "..." },
+  "id": "github",
+  "name": "GitHub",
+  "description": "...",
+  "setupUrl": "https://github.com/settings/personal-access-tokens/new",
+  "fields": [{ "key": "token", "label": "Fine-grained personal access token", "type": "password", "required": true }],
+  "status": "not_connected",
+  "connectedAt": null,
+  "lastTestAt": null,
+  "lastTestOk": null,
   "scopes": { "taskTypes": ["daily", "developmental", "routine"], "agents": ["claude", "opencode", "omnimancer"] }
 }
 ```
 
-- `credentials` — one entry per field defined for the integration (e.g. Jira requires `siteUrl`,
-  `email`, and `apiToken`). Every required field must be a non-empty string; unknown field keys are
-  rejected. Each value is persisted **write-only** to the encrypted credential store
-  (`server/src/services/credentials.ts`, AES-256-GCM) under the key `integration_<id>_<field>` in
-  the system scope — it is never echoed back in the response, logged, or returned by any `GET`.
-  The Jira `siteUrl` must be an `https://` URL that does not resolve to a private/loopback host
-  (SSRF guard, since it is later used for the server-side test/health-check call).
-- `scopes` — optional; `taskTypes` and `agents` each default to "all" when omitted, and accept an
-  explicit empty list to mean "none." Invalid values are rejected with `400`.
-- Response: `{ id, status, connectedAt, lastTestAt, lastTestOk, scopes }` — never includes
-  credential values. `connectedAt` is set on first connect and preserved across later updates;
-  `lastTestAt`/`lastTestOk` are cleared whenever credentials are updated, since a prior test result
-  no longer reflects the new credentials.
-- Requires authentication; CSRF-protected for cookie-based sessions (`requireCsrf`), consistent
-  with every other mutating endpoint.
-- Unknown integration id → `404`. Validation failures → `400`. Credential-store failures → `500`
-  (never leaking secret material).
+`status` is `connected` once every required field has a stored credential, `error` when the most
+recent connection test (persisted in the `integration_metadata` table) failed, and `not_connected`
+otherwise. Writing credentials (`PUT /api/integrations/:id`), running a live connection test
+(`POST /api/integrations/:id/test`), and disconnecting (`DELETE /api/integrations/:id`) are planned
+follow-up endpoints on the same router.
 
 ## Environment Variables
 
