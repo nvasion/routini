@@ -14,11 +14,20 @@
  *
  * SSRF mitigation: `validateRepoUrl` only accepts https:// URLs whose
  * hostname belongs to a known git-hosting service allowlist.
+ *
+ * Integration credentials: any connected integration (GitHub, Slack, Jira,
+ * Notion, Linear, monday.com, HubSpot) whose scope permits this task's type
+ * and agent is injected as an env var via `getScopedIntegrationEnv` — see
+ * server/src/services/integrations.ts for the enforcement logic. Integration
+ * env vars are merged in before the core wiring vars below so a malicious or
+ * misconfigured integration definition can never shadow REPO_URL/BRANCH/
+ * AGENT/TASK_ID.
  */
 
 import { randomUUID } from 'node:crypto'
 import type { DevTask } from '../types.js'
 import { DockerService } from './docker.js'
+import { getScopedIntegrationEnv } from './integrations.js'
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -177,6 +186,10 @@ export async function runDevTask(
       image,
       name: containerName,
       env: {
+        // In-scope integration credentials first; core wiring vars are
+        // spread last so they always win if an integration env var name
+        // were ever to collide.
+        ...getScopedIntegrationEnv(task.type, task.agentId),
         REPO_URL: task.repoUrl,
         BRANCH:   task.branch,
         AGENT:    task.agentId,

@@ -312,6 +312,49 @@ not through this endpoint.
 | `GET` | `/api/settings` | Returns `{ provider, model, defaultAgentId }` |
 | `PUT` | `/api/settings` | Partial update of any field |
 
+## Integrations
+
+Routini injects per-integration credentials into developmental-task container spawns so an
+agent's coding job can call the tools it needs. This is server-side wiring only in this iteration —
+there is no `/api/integrations` CRUD surface or `/integrations` UI yet; the catalog and connect/scope
+UI are tracked separately.
+
+### Credential injection (`server/src/services/integrations.ts`)
+
+Seven v1 integrations are supported, each backed by a single token/API-key credential stored in the
+encrypted credential store (system scope) under `integration_<id>_token`, and injected into a
+container spawn under the following env var when in scope:
+
+| Integration | Env var |
+|-------------|---------|
+| GitHub | `GITHUB_TOKEN` |
+| Slack | `SLACK_BOT_TOKEN` |
+| Jira | `JIRA_API_TOKEN` |
+| Notion | `NOTION_TOKEN` |
+| Linear | `LINEAR_API_KEY` |
+| monday.com | `MONDAY_TOKEN` |
+| HubSpot | `HUBSPOT_TOKEN` |
+
+`getScopedIntegrationEnv(taskType, agentId)` is the single enforcement point every container spawn
+path calls (currently `runDevTask` in `server/src/services/devTask.ts`, for `developmental` tasks).
+A credential is included in the returned env map **only if both** of the following hold:
+
+- The integration is **connected** — a token has been stored via `setIntegrationToken`.
+- The calling task's `(taskType, agentId)` pair is within the integration's current **scope**.
+
+Scoping is enforced server-side at spawn time, not just hidden in the UI. Scope defaults to "all
+task types, all agents" until explicitly narrowed via `setIntegrationScope`, which persists a
+validated `{ taskTypes, agents }` object (also via the credential store, under
+`integration_<id>_scope`) — every entry is checked against the fixed `daily`/`developmental`/`routine`
+task types and `claude`/`opencode`/`omnimancer` agent ids, so an unrecognized value is rejected
+rather than silently stored. If stored scope data is ever corrupted or tampered with, it **fails
+closed** (denies every task type/agent) rather than falling back to "allow all."
+
+Out-of-scope and not-yet-connected integrations are simply omitted from the env map — never
+included with an empty placeholder value. See `tests/integrations.test.ts` for the full behavior
+matrix, including a fake-spawn test (a mocked `DockerService` that records the `ContainerConfig` it
+receives) proving an out-of-scope credential never reaches the container's environment.
+
 ## Environment Variables
 
 | Variable | Required in prod | Description |
