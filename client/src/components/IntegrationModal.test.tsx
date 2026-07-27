@@ -144,6 +144,46 @@ describe('IntegrationModal', () => {
       })
     })
 
+    it('shows a success message when the integration was last tested successfully', () => {
+      render(
+        <IntegrationModal
+          integration={connectedIntegration({ lastTestAt: '2024-01-02T00:00:00.000Z', lastTestOk: true })}
+          onClose={vi.fn()}
+          onChange={vi.fn()}
+        />,
+      )
+      expect(screen.getByRole('status').textContent).toContain('Connection OK')
+    })
+
+    it('shows a failure message when the last test failed', () => {
+      render(
+        <IntegrationModal
+          integration={connectedIntegration({ lastTestAt: '2024-01-02T00:00:00.000Z', lastTestOk: false })}
+          onClose={vi.fn()}
+          onChange={vi.fn()}
+        />,
+      )
+      expect(screen.getByRole('status').textContent).toContain('Connection failed')
+    })
+
+    it('does not claim the last test failed when lastTestOk is null but a timestamp exists', () => {
+      // Regression test: lastTestOk can be null (e.g. a test timestamp was recorded before the
+      // ok flag was persisted). The status text must not read "failed" in that ambiguous state,
+      // and no fail-styling class should be applied.
+      render(
+        <IntegrationModal
+          integration={connectedIntegration({ lastTestAt: '2024-01-02T00:00:00.000Z', lastTestOk: null })}
+          onClose={vi.fn()}
+          onChange={vi.fn()}
+        />,
+      )
+      const status = screen.getByRole('status')
+      expect(status.textContent).not.toContain('failed')
+      expect(status.textContent).toContain('Not tested yet')
+      expect(status.className).not.toContain('im-test-result--fail')
+      expect(status.className).not.toContain('im-test-result--ok')
+    })
+
     it('surfaces a test failure message inline', async () => {
       mockedApiFetch.mockResolvedValue(jsonResponse({ error: 'Connection test failed' }, false, 500))
 

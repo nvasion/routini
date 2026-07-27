@@ -19,6 +19,7 @@ import { useEffect, useState } from 'react'
 import type { Integration } from '../types'
 import { apiFetch } from '../api'
 import { FormRow, FormStatus } from './ConfigModal'
+import { describeTestResult } from './integrationConnectionPanel.utils'
 import './IntegrationModal.css'
 
 const TASK_TYPE_OPTIONS = ['daily', 'developmental', 'routine'] as const
@@ -246,11 +247,16 @@ export function IntegrationModal({ integration, onClose, onChange }: Integration
               )}
               {!testError && integration.lastTestAt && (
                 <p
-                  className={`im-test-result ${integration.lastTestOk ? 'im-test-result--ok' : 'im-test-result--fail'}`}
+                  className={`im-test-result ${
+                    integration.lastTestOk === true
+                      ? 'im-test-result--ok'
+                      : integration.lastTestOk === false
+                        ? 'im-test-result--fail'
+                        : ''
+                  }`}
                   role="status"
                 >
-                  {integration.lastTestOk ? 'Last test succeeded' : 'Last test failed'} —{' '}
-                  {new Date(integration.lastTestAt).toLocaleString()}
+                  {describeTestResult(integration.lastTestOk, integration.lastTestAt)}
                 </p>
               )}
             </div>
