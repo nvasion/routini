@@ -1,0 +1,100 @@
+/* ── IntegrationConnectionPanel ────────────────────────────────────────────
+   Content fragment embedded inside the (ConfigModal-chrome) integration
+   connect modal for a connected integration. Reuses ConfigModal.css's
+   cm-form-row / cm-form-label / cm-form-hint / cm-btn-* / cm-error /
+   cm-success classes for visual consistency; this file only adds the
+   handful of elements unique to this panel (test-result badge, scope
+   checkbox groups, the danger-zone disconnect controls).
+   ────────────────────────────────────────────────────────────────────────── */
+
+.icp-root {
+  display: flex;
+  flex-direction: column;
+  gap: 1.1rem;
+}
+
+.icp-test-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.icp-test-result {
+  font-size: 0.85rem;
+  color: var(--color-success);
+}
+
+.icp-test-result--fail {
+  color: var(--color-error);
+}
+
+.icp-fieldset {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 0.6rem 0.85rem 0.75rem;
+  margin: 0 0 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.icp-legend {
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-text-muted);
+  padding: 0 0.25rem;
+}
+
+.icp-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  color: var(--color-text);
+}
+
+.icp-scopes-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.icp-disconnect-row {
+  border-top: 1px solid var(--color-border);
+  padding-top: 0.9rem;
+}
+
+.icp-btn-danger {
+  align-self: flex-start;
+  background: transparent;
+  border: 1px solid var(--color-error);
+  border-radius: var(--radius);
+  color: var(--color-error);
+  padding: 0.55rem 1.1rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  transition: background 0.15s, color 0.15s;
+}
+
+.icp-btn-danger:hover:not(:disabled) {
+  background: var(--color-error);
+  color: #fff;
+}
+
+.icp-btn-danger:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.icp-disconnect-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.icp-disconnect-confirm-actions {
+  display: flex;
+  gap: 0.75rem;
+}
