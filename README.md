@@ -312,6 +312,44 @@ not through this endpoint.
 | `GET` | `/api/settings` | Returns `{ provider, model, defaultAgentId }` |
 | `PUT` | `/api/settings` | Partial update of any field |
 
+### Integrations – `/api/integrations`
+
+Server-side catalog of the v1 token/API-key integrations (GitHub, Slack, Jira, Notion, Linear,
+monday.com, HubSpot). Credentials are write-only: they are encrypted at rest via the credential
+store (see [Credential Store](#credential-store--credentials_master_key) below) under
+`integration_<id>_<field>` (system scope) and are **never** returned by any endpoint.
+
+| Method | Endpoint | Notes |
+|--------|----------|-------|
+| `GET` | `/api/integrations` | Catalog + per-integration `{ status, connectedAt, lastTestAt, lastTestOk, scopes }` |
+| `PUT` | `/api/integrations/:id` | Write-only credential fields (all required fields must be sent together) and/or `scopes` |
+| `POST` | `/api/integrations/:id/test` | Live provider health check; persists `lastTestAt` / `lastTestOk` |
+| `DELETE` | `/api/integrations/:id` | Disconnects: removes stored credentials, resets metadata |
+
+`status` is derived server-side: `not_connected` (missing required credentials), `connected`
+(credentials stored and the last test — if any — succeeded), or `error` (the last test failed).
+`scopes` is `{ taskTypes: ('daily'|'developmental'|'routine')[], agents: string[] }` and defaults to
+all task types and all agents when an integration is first connected.
+
+`POST /:id/test` performs one read-only call per provider and never accepts a user-supplied URL
+except for Jira, whose `siteUrl` is validated against SSRF (scheme, embedded credentials, and both
+the literal hostname and its DNS-resolved IP are checked against private/loopback ranges) before any
+request is made:
+
+| Integration | Live check |
+|-------------|------------|
+| GitHub | `GET https://api.github.com/user` |
+| Slack | `POST https://slack.com/api/auth.test` |
+| Jira | `GET <siteUrl>/rest/api/3/myself` (Basic auth) |
+| Notion | `GET https://api.notion.com/v1/users/me` |
+| Linear | `POST https://api.linear.app/graphql` (`{ viewer { id } }`) |
+| monday.com | `POST https://api.monday.com/v2` (`{ me { id } }`) |
+| HubSpot | `GET https://api.hubapi.com/account-info/v3/details` |
+
+Non-secret integration metadata (connection/test state, scoping) currently lives in an in-memory
+store, matching the other skeleton routers in this codebase (`settings`, `notifications`, `tasks`);
+durable sqlite persistence for it is tracked as a follow-up.
+
 ## Environment Variables
 
 | Variable | Required in prod | Description |
