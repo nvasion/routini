@@ -31,7 +31,7 @@ routini/
 │   │       ├── tasks.ts         # CRUD + trigger for tasks
 │   │       ├── settings.ts      # GET/PUT AI settings
 │   │       ├── credentials.ts   # CRUD for stored credentials
-│   │       └── integrations.ts  # GET catalog + status for user-facing integrations
+│   │       └── integrations.ts  # Integrations catalog + DELETE /:id disconnect
 │   ├── vitest.config.ts         # Test runner config
 │   └── package.json
 ├── client/                      # React frontend
@@ -323,39 +323,18 @@ not through this endpoint.
 
 ### Integrations – `/api/integrations`
 
-The integrations catalog (GitHub, Slack, Jira, Notion, Linear, monday.com, HubSpot — see
-`server/src/services/integrations.ts`) lets tasks and coding-agent containers reach external tools
-via token/API-key credentials. Credential material is stored write-only in the existing encrypted
-credential store (`integration_<id>_<field>`, system scope) and is **never** included in any
-response; connection status is derived from whether an integration's required fields are present.
+v1 catalog (`server/src/routes/integrations.ts`): GitHub, Slack, Jira, Notion, Linear, monday.com,
+HubSpot. `GET` (catalog + status), `PUT` (save credentials/scopes), and `POST /:id/test` (live
+provider check) land as separate follow-up work; disconnect is implemented now.
 
 | Method | Endpoint | Notes |
 |--------|----------|-------|
-| `GET` | `/api/integrations` | `Authorization: Bearer <token>` → `{ integrations: IntegrationSummary[] }` |
+| `DELETE` | `/api/integrations/:id` | Disconnect: removes every stored credential field for the integration and resets its persisted metadata. Idempotent — always returns 200 with the default `not_connected` view, including for an integration that was never connected. Unknown `:id` → 404. |
 
-Each `IntegrationSummary` includes the catalog fields (`id`, `name`, `description`, `setupUrl`,
-`fields`) plus live status:
-
-```json
-{
-  "id": "github",
-  "name": "GitHub",
-  "description": "...",
-  "setupUrl": "https://github.com/settings/personal-access-tokens/new",
-  "fields": [{ "key": "token", "label": "Fine-grained personal access token", "type": "password", "required": true }],
-  "status": "not_connected",
-  "connectedAt": null,
-  "lastTestAt": null,
-  "lastTestOk": null,
-  "scopes": { "taskTypes": ["daily", "developmental", "routine"], "agents": ["claude", "opencode", "omnimancer"] }
-}
-```
-
-`status` is `connected` once every required field has a stored credential, `error` when the most
-recent connection test (persisted in the `integration_metadata` table) failed, and `not_connected`
-otherwise. Writing credentials (`PUT /api/integrations/:id`), running a live connection test
-(`POST /api/integrations/:id/test`), and disconnecting (`DELETE /api/integrations/:id`) are planned
-follow-up endpoints on the same router.
+Credential fields are stored write-only in the encrypted credential store (system scope) under
+`integration_<id>_<field>` keys — never returned by any endpoint. Non-secret status
+(`status`/`connectedAt`/`lastTestAt`/`lastTestOk`/`scopes`) is persisted in the `integration_metadata`
+SQLite table; a missing row means the integration has never been connected.
 
 ## Environment Variables
 
