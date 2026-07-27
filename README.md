@@ -343,43 +343,48 @@ not through this endpoint.
 | `GET` | `/api/settings` | Returns `{ provider, model, defaultAgentId }` |
 | `PUT` | `/api/settings` | Partial update of any field |
 
-### Integrations – `/api/integrations`
+## Integrations
 
-Server-side catalog of the v1 token/API-key integrations (GitHub, Slack, Jira, Notion, Linear,
-monday.com, HubSpot). Credentials are write-only: they are encrypted at rest via the credential
-store (see [Credential Store](#credential-store--credentials_master_key) below) under
-`integration_<id>_<field>` (system scope) and are **never** returned by any endpoint.
+Routini injects per-integration credentials into developmental-task container spawns so an
+agent's coding job can call the tools it needs. This is server-side wiring only in this iteration —
+there is no `/api/integrations` CRUD surface or `/integrations` UI yet; the catalog and connect/scope
+UI are tracked separately.
 
-| Method | Endpoint | Notes |
-|--------|----------|-------|
-| `GET` | `/api/integrations` | Catalog + per-integration `{ status, connectedAt, lastTestAt, lastTestOk, scopes }` |
-| `PUT` | `/api/integrations/:id` | Write-only credential fields (all required fields must be sent together) and/or `scopes` |
-| `POST` | `/api/integrations/:id/test` | Live provider health check; persists `lastTestAt` / `lastTestOk` |
-| `DELETE` | `/api/integrations/:id` | Disconnects: removes stored credentials, resets metadata |
+### Credential injection (`server/src/services/integrations.ts`)
 
-`status` is derived server-side: `not_connected` (missing required credentials), `connected`
-(credentials stored and the last test — if any — succeeded), or `error` (the last test failed).
-`scopes` is `{ taskTypes: ('daily'|'developmental'|'routine')[], agents: string[] }` and defaults to
-all task types and all agents when an integration is first connected.
+Seven v1 integrations are supported, each backed by a single token/API-key credential stored in the
+encrypted credential store (system scope) under `integration_<id>_token`, and injected into a
+container spawn under the following env var when in scope:
 
-`POST /:id/test` performs one read-only call per provider and never accepts a user-supplied URL
-except for Jira, whose `siteUrl` is validated against SSRF (scheme, embedded credentials, and both
-the literal hostname and its DNS-resolved IP are checked against private/loopback ranges) before any
-request is made:
+| Integration | Env var |
+|-------------|---------|
+| GitHub | `GITHUB_TOKEN` |
+| Slack | `SLACK_BOT_TOKEN` |
+| Jira | `JIRA_API_TOKEN` |
+| Notion | `NOTION_TOKEN` |
+| Linear | `LINEAR_API_KEY` |
+| monday.com | `MONDAY_TOKEN` |
+| HubSpot | `HUBSPOT_TOKEN` |
 
-| Integration | Live check |
-|-------------|------------|
-| GitHub | `GET https://api.github.com/user` |
-| Slack | `POST https://slack.com/api/auth.test` |
-| Jira | `GET <siteUrl>/rest/api/3/myself` (Basic auth) |
-| Notion | `GET https://api.notion.com/v1/users/me` |
-| Linear | `POST https://api.linear.app/graphql` (`{ viewer { id } }`) |
-| monday.com | `POST https://api.monday.com/v2` (`{ me { id } }`) |
-| HubSpot | `GET https://api.hubapi.com/account-info/v3/details` |
+`getScopedIntegrationEnv(taskType, agentId)` is the single enforcement point every container spawn
+path calls (currently `runDevTask` in `server/src/services/devTask.ts`, for `developmental` tasks).
+A credential is included in the returned env map **only if both** of the following hold:
 
-Non-secret integration metadata (connection/test state, scoping) currently lives in an in-memory
-store, matching the other skeleton routers in this codebase (`settings`, `notifications`, `tasks`);
-durable sqlite persistence for it is tracked as a follow-up.
+- The integration is **connected** — a token has been stored via `setIntegrationToken`.
+- The calling task's `(taskType, agentId)` pair is within the integration's current **scope**.
+
+Scoping is enforced server-side at spawn time, not just hidden in the UI. Scope defaults to "all
+task types, all agents" until explicitly narrowed via `setIntegrationScope`, which persists a
+validated `{ taskTypes, agents }` object (also via the credential store, under
+`integration_<id>_scope`) — every entry is checked against the fixed `daily`/`developmental`/`routine`
+task types and `claude`/`opencode`/`omnimancer` agent ids, so an unrecognized value is rejected
+rather than silently stored. If stored scope data is ever corrupted or tampered with, it **fails
+closed** (denies every task type/agent) rather than falling back to "allow all."
+
+Out-of-scope and not-yet-connected integrations are simply omitted from the env map — never
+included with an empty placeholder value. See `tests/integrations.test.ts` for the full behavior
+matrix, including a fake-spawn test (a mocked `DockerService` that records the `ContainerConfig` it
+receives) proving an out-of-scope credential never reaches the container's environment.
 
 ## Environment Variables
 

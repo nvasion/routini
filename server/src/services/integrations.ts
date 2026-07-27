@@ -1,322 +1,245 @@
-// ─────────────────────────────────────────────────────────────────────────────
-// Integrations catalog + status service
-//
-// Defines the v1 integration catalog (GitHub, Slack, Jira, Notion, Linear,
-// monday.com, HubSpot) and computes the client-safe "summary" for each one —
-// its status, when it was connected, its last connection-test result, and
-// its scoping — for the GET /api/integrations endpoint.
-//
-// Storage model (per the Routini Integrations PRD):
-//   – Secrets live in the existing encrypted credential store
-//     (server/src/services/credentials.ts) under the "system" scope, keyed
-//     as `integration_<id>_<field>` (e.g. `integration_github_token`).
-//   – Non-secret metadata (last test result/time, scoping) lives in the
-//     `integration_metadata` SQLite table (server/src/db/index.ts). A missing
-//     row means "never tested, default scopes" — not an error.
-//
-// Security properties:
-//   – This module never decrypts or returns credential material. Presence of
-//     a required field is checked via the DB layer's `getCredential`, which
-//     returns row metadata (including ciphertext) without decrypting it —
-//     the plaintext secret is never touched for a status computation.
-//   – `connectedAt` is derived from the credential rows' own `created_at`
-//     (the earliest among an integration's required fields) rather than a
-//     second, independently-updated timestamp, so there is a single source
-//     of truth and no risk of the two drifting apart.
-//   – Stored scope JSON is parsed defensively: malformed or unknown values
-//     fall back to the catalog default rather than throwing, so a corrupt
-//     row can never break the catalog listing.
-// ─────────────────────────────────────────────────────────────────────────────
-
-import type { TaskType } from '../types.js'
-import { getCredential, getIntegrationMetadata } from '../db/index.js'
-
-// ── Types ────────────────────────────────────────────────────────────────────
-
-/** AI coding agents that can be scoped to use an integration. Mirrors devTask.ts VALID_AGENTS. */
-export type IntegrationAgentId = 'claude' | 'opencode' | 'omnimancer'
-
-export type IntegrationFieldType = 'text' | 'password' | 'url' | 'email'
-
-/** A single credential field an integration needs (e.g. a token or site URL). */
-export interface IntegrationFieldSpec {
-  /** Field name, used to build the credential-store key `integration_<id>_<key>`. */
-  key: string
-  /** Human-readable label shown in the connect modal. */
-  label: string
-  type: IntegrationFieldType
-  required: boolean
-  placeholder?: string
-}
-
-/** Which task types and agents may use a connected integration. */
-export interface IntegrationScopes {
-  taskTypes: TaskType[]
-  agents: IntegrationAgentId[]
-}
-
-/** Static catalog entry for one integration — never contains secrets. */
-export interface IntegrationDefinition {
-  id: string
-  name: string
-  description: string
-  /** Link to the provider's page for generating the credential. */
-  setupUrl: string
-  fields: IntegrationFieldSpec[]
-  defaultScopes: IntegrationScopes
-}
-
-export type IntegrationStatus = 'not_connected' | 'connected' | 'error'
-
-/** Client-safe view of an integration: catalog fields plus live status. Never contains secrets. */
-export interface IntegrationSummary {
-  id: string
-  name: string
-  description: string
-  setupUrl: string
-  fields: IntegrationFieldSpec[]
-  status: IntegrationStatus
-  connectedAt: string | null
-  lastTestAt: string | null
-  lastTestOk: boolean | null
-  scopes: IntegrationScopes
-}
-
-// ── Constants ────────────────────────────────────────────────────────────────
-
-export const ALL_TASK_TYPES: readonly TaskType[] = ['daily', 'developmental', 'routine']
-export const ALL_AGENT_IDS: readonly IntegrationAgentId[] = ['claude', 'opencode', 'omnimancer']
-
-/** Prefix for the credential-store keys backing integration secrets (system scope). */
-const CREDENTIAL_KEY_PREFIX = 'integration'
-
-/** Returns a fresh (never shared/mutated) "all task types, all agents" scope object. */
-function defaultScopes(): IntegrationScopes {
-  return { taskTypes: [...ALL_TASK_TYPES], agents: [...ALL_AGENT_IDS] }
-}
-
 /**
- * Build the credential-store key for one integration field, e.g.
- * `integration_github_token`. Shared by every route (GET/PUT/POST/DELETE) so
- * the naming scheme lives in exactly one place.
+ * Integration credential scoping and container-env injection.
+ *
+ * Routini's v1 integrations (GitHub, Slack, Jira, Notion, Linear,
+ * monday.com, HubSpot) are single-token, credentials-first connections: a
+ * user stores a token via the encrypted credential store and Routini
+ * injects it into agent container spawns as an environment variable so the
+ * task's coding agent (or scripted action) can call the provider's API.
+ *
+ * Security model (server-enforced, not just hidden in the UI):
+ *   – Secrets live only in the encrypted credential store
+ *     (server/src/services/credentials.ts) under the system scope
+ *     (userId = null), keyed as `integration_<id>_token`.  This module never
+ *     persists or logs the raw token value.
+ *   – Each integration has a *scope*: the set of task types and agent ids
+ *     permitted to receive its token.  Scope is likewise stored via the
+ *     credential store (as non-secret JSON) under `integration_<id>_scope`,
+ *     which keeps a single source of truth for "system-scope, per-key"
+ *     storage rather than introducing a parallel table.
+ *   – `getScopedIntegrationEnv` is the single choke point every container
+ *     spawn path must call.  A credential is only ever included when BOTH
+ *     the integration is connected (a token is stored) AND the caller's
+ *     (taskType, agentId) pair is within the integration's current scope.
+ *     Out-of-scope or disconnected integrations are silently omitted from
+ *     the returned env map — never included with an empty/placeholder
+ *     value, which could be mistaken for "connected but empty" by a caller.
+ *   – Scope data that fails to parse (corruption or tampering) fails
+ *     *closed*: the integration is treated as having no allowed task types
+ *     or agents until explicitly reconfigured, rather than falling back to
+ *     "allow all".
  */
-export function credentialFieldKey(integrationId: string, fieldKey: string): string {
-  return `${CREDENTIAL_KEY_PREFIX}_${integrationId}_${fieldKey}`
-}
+
+import { getCredentialSecret, saveCredential } from './credentials.js'
+import type { TaskType } from '../types.js'
 
 // ── Catalog ──────────────────────────────────────────────────────────────────
 
-export const INTEGRATIONS_CATALOG: readonly IntegrationDefinition[] = [
-  {
-    id: 'github',
-    name: 'GitHub',
-    description:
-      'Let tasks and coding agents read and write repositories, issues, and pull requests.',
-    setupUrl: 'https://github.com/settings/personal-access-tokens/new',
-    fields: [
-      {
-        key: 'token',
-        label: 'Fine-grained personal access token',
-        type: 'password',
-        required: true,
-        placeholder: 'github_pat_…',
-      },
-    ],
-    defaultScopes: defaultScopes(),
-  },
-  {
-    id: 'slack',
-    name: 'Slack',
-    description: 'Let tasks and agents post updates and read channel activity.',
-    setupUrl: 'https://api.slack.com/apps',
-    fields: [
-      { key: 'token', label: 'Bot token', type: 'password', required: true, placeholder: 'xoxb-…' },
-    ],
-    defaultScopes: defaultScopes(),
-  },
-  {
-    id: 'jira',
-    name: 'Jira',
-    description: 'Let tasks and agents read and update Jira issues.',
-    setupUrl: 'https://id.atlassian.com/manage-profile/security/api-tokens',
-    fields: [
-      {
-        key: 'siteUrl',
-        label: 'Site URL',
-        type: 'url',
-        required: true,
-        placeholder: 'https://your-domain.atlassian.net',
-      },
-      { key: 'email', label: 'Account email', type: 'email', required: true },
-      { key: 'token', label: 'API token', type: 'password', required: true },
-    ],
-    defaultScopes: defaultScopes(),
-  },
-  {
-    id: 'notion',
-    name: 'Notion',
-    description: 'Let tasks and agents read and update Notion pages and databases.',
-    setupUrl: 'https://www.notion.so/my-integrations',
-    fields: [
-      {
-        key: 'token',
-        label: 'Internal integration token',
-        type: 'password',
-        required: true,
-        placeholder: 'secret_…',
-      },
-    ],
-    defaultScopes: defaultScopes(),
-  },
-  {
-    id: 'linear',
-    name: 'Linear',
-    description: 'Let tasks and agents read and update Linear issues.',
-    setupUrl: 'https://linear.app/settings/api',
-    fields: [
-      {
-        key: 'apiKey',
-        label: 'API key',
-        type: 'password',
-        required: true,
-        placeholder: 'lin_api_…',
-      },
-    ],
-    defaultScopes: defaultScopes(),
-  },
-  {
-    id: 'monday',
-    name: 'monday.com',
-    description: 'Let tasks and agents read and update monday.com boards and items.',
-    setupUrl: 'https://monday.com/developers/apps',
-    fields: [{ key: 'token', label: 'API token', type: 'password', required: true }],
-    defaultScopes: defaultScopes(),
-  },
-  {
-    id: 'hubspot',
-    name: 'HubSpot',
-    description: 'Let tasks and agents read and update HubSpot CRM records.',
-    setupUrl: 'https://developers.hubspot.com/docs/api/private-apps',
-    fields: [
-      {
-        key: 'token',
-        label: 'Private app access token',
-        type: 'password',
-        required: true,
-        placeholder: 'pat-…',
-      },
-    ],
-    defaultScopes: defaultScopes(),
-  },
-]
-
-/** Look up a single catalog definition by id, or undefined when unknown. */
-export function getIntegrationDefinition(id: string): IntegrationDefinition | undefined {
-  return INTEGRATIONS_CATALOG.find((def) => def.id === id)
-}
-
-// ── Status derivation ────────────────────────────────────────────────────────
+/** The seven v1 token/API-key integrations. */
+export type IntegrationId =
+  | 'github'
+  | 'slack'
+  | 'jira'
+  | 'notion'
+  | 'linear'
+  | 'monday'
+  | 'hubspot'
 
 /**
- * Determine whether every required field for an integration has a stored
- * credential, and (when so) the earliest `created_at` among them — used as
- * `connectedAt`. Only touches credential-row *metadata* (via the DB layer's
- * `getCredential`); the encrypted secret is never decrypted here.
+ * All task types and agent ids that can ever appear in scope.  Mirrors
+ * `TaskType` (server/src/types.ts) and the agent ids validated by
+ * `VALID_AGENTS` in server/src/services/devTask.ts.  Duplicated here (as a
+ * small readonly literal list, not re-derived from devTask.ts) to avoid a
+ * circular import — devTask.ts is a consumer of this module.
  */
-function computeConnection(def: IntegrationDefinition): { connected: boolean; connectedAt: string | null } {
-  const requiredFields = def.fields.filter((f) => f.required)
-  if (requiredFields.length === 0) {
-    return { connected: false, connectedAt: null }
-  }
+export const ALL_TASK_TYPES: readonly TaskType[] = ['daily', 'developmental', 'routine']
+export const ALL_AGENT_IDS: readonly string[] = ['claude', 'opencode', 'omnimancer']
 
-  const rows = requiredFields.map((f) => getCredential(null, credentialFieldKey(def.id, f.key)))
-  if (rows.some((row) => row === undefined)) {
-    return { connected: false, connectedAt: null }
-  }
-
-  const createdTimestamps = rows.map((row) => row!.created_at)
-  const connectedAt = createdTimestamps.reduce((earliest, ts) => (ts < earliest ? ts : earliest))
-  return { connected: true, connectedAt }
+/** Which task types and agents may receive an integration's credential. */
+export interface IntegrationScope {
+  taskTypes: TaskType[]
+  agents: string[]
 }
 
-/** Type guard: is `value` one of the known TaskType strings? */
-function isTaskType(value: unknown): value is TaskType {
-  return typeof value === 'string' && (ALL_TASK_TYPES as readonly string[]).includes(value)
+export interface IntegrationDefinition {
+  id: IntegrationId
+  /** Display name for the catalog UI. */
+  name: string
+  /** Env var name injected into an in-scope container spawn. */
+  envVar: string
 }
 
-/** Type guard: is `value` one of the known IntegrationAgentId strings? */
-function isAgentId(value: unknown): value is IntegrationAgentId {
-  return typeof value === 'string' && (ALL_AGENT_IDS as readonly string[]).includes(value)
+/** Returns a fresh "allow everything" scope object (the documented default). */
+function defaultScope(): IntegrationScope {
+  return { taskTypes: [...ALL_TASK_TYPES], agents: [...ALL_AGENT_IDS] }
 }
 
-/**
- * Parse a JSON-encoded array of scope values, keeping only recognised
- * entries. Returns null (never throws) when the stored value is missing,
- * malformed, or ends up empty after filtering, so callers can fall back to
- * the catalog default rather than surfacing corrupt data or crashing GET.
- */
-function parseScopeArray<T>(raw: string | null, guard: (value: unknown) => value is T): T[] | null {
-  if (raw === null) return null
-  let parsed: unknown
+/** The seven v1 integrations and the env var each one's token is injected as. */
+export const INTEGRATIONS: Readonly<Record<IntegrationId, IntegrationDefinition>> = {
+  github: { id: 'github', name: 'GitHub', envVar: 'GITHUB_TOKEN' },
+  slack: { id: 'slack', name: 'Slack', envVar: 'SLACK_BOT_TOKEN' },
+  jira: { id: 'jira', name: 'Jira', envVar: 'JIRA_API_TOKEN' },
+  notion: { id: 'notion', name: 'Notion', envVar: 'NOTION_TOKEN' },
+  linear: { id: 'linear', name: 'Linear', envVar: 'LINEAR_API_KEY' },
+  monday: { id: 'monday', name: 'monday.com', envVar: 'MONDAY_TOKEN' },
+  hubspot: { id: 'hubspot', name: 'HubSpot', envVar: 'HUBSPOT_TOKEN' },
+}
+
+/** Type guard for the fixed integration-id union. */
+export function isIntegrationId(value: unknown): value is IntegrationId {
+  return typeof value === 'string' && Object.prototype.hasOwnProperty.call(INTEGRATIONS, value)
+}
+
+// ── Credential store key helpers ────────────────────────────────────────────
+
+const CREDENTIAL_FIELD_TOKEN = 'token'
+const CREDENTIAL_FIELD_SCOPE = 'scope'
+
+/** Builds the `integration_<id>_<field>` storage key used for every field. */
+function integrationCredentialKey(id: IntegrationId, field: string): string {
+  return `integration_${id}_${field}`
+}
+
+function tokenKey(id: IntegrationId): string {
+  return integrationCredentialKey(id, CREDENTIAL_FIELD_TOKEN)
+}
+
+function scopeKey(id: IntegrationId): string {
+  return integrationCredentialKey(id, CREDENTIAL_FIELD_SCOPE)
+}
+
+// ── Scope validation ─────────────────────────────────────────────────────────
+
+/** Narrow, defensive shape check — untrusted JSON in, typed scope out. */
+function parseScope(raw: string): IntegrationScope | null {
+  let candidate: unknown
   try {
-    parsed = JSON.parse(raw)
+    candidate = JSON.parse(raw)
   } catch {
     return null
   }
-  if (!Array.isArray(parsed)) return null
-  const filtered = parsed.filter(guard)
-  return filtered.length > 0 ? filtered : null
-}
-
-/** Resolve the effective scopes for an integration: stored metadata, or the catalog default. */
-function resolveScopes(
-  def: IntegrationDefinition,
-  metadata: ReturnType<typeof getIntegrationMetadata>,
-): IntegrationScopes {
-  if (!metadata) return { ...defaultScopes() }
-
-  const taskTypes = parseScopeArray(metadata.scope_task_types, isTaskType) ?? def.defaultScopes.taskTypes
-  const agents = parseScopeArray(metadata.scope_agents, isAgentId) ?? def.defaultScopes.agents
-  return { taskTypes, agents }
+  if (typeof candidate !== 'object' || candidate === null) return null
+  const { taskTypes, agents } = candidate as Record<string, unknown>
+  if (!Array.isArray(taskTypes) || !Array.isArray(agents)) return null
+  if (!taskTypes.every((t): t is TaskType => ALL_TASK_TYPES.includes(t as TaskType))) return null
+  if (!agents.every((a) => typeof a === 'string' && ALL_AGENT_IDS.includes(a))) return null
+  return { taskTypes: taskTypes as TaskType[], agents: agents as string[] }
 }
 
 /**
- * Build the client-safe summary for one integration: catalog fields plus
- * live status/connectedAt/lastTest/scopes. Never includes credential
- * material — only presence/timestamps derived from row metadata.
+ * Validates a scope object before it is persisted.  Throws a descriptive
+ * error for the caller (e.g. the future PUT /api/integrations/:id route) to
+ * surface as a 400; never silently drops invalid entries.
  */
-export function getIntegrationSummary(id: string): IntegrationSummary | undefined {
-  const def = getIntegrationDefinition(id)
-  if (!def) return undefined
-
-  const { connected, connectedAt } = computeConnection(def)
-  const metadata = getIntegrationMetadata(def.id)
-
-  const lastTestAt = metadata?.last_test_at ?? null
-  const lastTestOk =
-    metadata?.last_test_ok === null || metadata?.last_test_ok === undefined
-      ? null
-      : metadata.last_test_ok === 1
-
-  // A connected integration whose most recent test failed is surfaced as
-  // "error" so the UI can flag it distinctly from "never tested yet".
-  const status: IntegrationStatus = !connected ? 'not_connected' : lastTestOk === false ? 'error' : 'connected'
-
-  return {
-    id: def.id,
-    name: def.name,
-    description: def.description,
-    setupUrl: def.setupUrl,
-    fields: def.fields,
-    status,
-    connectedAt,
-    lastTestAt,
-    lastTestOk,
-    scopes: resolveScopes(def, metadata),
+export function validateScope(scope: IntegrationScope): IntegrationScope {
+  if (!scope || typeof scope !== 'object') {
+    throw new Error('scope must be an object')
   }
+  const { taskTypes, agents } = scope
+  if (!Array.isArray(taskTypes) || taskTypes.length === 0) {
+    throw new Error('scope.taskTypes must be a non-empty array')
+  }
+  if (!Array.isArray(agents) || agents.length === 0) {
+    throw new Error('scope.agents must be a non-empty array')
+  }
+  for (const t of taskTypes) {
+    if (!ALL_TASK_TYPES.includes(t)) {
+      throw new Error(`scope.taskTypes contains an invalid task type: "${String(t)}"`)
+    }
+  }
+  for (const a of agents) {
+    if (typeof a !== 'string' || !ALL_AGENT_IDS.includes(a)) {
+      throw new Error(`scope.agents contains an invalid agent id: "${String(a)}"`)
+    }
+  }
+  // De-duplicate defensively so repeated PUTs don't grow the stored array.
+  return { taskTypes: [...new Set(taskTypes)], agents: [...new Set(agents)] }
 }
 
-/** Build client-safe summaries for every integration in the catalog. */
-export function getIntegrationSummaries(): IntegrationSummary[] {
-  return INTEGRATIONS_CATALOG.map((def) => getIntegrationSummary(def.id)!)
+// ── Public API ───────────────────────────────────────────────────────────────
+
+/**
+ * Returns the current scope for an integration.
+ *
+ *   – No scope has ever been saved  → the documented default ("all task
+ *     types, all agents").
+ *   – Saved scope fails to parse    → fail closed (empty scope) rather than
+ *     risk granting broader access than intended.
+ */
+export function getIntegrationScope(id: IntegrationId): IntegrationScope {
+  const raw = getCredentialSecret(null, scopeKey(id))
+  if (raw === undefined) return defaultScope()
+
+  const parsed = parseScope(raw)
+  if (!parsed) {
+    // Never include the raw stored value in the log — it is not secret, but
+    // logging arbitrary stored content on a parse failure is bad practice.
+    console.error(
+      `[integrations] Stored scope for "${id}" is invalid/corrupt; denying all access until reconfigured`,
+    )
+    return { taskTypes: [], agents: [] }
+  }
+  return parsed
+}
+
+/** Persists a validated scope for an integration (system-wide, non-secret). */
+export function setIntegrationScope(id: IntegrationId, scope: IntegrationScope): void {
+  if (!isIntegrationId(id)) {
+    throw new Error(`Unknown integration id: "${String(id)}"`)
+  }
+  const validated = validateScope(scope)
+  saveCredential(null, scopeKey(id), JSON.stringify(validated))
+}
+
+/** Returns `true` when a token has been stored for the integration. */
+export function isIntegrationConnected(id: IntegrationId): boolean {
+  return getCredentialSecret(null, tokenKey(id)) !== undefined
+}
+
+/**
+ * Stores the token credential for an integration.  Thin wrapper over the
+ * credential store using this module's key convention; kept here so callers
+ * (routes, tests) never need to know the `integration_<id>_token` shape.
+ */
+export function setIntegrationToken(id: IntegrationId, token: string): void {
+  if (!isIntegrationId(id)) {
+    throw new Error(`Unknown integration id: "${String(id)}"`)
+  }
+  saveCredential(null, tokenKey(id), token)
+}
+
+/**
+ * Builds the environment variables to inject into a container spawn for a
+ * task of the given type run by the given agent.
+ *
+ * This is the single enforcement point for integration scoping: a
+ * credential is included if and only if it is connected (a token is
+ * stored) AND the (taskType, agentId) pair is within the integration's
+ * current scope. Everything else — out-of-scope integrations,
+ * not-yet-connected integrations — is silently omitted from the result, so
+ * callers can always spread the return value straight into the container's
+ * env map without further filtering.
+ *
+ * Never throws on a per-integration basis: a corrupt scope for one
+ * integration fails closed for that integration only (see
+ * `getIntegrationScope`) and does not block the others from being injected.
+ */
+export function getScopedIntegrationEnv(
+  taskType: TaskType,
+  agentId: string,
+): Record<string, string> {
+  const env: Record<string, string> = {}
+
+  for (const integration of Object.values(INTEGRATIONS)) {
+    const token = getCredentialSecret(null, tokenKey(integration.id))
+    if (token === undefined) continue // not connected — nothing to inject
+
+    const scope = getIntegrationScope(integration.id)
+    if (!scope.taskTypes.includes(taskType)) continue
+    if (!scope.agents.includes(agentId)) continue
+
+    env[integration.envVar] = token
+  }
+
+  return env
 }
