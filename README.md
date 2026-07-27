@@ -31,7 +31,7 @@ routini/
 │   │       ├── tasks.ts         # CRUD + trigger for tasks
 │   │       ├── settings.ts      # GET/PUT AI settings
 │   │       ├── credentials.ts   # CRUD for stored credentials
-│   │       └── integrations.ts  # Integrations catalog + DELETE /:id disconnect
+│   │       └── integrations.ts  # Integrations catalog + connect/test/disconnect (see "Integrations" below)
 │   ├── vitest.config.ts         # Test runner config
 │   └── package.json
 ├── client/                      # React frontend
@@ -44,13 +44,12 @@ routini/
 │   │   │   ├── TaskCard.tsx / .css / .test.tsx  # Clickable task card (see "Interacting with the config modal")
 │   │   │   ├── ConfigModal.tsx / .css / .test.tsx  # Centered, editable task config modal (see below)
 │   │   │   ├── configModal.utils.ts / (tested via tests/configModal.utils.test.ts)  # Pure form validation/payload helpers backing ConfigModal
-│   │   │   ├── RoutineBuilder.tsx     # Step editor for routine tasks (embedded in ConfigModal)
-│   │   │   ├── IntegrationConnectionPanel.tsx / .css / .test.tsx  # Test connection / scoping / Disconnect controls for a connected integration (see "Integrations" below)
-│   │   │   └── integrationConnectionPanel.utils.ts / (tested via tests/integrationConnectionPanel.utils.test.ts)  # Pure scoping/formatting helpers backing IntegrationConnectionPanel
+│   │   │   ├── IntegrationModal.tsx / .css / .test.tsx  # Connect/scope/test/disconnect modal, reuses ConfigModal's chrome (see "Integrations" below)
+│   │   │   └── RoutineBuilder.tsx     # Step editor for routine tasks (embedded in ConfigModal)
 │   │   └── pages/
 │   │       ├── Dashboard.tsx / .css / .test.tsx  # Three-bucket task dashboard (see "Dashboard Layout" below)
 │   │       ├── MetricsPage.tsx / .css / .test.tsx  # Read-only task health metrics (see "Metrics Page" below)
-│   │       ├── IntegrationsPage.tsx / .css / .test.tsx  # `/integrations` placeholder (see "Navigation & Pages" below)
+│   │       ├── Integrations.tsx / .css / .test.tsx  # Integrations catalog grid (see "Integrations" below)
 │   │       ├── Login.tsx / .css       # Login page
 │   │       └── Settings.tsx / .css   # AI settings page
 │   ├── vitest.config.ts         # Component-test runner config (jsdom + React), see "Running Tests"
@@ -59,7 +58,9 @@ routini/
 │   ├── api.test.ts              # Health + 404 tests
 │   ├── auth.test.ts             # Auth endpoint tests
 │   ├── tasks.test.ts            # Task CRUD + trigger tests
-│   └── settings.test.ts        # Settings endpoint tests
+│   ├── settings.test.ts         # Settings endpoint tests
+│   ├── integrations.test.ts     # Integrations CRUD/test/disconnect HTTP tests (see "Integrations" below)
+│   └── integrations-connection.test.ts  # Unit tests for the per-provider live-check dispatch
 ├── Makefile
 └── package.json
 ```
@@ -103,8 +104,9 @@ make start   # Runs compiled server
 make test
 ```
 
-`make test` runs the server-side/integration suite: 866+ tests covering auth, tasks (CRUD,
-type-specific `PUT` validation, and trigger), settings, notifications, credentials, and general API
+`make test` runs the server-side/integration suite: 900+ tests covering auth, tasks (CRUD,
+type-specific `PUT` validation, and trigger), settings, notifications, credentials, integrations
+(catalog, connect/test/disconnect, and the per-provider live-check dispatch), and general API
 behaviour. These live under `tests/**`, `server/tests/**`, and `server/src/**/*.test.ts` and run
 with the workspace-root Vitest config (`server/vitest.config.ts`) in a plain Node environment.
 Task validation in particular is covered across three files that stay independently readable:
@@ -145,7 +147,7 @@ four tabs and highlights whichever one matches the current route:
 |-----|-------|------|
 | Dashboard | `/` (and `/?bucket=<type>` — see "Bucket drill-in" below) | `pages/Dashboard.tsx` |
 | Metrics | `/metrics` | `pages/MetricsPage.tsx` |
-| Integrations | `/integrations` | `pages/IntegrationsPage.tsx` |
+| Integrations | `/integrations` | `pages/Integrations.tsx` (see "Integrations" below) |
 | Settings | `/settings` | `pages/Settings.tsx` |
 
 All four are protected routes (see `App.tsx`'s `Protected` wrapper) — an unauthenticated visitor is
@@ -302,6 +304,78 @@ endpoints.
 - An empty-state message ("No failed tasks") replaces the table when there are no failures, and an
   error banner surfaces a failed initial fetch without crashing the page.
 
+## Integrations
+
+`client/src/pages/Integrations.tsx` (`/integrations`) is a catalog grid of the external tools tasks
+and coding agents can connect to. v1 ships seven token/API-key integrations, each with its own
+credential field(s) and a link to the provider's token-generation page:
+
+| Integration | Credential fields | Setup page |
+|-------------|--------------------|------------|
+| GitHub | Personal Access Token | github.com fine-grained PAT settings |
+| Slack | Bot Token | api.slack.com apps |
+| Jira | Site URL, Account Email, API Token | Atlassian API token management |
+| Notion | Internal Integration Token | notion.so/my-integrations |
+| Linear | API Key | linear.app API settings |
+| monday.com | API Token | monday.com developer apps |
+| HubSpot | Private App Token | HubSpot private-app docs |
+
+Unlike openworker (the source of this catalog), Routini is a self-hosted, multi-user web service:
+there is no third-party OAuth broker for v1 — connecting is credentials-first, secrets are stored
+server-side in the existing encrypted credential store, and access is scoped per-integration rather
+than gated by interactive per-action approval prompts.
+
+### Catalog grid and status badges
+
+Each card shows a status badge — **Not connected**, **Connected**, or **Error** (a connected
+integration whose most recent test failed) — sourced entirely from `GET /api/integrations`, which
+never returns credential values. Clicking a card (or activating it with `Enter`/`Space`, mirroring
+`TaskCard`'s keyboard support) opens `IntegrationModal`.
+
+### Connect modal
+
+`client/src/components/IntegrationModal.tsx` reuses `ConfigModal`'s centered overlay/panel chrome
+(the `cm-*` classes and its exported `FormRow`/`FormStatus` pieces) rather than duplicating that
+layout, per the catalog's shared card/modal design:
+
+- A link to the provider's setup page for generating the credential.
+- One input per credential field (rendered as `type="password"` for secret fields). Like the daily
+  task config editor, fields are **write-only**: the server never echoes a stored value back, so
+  once connected, leaving a field blank on a later save means "keep the currently stored value,"
+  not "clear it." All fields are required on the first connect.
+- Once connected, a **scoping panel** (checkboxes for allowed task types — `daily` / `developmental`
+  / `routine` — and allowed agents — `claude` / `opencode` / `omnimancer`; defaults to all), a
+  **Test connection** button, and **Disconnect**.
+
+### Test connection
+
+Test connection calls `POST /api/integrations/:id/test`, which performs a server-side live check
+against the provider using the already-stored credentials (GitHub `GET /user`, Slack `auth.test`,
+Jira `GET /rest/api/3/myself`, Notion `GET /v1/users/me`, Linear's `viewer` GraphQL query,
+monday.com's `me` GraphQL query, HubSpot account-info). The result (`lastTestOk` + `lastTestAt`) is
+persisted and flips the card's badge to **Error** on failure — it never accepts credentials in the
+request body, only reads what is already stored.
+
+### Security
+
+- Secrets are encrypted at rest via the existing credential store (AES-256-GCM) under keys of the
+  form `integration_<id>_<field>` (system scope, matching the store's `(userId, key)` model used
+  elsewhere — see "Credential Store" below) and are **never** returned by `GET`, `PUT`, or `POST
+  .../test` responses.
+- `PUT`/`POST .../test`/`DELETE` all require authentication and CSRF (`requireAuth` + `requireCsrf`,
+  the same pattern used by `tasks.ts` and `credentials.ts`).
+- Jira's site URL is user-supplied, so the live-check runs it through the same SSRF guard used by
+  the HTTP daily-task service (`https:`-only, no embedded credentials, private/loopback hostnames
+  and their resolved IPs rejected) before making the request. The other six providers use fixed,
+  hardcoded API hostnames, not user input.
+- Scoping (`taskTypes` / `agents`) is validated against a fixed enum and persisted server-side by
+  this API — it is not merely a client-side hidden field. Enforcing it at task/container-spawn time
+  (i.e. actually gating which running tasks or agent containers may read a given integration's
+  credentials) is part of a later execution and not yet wired into task execution.
+- Non-secret status/scoping metadata (`connectedAt`, `lastTestAt`, `lastTestOk`, `scopes`) persists
+  to sqlite via the `integration_metadata` table (see "Database Persistence" below) so it survives a
+  restart; disconnecting removes both the stored credentials and this metadata row.
+
 ## API Reference
 
 ### General
@@ -375,48 +449,21 @@ not through this endpoint.
 | `GET` | `/api/settings` | Returns `{ provider, model, defaultAgentId }` |
 | `PUT` | `/api/settings` | Partial update of any field |
 
-## Integrations
+### Integrations – `/api/integrations`
 
-Routini injects per-integration credentials into developmental-task container spawns so an
-agent's coding job can call the tools it needs. This is server-side wiring only in this iteration —
-there is no `/api/integrations` CRUD surface or `/integrations` UI yet; the catalog and connect/scope
-UI are tracked separately.
+All endpoints require authentication; `PUT`, `POST .../test`, and `DELETE` additionally require a
+valid CSRF token (`requireCsrf`) when authenticating via cookie. No response from this router ever
+includes a credential value — see "Integrations" above for the full connect/test/disconnect flow.
 
-### Credential injection (`server/src/services/integrations.ts`)
+| Method | Endpoint | Notes |
+|--------|----------|-------|
+| `GET` | `/api/integrations` | Catalog (all 7 v1 integrations) + per-integration `{ status, connectedAt, lastTestAt, lastTestOk, scopes }` |
+| `PUT` | `/api/integrations/:id` | Body: `{ credentials?: Record<field, string>, scopes?: { taskTypes?, agents? } }`. All credential fields are required on first connect; once connected, omitted fields keep their stored value and a scopes-only update is allowed. |
+| `POST` | `/api/integrations/:id/test` | Runs the provider's live health check using stored credentials; 400 if not yet connected. Persists `lastTestAt`/`lastTestOk`. |
+| `DELETE` | `/api/integrations/:id` | Disconnects: removes stored credentials and resets metadata to `not_connected` with default scopes. |
 
-Seven v1 integrations are supported, each backed by a single token/API-key credential stored in the
-encrypted credential store (system scope) under `integration_<id>_token`, and injected into a
-container spawn under the following env var when in scope:
-
-| Integration | Env var |
-|-------------|---------|
-| GitHub | `GITHUB_TOKEN` |
-| Slack | `SLACK_BOT_TOKEN` |
-| Jira | `JIRA_API_TOKEN` |
-| Notion | `NOTION_TOKEN` |
-| Linear | `LINEAR_API_KEY` |
-| monday.com | `MONDAY_TOKEN` |
-| HubSpot | `HUBSPOT_TOKEN` |
-
-`getScopedIntegrationEnv(taskType, agentId)` is the single enforcement point every container spawn
-path calls (currently `runDevTask` in `server/src/services/devTask.ts`, for `developmental` tasks).
-A credential is included in the returned env map **only if both** of the following hold:
-
-- The integration is **connected** — a token has been stored via `setIntegrationToken`.
-- The calling task's `(taskType, agentId)` pair is within the integration's current **scope**.
-
-Scoping is enforced server-side at spawn time, not just hidden in the UI. Scope defaults to "all
-task types, all agents" until explicitly narrowed via `setIntegrationScope`, which persists a
-validated `{ taskTypes, agents }` object (also via the credential store, under
-`integration_<id>_scope`) — every entry is checked against the fixed `daily`/`developmental`/`routine`
-task types and `claude`/`opencode`/`omnimancer` agent ids, so an unrecognized value is rejected
-rather than silently stored. If stored scope data is ever corrupted or tampered with, it **fails
-closed** (denies every task type/agent) rather than falling back to "allow all."
-
-Out-of-scope and not-yet-connected integrations are simply omitted from the env map — never
-included with an empty placeholder value. See `tests/integrations.test.ts` for the full behavior
-matrix, including a fake-spawn test (a mocked `DockerService` that records the `ContainerConfig` it
-receives) proving an out-of-scope credential never reaches the container's environment.
+`:id` is one of `github` / `slack` / `jira` / `notion` / `linear` / `monday` / `hubspot`; an unknown
+id 404s on every route.
 
 ## Environment Variables
 
@@ -445,7 +492,7 @@ receives) proving an out-of-scope credential never reaches the container's envir
 
 ### Credential Store — `CREDENTIALS_MASTER_KEY`
 
-Master key used to encrypt and decrypt stored credentials (SSH keys, IMAP/SMTP passwords, API tokens, etc.) with **AES-256-GCM** before they are persisted to the database.
+Master key used to encrypt and decrypt stored credentials (SSH keys, IMAP/SMTP passwords, API tokens, etc.) with **AES-256-GCM** before they are persisted to the database. This includes the Integrations tab's credentials (see "Integrations" above), which are stored under system-scoped keys of the form `integration_<id>_<field>` (e.g. `integration_github_token`).
 
 - **Development**: if unset, an ephemeral key is generated at process startup for local development only. Data encrypted with an ephemeral key cannot be decrypted after a restart — set an explicit key if you need encrypted data to persist across restarts locally.
 - **Test**: set a fixed, non-secret dummy key (e.g. via a `.env.test` file or inline in the test command) so encryption/decryption is deterministic across test runs. Never reuse a production key value in tests.
@@ -461,7 +508,7 @@ Master key used to encrypt and decrypt stored credentials (SSH keys, IMAP/SMTP p
 
 ### Database Persistence — `ROUTINI_DB_PATH`
 
-Filesystem path to the SQLite database file used for persistent storage (users, tasks, stored credentials, etc.).
+Filesystem path to the SQLite database file used for persistent storage (users, tasks, stored credentials, integration status/scoping metadata, etc.).
 
 - **Development**: if unset, defaults to a local file under the server's working directory (e.g. `./data/routini.db`). The directory is created automatically if it does not exist.
 - **Test**: set `ROUTINI_DB_PATH` to `:memory:` or a temporary file path so test runs are isolated from the development database and from each other.

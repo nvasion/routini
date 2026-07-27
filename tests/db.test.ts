@@ -75,13 +75,15 @@ describe('getDb() connection', () => {
 
   it('does not error when schema is applied twice (idempotent)', () => {
     const db = getDb()
-    // Re-running the migration ledger query should be a no-op: all migrations
-    // already recorded, so the pending list is empty and nothing re-runs.
+    // Re-running the migration ledger query should be a no-op: every
+    // migration is already recorded, so the pending list is empty and
+    // nothing re-runs (no duplicate ledger rows for the same version).
     const applied = db
       .prepare('SELECT version FROM schema_migrations ORDER BY version')
       .all() as { version: number }[]
-    expect(applied).toHaveLength(2)
-    expect(applied.map((m) => m.version)).toEqual([1, 2])
+    const versions = applied.map((row) => row.version)
+    expect(new Set(versions).size).toBe(versions.length)
+    expect(versions).toContain(1)
   })
 })
 

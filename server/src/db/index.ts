@@ -60,25 +60,23 @@ export interface CredentialRow {
 }
 
 /**
- * Non-secret integration metadata, as stored in the `integration_metadata`
- * table. The row's *presence* is meaningful: an integration with no row is
- * treated as `not_connected` with catalog default scopes by callers (see
- * server/src/routes/integrations.ts). Secrets themselves are never stored
- * here — they live in the `credentials` table under
- * `integration_<id>_<field>` keys, encrypted at rest.
+ * Non-secret metadata for one catalog integration, as stored in the
+ * `integration_metadata` table. The credential values themselves live in the
+ * encrypted `credentials` table (see server/src/routes/integrations.ts).
  */
 export interface IntegrationMetadataRow {
   /** Catalog integration id, e.g. "github". */
   id: string
-  status: string
-  /** ISO timestamp of when credentials were last saved, or null. */
+  /** ISO timestamp of first successful connect, or null when never connected. */
   connected_at: string | null
-  /** ISO timestamp of the last live connection test, or null. */
+  /** ISO timestamp of the most recent connection test, or null when untested. */
   last_test_at: string | null
-  /** 1 = last test succeeded, 0 = failed, null = never tested. */
+  /** 1 = last test passed, 0 = last test failed, null = never tested. */
   last_test_ok: number | null
-  /** JSON-encoded scoping (allowed task types + agents). */
-  scopes: string
+  /** JSON-encoded array of allowed TaskType values. */
+  scope_task_types: string
+  /** JSON-encoded array of allowed agent ids. */
+  scope_agents: string
   updated_at: string
 }
 
@@ -152,19 +150,18 @@ CREATE TABLE IF NOT EXISTS credentials (
 );
 `
 
-// Non-secret integration metadata (status, connection/test timestamps,
-// scoping). Absence of a row means the integration has never been connected;
-// the credentials themselves live in the `credentials` table above under
-// `integration_<id>_<field>` keys.
+// Non-secret status/scoping metadata for catalog integrations (see
+// server/src/routes/integrations.ts). Secrets never live here — only in the
+// `credentials` table above, under keys of the form `integration_<id>_<field>`.
 const SCHEMA_V2 = `
 CREATE TABLE IF NOT EXISTS integration_metadata (
-  id            TEXT PRIMARY KEY,
-  status        TEXT NOT NULL,
-  connected_at  TEXT,
-  last_test_at  TEXT,
-  last_test_ok  INTEGER,
-  scopes        TEXT NOT NULL,
-  updated_at    TEXT NOT NULL
+  id                TEXT PRIMARY KEY,
+  connected_at      TEXT,
+  last_test_at      TEXT,
+  last_test_ok      INTEGER,
+  scope_task_types  TEXT NOT NULL DEFAULT '[]',
+  scope_agents      TEXT NOT NULL DEFAULT '[]',
+  updated_at        TEXT NOT NULL
 );
 `
 
@@ -189,7 +186,7 @@ const MIGRATIONS: Migration[] = [
   },
   {
     version: 2,
-    description: 'Add integration_metadata table for non-secret integration status/scoping',
+    description: 'Add integration_metadata table for the Integrations tab',
     sql: SCHEMA_V2,
   },
 ]
@@ -421,55 +418,42 @@ export function deleteCredential(
   return result.changes
 }
 
-// ── Integration metadata ────────────────────────────────────────────────────
+// ── Integration metadata accessors ──────────────────────────────────────────
 //
-// Non-secret status/scoping metadata for the integrations catalog (see
-// server/src/routes/integrations.ts). Kept in its own table, separate from
-// the encrypted `credentials` table, since none of these fields are secret.
+// Non-secret status/scoping metadata for catalog integrations (see
+// server/src/routes/integrations.ts). Kept separate from the credentials
+// table so listing/status checks never touch encrypted secret material.
 
-/** Insert or replace an integration metadata row, keyed by integration id. */
+/** Insert or replace an integration's metadata row, keyed by integration id. */
 export function upsertIntegrationMetadata(row: IntegrationMetadataRow): void {
   getDb()
     .prepare(
       `INSERT INTO integration_metadata
-         (id, status, connected_at, last_test_at, last_test_ok, scopes, updated_at)
-       VALUES (@id, @status, @connected_at, @last_test_at, @last_test_ok, @scopes, @updated_at)
+         (id, connected_at, last_test_at, last_test_ok, scope_task_types, scope_agents, updated_at)
+       VALUES (@id, @connected_at, @last_test_at, @last_test_ok, @scope_task_types, @scope_agents, @updated_at)
        ON CONFLICT(id) DO UPDATE SET
-         status = @status,
          connected_at = @connected_at,
          last_test_at = @last_test_at,
          last_test_ok = @last_test_ok,
-         scopes = @scopes,
+         scope_task_types = @scope_task_types,
+         scope_agents = @scope_agents,
          updated_at = @updated_at`,
     )
     .run(row)
 }
 
-/** Look up integration metadata by id. Returns undefined when never connected. */
+/** Look up an integration's metadata by id. Returns undefined when never connected. */
 export function getIntegrationMetadata(id: string): IntegrationMetadataRow | undefined {
   return getDb()
     .prepare(
-      `SELECT id, status, connected_at, last_test_at, last_test_ok, scopes, updated_at
-       FROM integration_metadata WHERE id = ?`,
+      `SELECT id, connected_at, last_test_at, last_test_ok, scope_task_types, scope_agents, updated_at
+       FROM integration_metadata
+       WHERE id = ?`,
     )
     .get(id) as IntegrationMetadataRow | undefined
 }
 
-/** List all integration metadata rows (integrations that have a persisted state). */
-export function listIntegrationMetadata(): IntegrationMetadataRow[] {
-  return getDb()
-    .prepare(
-      `SELECT id, status, connected_at, last_test_at, last_test_ok, scopes, updated_at
-       FROM integration_metadata ORDER BY id`,
-    )
-    .all() as IntegrationMetadataRow[]
-}
-
-/**
- * Delete integration metadata by id — used on disconnect to reset the
- * integration back to its default (never-connected) state. Returns the
- * number of rows removed (0 or 1); idempotent for callers.
- */
+/** Delete an integration's metadata row. Returns the number of rows removed. */
 export function deleteIntegrationMetadata(id: string): number {
   const result = getDb().prepare('DELETE FROM integration_metadata WHERE id = ?').run(id)
   return result.changes

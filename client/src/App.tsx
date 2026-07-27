@@ -11,7 +11,7 @@
  *                        Dashboard page, not a different page — Dashboard
  *                        reads/writes it via the History API so the view is
  *                        bookmarkable and works with back/forward.
- *   /integrations      — protected integrations catalog (pages/IntegrationsPage.tsx)
+ *   /integrations      — protected integrations catalog (pages/Integrations.tsx)
  *   /settings          — protected AI settings (pages/Settings.tsx)
  *   *                  — redirect to /
  *
@@ -33,7 +33,7 @@ import { Navbar } from './components/Navbar'
 import { Login } from './pages/Login'
 import { Dashboard } from './pages/Dashboard'
 import { MetricsPage } from './pages/MetricsPage'
-import { IntegrationsPage } from './pages/IntegrationsPage'
+import { Integrations } from './pages/Integrations'
 import { Settings } from './pages/Settings'
 import { getToken } from './api'
 
@@ -92,7 +92,7 @@ function App() {
           path="/integrations"
           element={
             <Protected>
-              <IntegrationsPage />
+              <Integrations />
             </Protected>
           }
         />

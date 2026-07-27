@@ -60,36 +60,37 @@ export interface AISettings {
   hasApiKey: boolean
 }
 
-// ──────────────────────────────────────────────
-// Integrations (see PRD "Routini Integrations") — client-side mirror of the
-// per-integration status shape returned by GET /api/integrations. Credential
-// values themselves are write-only and never appear on this type: the server
-// never serializes secrets into any response.
-// ──────────────────────────────────────────────
+// ── Integrations ──────────────────────────────────────────────────
 
 export type IntegrationStatus = 'not_connected' | 'connected' | 'error'
 
-/**
- * Server-enforced authorization scope for a connected integration: which
- * task types and which coding agents may use it at container-spawn time.
- * An empty array means "no task types/agents may use this integration" —
- * scoping is additive, not a placeholder for "all" (an unset/omitted
- * integration is already unusable by definition).
- */
-export interface IntegrationScopes {
-  taskTypes: TaskType[]
-  agents: AIProvider[]
+/** Describes one credential field a connect form needs to render — never carries a value. */
+export interface IntegrationField {
+  key: string
+  label: string
+  secret: boolean
 }
 
+export interface IntegrationScopes {
+  taskTypes: TaskType[]
+  agents: string[]
+}
+
+/**
+ * One catalog integration as returned by GET /api/integrations. Mirrors the
+ * server's response shape (server/src/routes/integrations.ts) and never
+ * contains credential values — only field metadata for rendering the connect
+ * form, plus non-secret connection status.
+ */
 export interface Integration {
   id: string
   name: string
+  description: string
+  setupUrl: string
+  fields: IntegrationField[]
   status: IntegrationStatus
-  /** ISO timestamp of when credentials were saved, or null when never connected. */
   connectedAt: string | null
-  /** ISO timestamp of the most recent Test connection call, or null if never tested. */
   lastTestAt: string | null
-  /** Result of the most recent test, or null if never tested. */
   lastTestOk: boolean | null
   scopes: IntegrationScopes
 }

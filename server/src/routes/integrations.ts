@@ -1,466 +1,574 @@
-/**
- * Integrations API
- *
- * Exposes the v1 integration catalog (GitHub, Slack, Jira, Notion, Linear,
- * monday.com, HubSpot) and the CRUD + live-test endpoints described in the
- * "Routini Integrations" PRD:
- *
- *   GET    /api/integrations           – catalog + per-integration status
- *   PUT    /api/integrations/:id       – store credentials + scoping
- *   POST   /api/integrations/:id/test  – live provider health check
- *   DELETE /api/integrations/:id       – disconnect
- *
- * Storage:
- *   – Secrets: the encrypted credential store (server/src/services/credentials.ts,
- *     AES-256-GCM at rest) under the key `integration_<id>_<field>`, system
- *     scope (userId = null) since integrations are a single shared,
- *     server-wide configuration (mirroring how the AI API key is stored in
- *     server/src/routes/settings.ts).
- *   – Non-secret metadata (connectedAt/lastTestAt/lastTestOk/scopes) lives in
- *     an in-memory map, matching the current persistence tier of the other
- *     skeleton routers in this codebase (settings, notifications, tasks).
- *     Durable sqlite persistence for this metadata is tracked as a separate
- *     PRD task.
- *
- * SECURITY:
- *   – Secrets are never serialized into any response — GET/PUT/DELETE below
- *     only ever return the catalog/status shape, never raw field values.
- *   – All mutating routes require requireAuth + requireCsrf.
- *   – POST /:id/test only ever runs against the fixed provider APIs (or, for
- *     Jira, a user-supplied site URL that is SSRF-validated — see
- *     server/src/services/integrationProviders.ts).
- */
+// ─────────────────────────────────────────────────────────────────────────────
+// Integrations API router
+//
+// Defines the v1 catalog of token/API-key integrations (GitHub, Slack, Jira,
+// Notion, Linear, monday.com, HubSpot) and exposes CRUD + live-test endpoints
+// over them. Consumers are Routini tasks and coding-agent containers — this
+// router only manages the server-side connection lifecycle (credentials,
+// scoping, connection status), not runtime injection into a running task.
+//
+// Security properties:
+//   – Secrets are NEVER returned by any endpoint. PUT accepts credential
+//     field values in the request body and persists them (encrypted) via the
+//     credential store; GET/PUT/DELETE/test responses carry status metadata
+//     only (id, status, timestamps, scopes).
+//   – Secrets are stored under the encrypted credential store's "system"
+//     scope (userId = null) as `integration_<id>_<field>`, matching the PRD's
+//     storage convention. Non-secret metadata (status/timestamps/scopes)
+//     lives in sqlite via server/src/db/index.ts.
+//   – All mutating routes (PUT, POST /test, DELETE) require both requireAuth
+//     (enforced at the mount point in app.ts) and requireCsrf.
+//   – PUT validates that only the integration's declared field keys are
+//     accepted, values are non-empty bounded strings, and scoping values are
+//     restricted to the known task-type/agent enums — arbitrary keys/values
+//     are rejected with 400 rather than silently stored.
+//   – The Jira test check accepts a user-supplied site URL, so it is run
+//     through the same SSRF guard used by the HTTP daily-task service
+//     (https-only, no embedded credentials, private/loopback IPs blocked,
+//     post-DNS-resolution re-check). The other providers use fixed,
+//     hardcoded API hostnames, not user input.
+//   – Errors from provider test calls are wrapped with a generic message;
+//     the raw error (which could echo back a URL or header detail) is logged
+//     server-side only, and credential values are never logged.
+// ─────────────────────────────────────────────────────────────────────────────
 
 import { Router, Request, Response } from 'express'
-import { requireAuth, requireCsrf } from './auth.js'
+import { requireCsrf } from './auth.js'
 import {
+  saveCredential,
   getCredentialSecret,
   removeCredential,
-  saveCredential,
 } from '../services/credentials.js'
-import { hasProviderTest, runProviderTest } from '../services/integrationProviders.js'
-import { VALID_AGENTS } from '../services/devTask.js'
-import type { TaskType } from '../types.js'
+import {
+  getIntegrationMetadata,
+  upsertIntegrationMetadata,
+  deleteIntegrationMetadata,
+  type IntegrationMetadataRow,
+} from '../db/index.js'
+import { isSsrfSafeHostname, resolvedIpIsSsrfSafe } from '../utils/network.js'
 
 export const integrationsRouter = Router()
 
-// ── Catalog ───────────────────────────────────────────────────────────────────
+// ── Catalog ──────────────────────────────────────────────────────────────────
 
 export interface IntegrationField {
-  /** Field name; combined with the integration id to form the credential key. */
+  /** Field name, e.g. "token". Used to build the credential-store key. */
   key: string
+  /** Human-readable label shown in the connect modal. */
   label: string
-  required: boolean
-  /** True for values that are always secret (all v1 fields are write-only). */
-  secret: true
+  /** True when the field holds a secret (rendered as a password input). */
+  secret: boolean
 }
 
-export interface IntegrationDefinition {
+export interface IntegrationDef {
   id: string
   name: string
   description: string
-  /** Link to the provider's token/credential setup page, shown in the connect modal. */
+  /** Provider page where the user generates the credential(s) below. */
   setupUrl: string
-  fields: IntegrationField[]
+  fields: readonly IntegrationField[]
 }
 
-function field(key: string, label: string, required = true): IntegrationField {
-  return { key, label, required, secret: true }
-}
+export const VALID_TASK_TYPES = ['daily', 'developmental', 'routine'] as const
+export const VALID_AGENTS = ['claude', 'opencode', 'omnimancer'] as const
 
-/** The seven v1 token/API-key integrations, in catalog display order. */
-export const INTEGRATIONS: readonly IntegrationDefinition[] = [
+export const INTEGRATIONS: readonly IntegrationDef[] = [
   {
     id: 'github',
     name: 'GitHub',
-    description: 'Fine-grained personal access token for repo and issue access.',
+    description: 'Fine-grained personal access token for repository access.',
     setupUrl: 'https://github.com/settings/personal-access-tokens/new',
-    fields: [field('token', 'Fine-grained personal access token')],
+    fields: [{ key: 'token', label: 'Personal Access Token', secret: true }],
   },
   {
     id: 'slack',
     name: 'Slack',
-    description: 'Bot token for posting and reading messages via a Slack app.',
+    description: 'Bot token for posting to and reading from Slack channels.',
     setupUrl: 'https://api.slack.com/apps',
-    fields: [field('botToken', 'Bot token (xoxb-…)')],
+    fields: [{ key: 'botToken', label: 'Bot Token', secret: true }],
   },
   {
     id: 'jira',
     name: 'Jira',
-    description: 'API token, account email, and site URL for Jira Cloud.',
+    description: 'API token for Jira Cloud issue tracking.',
     setupUrl: 'https://id.atlassian.com/manage-profile/security/api-tokens',
     fields: [
-      field('apiToken', 'API token'),
-      field('siteUrl', 'Site URL (e.g. https://yourcompany.atlassian.net)'),
-      field('email', 'Account email'),
+      { key: 'siteUrl', label: 'Site URL', secret: false },
+      { key: 'email', label: 'Account Email', secret: false },
+      { key: 'apiToken', label: 'API Token', secret: true },
     ],
   },
   {
     id: 'notion',
     name: 'Notion',
-    description: 'Internal integration token for reading and writing pages/databases.',
+    description: 'Internal integration token for Notion workspace access.',
     setupUrl: 'https://www.notion.so/my-integrations',
-    fields: [field('token', 'Internal integration token')],
+    fields: [{ key: 'token', label: 'Internal Integration Token', secret: true }],
   },
   {
     id: 'linear',
     name: 'Linear',
-    description: 'Personal API key for reading and writing issues.',
+    description: 'API key for Linear issue tracking.',
     setupUrl: 'https://linear.app/settings/api',
-    fields: [field('apiKey', 'API key')],
+    fields: [{ key: 'apiKey', label: 'API Key', secret: true }],
   },
   {
     id: 'monday',
     name: 'monday.com',
-    description: 'API token for reading and writing boards and items.',
-    setupUrl: 'https://developer.monday.com/api-reference/docs/authentication',
-    fields: [field('apiToken', 'API token')],
+    description: 'API token for monday.com boards and items.',
+    setupUrl: 'https://monday.com/developers/apps',
+    fields: [{ key: 'apiToken', label: 'API Token', secret: true }],
   },
   {
     id: 'hubspot',
     name: 'HubSpot',
-    description: 'Private app token for reading and writing CRM objects.',
+    description: 'Private-app access token for HubSpot CRM.',
     setupUrl: 'https://developers.hubspot.com/docs/api/private-apps',
-    fields: [field('token', 'Private app token')],
+    fields: [{ key: 'token', label: 'Private App Token', secret: true }],
   },
-]
+] as const
 
-const INTEGRATIONS_BY_ID = new Map(INTEGRATIONS.map((i) => [i.id, i]))
-
-/** Task types that may be scoped to use an integration. Mirrors types.ts TaskType. */
-const VALID_TASK_TYPES: readonly TaskType[] = ['daily', 'developmental', 'routine']
-
-// ── Metadata store (non-secret) ──────────────────────────────────────────────
-
-export interface IntegrationScopes {
-  taskTypes: TaskType[]
-  agents: string[]
+const DEFAULT_SCOPES = {
+  taskTypes: [...VALID_TASK_TYPES] as string[],
+  agents: [...VALID_AGENTS] as string[],
 }
 
-interface IntegrationMetadata {
-  connectedAt: string | null
-  lastTestAt: string | null
-  lastTestOk: boolean | null
-  scopes: IntegrationScopes
+const MAX_FIELD_VALUE_LEN = 4096
+
+/** Looks up a catalog entry by id. Returns undefined for an unknown id. */
+export function getIntegrationDef(id: string): IntegrationDef | undefined {
+  return INTEGRATIONS.find((def) => def.id === id)
 }
 
-function defaultScopes(): IntegrationScopes {
-  // "default all" per the PRD scoping panel.
-  return { taskTypes: [...VALID_TASK_TYPES], agents: [...VALID_AGENTS] }
-}
-
-function defaultMetadata(): IntegrationMetadata {
-  return { connectedAt: null, lastTestAt: null, lastTestOk: null, scopes: defaultScopes() }
-}
-
-/** In-memory metadata keyed by integration id. Exported for tests. */
-export const integrationMeta = new Map<string, IntegrationMetadata>(
-  INTEGRATIONS.map((i) => [i.id, defaultMetadata()]),
-)
-
-/** Resets all integration metadata to its initial state. Test-only helper. */
-export function resetIntegrationsState(): void {
-  for (const def of INTEGRATIONS) {
-    integrationMeta.set(def.id, defaultMetadata())
-  }
-}
-
-// ── Credential-store helpers ──────────────────────────────────────────────────
-
-/** Builds the credential-store key for one field of one integration. */
-function credentialKey(integrationId: string, fieldKey: string): string {
+/** Builds the credential-store key for a given integration field. */
+function credentialFieldKey(integrationId: string, fieldKey: string): string {
   return `integration_${integrationId}_${fieldKey}`
-}
-
-/** Returns true when every required field for the integration has a stored value. */
-function isFullyConnected(def: IntegrationDefinition): boolean {
-  return def.fields
-    .filter((f) => f.required)
-    .every((f) => getCredentialSecret(null, credentialKey(def.id, f.key)) !== undefined)
-}
-
-/** Reads all stored field values for an integration, decrypted. Server-side only. */
-function readStoredFields(def: IntegrationDefinition): Record<string, string> {
-  const values: Record<string, string> = {}
-  for (const f of def.fields) {
-    const value = getCredentialSecret(null, credentialKey(def.id, f.key))
-    if (value !== undefined) values[f.key] = value
-  }
-  return values
 }
 
 // ── Response shaping ──────────────────────────────────────────────────────────
 
-type IntegrationStatus = 'not_connected' | 'connected' | 'error'
+export type IntegrationStatus = 'not_connected' | 'connected' | 'error'
 
-function computeStatus(connected: boolean, meta: IntegrationMetadata): IntegrationStatus {
-  if (!connected) return 'not_connected'
-  return meta.lastTestOk === false ? 'error' : 'connected'
+interface IntegrationResponse {
+  id: string
+  name: string
+  description: string
+  setupUrl: string
+  fields: IntegrationField[]
+  status: IntegrationStatus
+  connectedAt: string | null
+  lastTestAt: string | null
+  lastTestOk: boolean | null
+  scopes: { taskTypes: string[]; agents: string[] }
 }
 
-/** Client-safe projection of an integration: catalog fields + status. Never includes secrets. */
-function toResponseIntegration(def: IntegrationDefinition, meta: IntegrationMetadata) {
-  const connected = isFullyConnected(def)
+/** Parses a scopes JSON column value, falling back to the default on corruption. */
+function parseScopeList(raw: string): string[] {
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (Array.isArray(parsed) && parsed.every((v) => typeof v === 'string')) {
+      return parsed
+    }
+  } catch {
+    // fall through to default below
+  }
+  return []
+}
+
+function buildStatus(def: IntegrationDef): IntegrationResponse {
+  const meta = getIntegrationMetadata(def.id)
+  const connected = Boolean(meta?.connected_at)
+
+  const scopes = meta
+    ? {
+        taskTypes: parseScopeList(meta.scope_task_types),
+        agents: parseScopeList(meta.scope_agents),
+      }
+    : { taskTypes: [...DEFAULT_SCOPES.taskTypes], agents: [...DEFAULT_SCOPES.agents] }
+
+  let status: IntegrationStatus = 'not_connected'
+  if (connected) {
+    status = meta?.last_test_ok === 0 ? 'error' : 'connected'
+  }
+
   return {
     id: def.id,
     name: def.name,
     description: def.description,
     setupUrl: def.setupUrl,
-    fields: def.fields.map((f) => ({ key: f.key, label: f.label, required: f.required })),
-    status: computeStatus(connected, meta),
-    connectedAt: meta.connectedAt,
-    lastTestAt: meta.lastTestAt,
-    lastTestOk: meta.lastTestOk,
-    scopes: meta.scopes,
+    fields: def.fields.map((f) => ({ ...f })),
+    status,
+    connectedAt: meta?.connected_at ?? null,
+    lastTestAt: meta?.last_test_at ?? null,
+    lastTestOk:
+      meta?.last_test_ok === null || meta?.last_test_ok === undefined
+        ? null
+        : Boolean(meta.last_test_ok),
+    scopes,
   }
 }
 
-// ── Validation errors ─────────────────────────────────────────────────────────
+// ── Validation helpers ────────────────────────────────────────────────────────
 
-class ValidationError extends Error {}
-
-function requireIntegration(id: string): IntegrationDefinition {
-  const def = INTEGRATIONS_BY_ID.get(id)
-  if (!def) {
-    throw new ValidationError(`Unknown integration "${id}"`)
-  }
-  return def
+interface ValidatedScopes {
+  taskTypes: string[]
+  agents: string[]
 }
 
-/** Validates and normalizes an optional scopes payload from a PUT body. */
-function parseScopes(raw: unknown, fallback: IntegrationScopes): IntegrationScopes {
-  if (raw === undefined) return fallback
-  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
-    throw new ValidationError('scopes must be an object')
-  }
-  const { taskTypes, agents } = raw as Record<string, unknown>
+/** Validates an optional `scopes` payload. Returns null when the shape is invalid. */
+function validateScopes(input: unknown): ValidatedScopes | null {
+  if (typeof input !== 'object' || input === null || Array.isArray(input)) return null
+  const obj = input as Record<string, unknown>
 
-  let parsedTaskTypes = fallback.taskTypes
-  if (taskTypes !== undefined) {
-    if (!Array.isArray(taskTypes) || !taskTypes.every((t) => typeof t === 'string')) {
-      throw new ValidationError('scopes.taskTypes must be an array of strings')
-    }
-    const invalid = taskTypes.find((t) => !VALID_TASK_TYPES.includes(t as TaskType))
-    if (invalid !== undefined) {
-      throw new ValidationError(
-        `scopes.taskTypes contains an invalid value "${invalid}". Must be one of: ${VALID_TASK_TYPES.join(', ')}`,
-      )
-    }
-    parsedTaskTypes = taskTypes as TaskType[]
-  }
+  const taskTypesRaw = obj['taskTypes'] ?? [...VALID_TASK_TYPES]
+  const agentsRaw = obj['agents'] ?? [...VALID_AGENTS]
 
-  let parsedAgents = fallback.agents
-  if (agents !== undefined) {
-    if (!Array.isArray(agents) || !agents.every((a) => typeof a === 'string')) {
-      throw new ValidationError('scopes.agents must be an array of strings')
-    }
-    const invalid = agents.find((a) => !VALID_AGENTS.has(a))
-    if (invalid !== undefined) {
-      throw new ValidationError(
-        `scopes.agents contains an invalid value "${invalid}". Must be one of: ${[...VALID_AGENTS].join(', ')}`,
-      )
-    }
-    parsedAgents = agents as string[]
+  if (
+    !Array.isArray(taskTypesRaw) ||
+    !taskTypesRaw.every(
+      (t) => typeof t === 'string' && (VALID_TASK_TYPES as readonly string[]).includes(t),
+    )
+  ) {
+    return null
+  }
+  if (
+    !Array.isArray(agentsRaw) ||
+    !agentsRaw.every((a) => typeof a === 'string' && (VALID_AGENTS as readonly string[]).includes(a))
+  ) {
+    return null
   }
 
-  return { taskTypes: parsedTaskTypes, agents: parsedAgents }
+  return {
+    taskTypes: [...new Set(taskTypesRaw as string[])],
+    agents: [...new Set(agentsRaw as string[])],
+  }
 }
 
 // ── GET /api/integrations ─────────────────────────────────────────────────────
 //
-// Returns the full catalog with live status/scoping metadata. Never includes
-// secret material — only field names/labels from the catalog definition.
+// Returns the full catalog plus per-integration status/connectedAt/lastTest/
+// scopes. Never returns secrets — only field *names* are included so the
+// client knows what inputs to render.
 
-integrationsRouter.get('/', requireAuth, (_req: Request, res: Response) => {
-  const list = INTEGRATIONS.map((def) => {
-    const meta = integrationMeta.get(def.id) ?? defaultMetadata()
-    return toResponseIntegration(def, meta)
-  })
-  res.json({ integrations: list })
+integrationsRouter.get('/', (_req: Request, res: Response) => {
+  res.json({ integrations: INTEGRATIONS.map(buildStatus) })
 })
 
 // ── PUT /api/integrations/:id ─────────────────────────────────────────────────
 //
 // Stores write-only credential fields and/or scoping for one integration.
-// Required fields must all be present together to (re)establish a connection;
-// a scopes-only update is allowed against an already-connected integration.
+// All declared fields must be present (non-empty) on first connect; on a
+// later PUT (already connected) fields are optional so a caller can update
+// only the scoping without resupplying credentials.
 
-integrationsRouter.put(
-  '/:id',
-  requireAuth,
-  requireCsrf,
-  (req: Request, res: Response) => {
-    const { id } = req.params
-    let def: IntegrationDefinition
-    try {
-      def = requireIntegration(id)
-    } catch (err) {
-      res.status(404).json({ error: (err as Error).message })
+integrationsRouter.put('/:id', requireCsrf, (req: Request, res: Response) => {
+  const def = getIntegrationDef(req.params.id)
+  if (!def) {
+    res.status(404).json({ error: `Unknown integration "${req.params.id}"` })
+    return
+  }
+
+  const body = req.body as Record<string, unknown>
+  const credentialsInput = body['credentials']
+  const scopesInput = body['scopes']
+
+  if (
+    credentialsInput !== undefined &&
+    (typeof credentialsInput !== 'object' || credentialsInput === null || Array.isArray(credentialsInput))
+  ) {
+    res.status(400).json({ error: 'credentials must be an object of field values' })
+    return
+  }
+
+  const providedCreds = (credentialsInput ?? {}) as Record<string, unknown>
+  const allowedKeys = new Set(def.fields.map((f) => f.key))
+
+  for (const key of Object.keys(providedCreds)) {
+    if (!allowedKeys.has(key)) {
+      res.status(400).json({ error: `Unknown credential field "${key}" for integration "${def.id}"` })
       return
     }
+  }
 
-    const body = req.body as Record<string, unknown>
-    const meta = integrationMeta.get(def.id) ?? defaultMetadata()
+  const existing = getIntegrationMetadata(def.id)
+  const isFirstConnect = !existing?.connected_at
 
-    const providedFieldKeys = def.fields.filter((f) => body[f.key] !== undefined)
-    const isCredentialUpdate = providedFieldKeys.length > 0
-
-    if (isCredentialUpdate) {
-      // Establishing/replacing credentials: every required field must be present
-      // and non-empty in this request (partial required-field updates would
-      // leave the integration in an inconsistent, silently-broken state).
-      const missing = def.fields.filter((f) => f.required && body[f.key] === undefined)
-      if (missing.length > 0) {
-        res.status(400).json({
-          error: `Missing required field(s): ${missing.map((f) => f.key).join(', ')}`,
-        })
+  const validatedCreds: Record<string, string> = {}
+  for (const field of def.fields) {
+    const value = providedCreds[field.key]
+    if (value === undefined) {
+      if (isFirstConnect) {
+        res.status(400).json({ error: `Missing required field "${field.key}" for integration "${def.id}"` })
         return
       }
-      for (const f of def.fields) {
-        const value = body[f.key]
-        if (value === undefined) continue
-        if (typeof value !== 'string' || value.trim() === '') {
-          res.status(400).json({ error: `${f.key} must be a non-empty string` })
-          return
-        }
-      }
+      continue
     }
-
-    let scopes: IntegrationScopes
-    try {
-      scopes = parseScopes(body['scopes'], meta.scopes)
-    } catch (err) {
-      res.status(400).json({ error: (err as Error).message })
+    if (typeof value !== 'string' || value.trim() === '') {
+      res.status(400).json({ error: `Field "${field.key}" must be a non-empty string` })
       return
     }
-
-    if (isCredentialUpdate) {
-      try {
-        for (const f of def.fields) {
-          const value = body[f.key]
-          if (typeof value === 'string') {
-            // Remove any existing row for this (system-scoped) key before
-            // inserting. SQLite's UNIQUE(user_id, key) constraint never
-            // matches two NULL user_ids as equal, so ON CONFLICT cannot
-            // catch a duplicate system-scoped key on its own — the same
-            // gotcha documented and worked around in routes/settings.ts for
-            // the AI API key.
-            removeCredential(null, credentialKey(def.id, f.key))
-            saveCredential(null, credentialKey(def.id, f.key), value)
-          }
-        }
-      } catch (err) {
-        console.error(`[integrations] Failed to store credentials for "${def.id}":`, (err as Error).message)
-        res.status(500).json({ error: 'Failed to store integration credentials' })
-        return
-      }
+    if (value.length > MAX_FIELD_VALUE_LEN) {
+      res.status(400).json({ error: `Field "${field.key}" exceeds the maximum length of ${MAX_FIELD_VALUE_LEN} characters` })
+      return
     }
+    validatedCreds[field.key] = value
+  }
 
-    const now = new Date().toISOString()
-    const nowConnected = isFullyConnected(def)
-    const updated: IntegrationMetadata = {
-      connectedAt: nowConnected ? (meta.connectedAt ?? now) : meta.connectedAt,
-      // A credential change invalidates any previous test result.
-      lastTestAt: isCredentialUpdate ? null : meta.lastTestAt,
-      lastTestOk: isCredentialUpdate ? null : meta.lastTestOk,
-      scopes,
+  let validatedScopes: ValidatedScopes | null = null
+  if (scopesInput !== undefined) {
+    validatedScopes = validateScopes(scopesInput)
+    if (!validatedScopes) {
+      res.status(400).json({
+        error: `scopes.taskTypes must be a subset of [${VALID_TASK_TYPES.join(', ')}] and scopes.agents a subset of [${VALID_AGENTS.join(', ')}]`,
+      })
+      return
     }
-    integrationMeta.set(def.id, updated)
+  }
 
-    res.json(toResponseIntegration(def, updated))
-  },
-)
+  try {
+    for (const [key, value] of Object.entries(validatedCreds)) {
+      saveCredential(null, credentialFieldKey(def.id, key), value)
+    }
+  } catch (err) {
+    // Never leak crypto/storage detail or the credential value to the client.
+    console.error(`[integrations] failed to store credentials for "${def.id}":`, (err as Error).message)
+    res.status(500).json({ error: 'Failed to store integration credentials' })
+    return
+  }
+
+  const credsChanged = Object.keys(validatedCreds).length > 0
+  const now = new Date().toISOString()
+  const nextScopes: ValidatedScopes =
+    validatedScopes ??
+    (existing
+      ? { taskTypes: parseScopeList(existing.scope_task_types), agents: parseScopeList(existing.scope_agents) }
+      : { taskTypes: [...DEFAULT_SCOPES.taskTypes], agents: [...DEFAULT_SCOPES.agents] })
+
+  const row: IntegrationMetadataRow = {
+    id: def.id,
+    connected_at: existing?.connected_at ?? now,
+    last_test_at: credsChanged ? null : existing?.last_test_at ?? null,
+    last_test_ok: credsChanged ? null : existing?.last_test_ok ?? null,
+    scope_task_types: JSON.stringify(nextScopes.taskTypes),
+    scope_agents: JSON.stringify(nextScopes.agents),
+    updated_at: now,
+  }
+  upsertIntegrationMetadata(row)
+
+  res.status(200).json(buildStatus(def))
+})
 
 // ── POST /api/integrations/:id/test ───────────────────────────────────────────
 //
-// Runs a live, read-only health check against the provider using the stored
-// credentials, then persists the result (lastTestAt/lastTestOk). Requires the
-// integration to already have all required credentials stored.
+// Runs a server-side live check against the provider using the stored
+// credentials and persists the result. Never accepts credentials in the
+// request body — it only reads what is already stored.
 
-integrationsRouter.post(
-  '/:id/test',
-  requireAuth,
-  requireCsrf,
-  async (req: Request, res: Response) => {
-    const { id } = req.params
-    let def: IntegrationDefinition
-    try {
-      def = requireIntegration(id)
-    } catch (err) {
-      res.status(404).json({ error: (err as Error).message })
+integrationsRouter.post('/:id/test', requireCsrf, async (req: Request, res: Response) => {
+  const def = getIntegrationDef(req.params.id)
+  if (!def) {
+    res.status(404).json({ error: `Unknown integration "${req.params.id}"` })
+    return
+  }
+
+  const meta = getIntegrationMetadata(def.id)
+  if (!meta?.connected_at) {
+    res.status(400).json({ error: `Integration "${def.id}" is not connected` })
+    return
+  }
+
+  const creds: Record<string, string> = {}
+  for (const field of def.fields) {
+    const value = getCredentialSecret(null, credentialFieldKey(def.id, field.key))
+    if (value === undefined) {
+      res.status(500).json({ error: 'Stored credentials are incomplete; reconnect the integration' })
       return
     }
+    creds[field.key] = value
+  }
 
-    if (!hasProviderTest(def.id)) {
-      // Defensive guard: every current catalog entry has a provider test, but
-      // this keeps the endpoint safe if the catalog grows ahead of the test
-      // implementations.
-      res.status(501).json({ error: `No live test is implemented for "${def.id}"` })
-      return
-    }
+  let result: { ok: boolean; message: string }
+  try {
+    result = await testIntegrationConnection(def.id, creds)
+  } catch (err) {
+    console.error(`[integrations] connection test failed for "${def.id}":`, (err as Error).message)
+    result = { ok: false, message: 'Connection test failed' }
+  }
 
-    if (!isFullyConnected(def)) {
-      res.status(400).json({ error: 'Integration is not connected — store credentials before testing' })
-      return
-    }
+  const now = new Date().toISOString()
+  upsertIntegrationMetadata({
+    id: def.id,
+    connected_at: meta.connected_at,
+    last_test_at: now,
+    last_test_ok: result.ok ? 1 : 0,
+    scope_task_types: meta.scope_task_types,
+    scope_agents: meta.scope_agents,
+    updated_at: now,
+  })
 
-    const creds = readStoredFields(def)
-    const now = new Date().toISOString()
-    const meta = integrationMeta.get(def.id) ?? defaultMetadata()
+  res.json({ ...buildStatus(def), lastTestMessage: result.message })
+})
 
-    let result: { ok: boolean; message: string }
-    try {
-      result = await runProviderTest(def.id, creds)
-    } catch (err) {
-      // Never leak provider/internal error detail; log server-side only. This
-      // branch covers unexpected bugs, not ordinary network failures (which
-      // integrationProviders.ts already converts into a safe { ok: false } result).
-      console.error(`[integrations] Unexpected error testing "${def.id}":`, (err as Error).message)
-      result = { ok: false, message: 'Unexpected error while testing the integration' }
-    }
-
-    const updated: IntegrationMetadata = {
-      ...meta,
-      lastTestAt: now,
-      lastTestOk: result.ok,
-    }
-    integrationMeta.set(def.id, updated)
-
-    res.json({
-      id: def.id,
-      ok: result.ok,
-      message: result.message,
-      lastTestAt: updated.lastTestAt,
-      lastTestOk: updated.lastTestOk,
-      status: computeStatus(true, updated),
-    })
-  },
-)
-
-// ── DELETE /api/integrations/:id ───────────────────────────────────────────────
+// ── DELETE /api/integrations/:id ──────────────────────────────────────────────
 //
-// Disconnects an integration: removes all stored credential fields and resets
-// metadata to its initial (never-connected) state.
+// Disconnects an integration: removes its stored credentials and resets its
+// metadata (status reverts to "not_connected", scopes revert to default).
 
-integrationsRouter.delete(
-  '/:id',
-  requireAuth,
-  requireCsrf,
-  (req: Request, res: Response) => {
-    const { id } = req.params
-    let def: IntegrationDefinition
-    try {
-      def = requireIntegration(id)
-    } catch (err) {
-      res.status(404).json({ error: (err as Error).message })
-      return
+integrationsRouter.delete('/:id', requireCsrf, (req: Request, res: Response) => {
+  const def = getIntegrationDef(req.params.id)
+  if (!def) {
+    res.status(404).json({ error: `Unknown integration "${req.params.id}"` })
+    return
+  }
+
+  for (const field of def.fields) {
+    removeCredential(null, credentialFieldKey(def.id, field.key))
+  }
+  deleteIntegrationMetadata(def.id)
+
+  res.json(buildStatus(def))
+})
+
+// ── Provider live-check implementations ───────────────────────────────────────
+
+/**
+ * Injectable fetch signature, matching services/http.ts's FetchFn convention.
+ * Uses `globalThis.Response` (the Fetch API response) rather than the bare
+ * `Response` identifier, which in this file refers to express's Response
+ * type imported above for the route handlers.
+ */
+export type IntegrationFetchFn = (url: string, init: RequestInit) => Promise<globalThis.Response>
+
+interface UrlCheckResult {
+  valid: boolean
+  parsed?: URL
+  error?: string
+}
+
+/** Validates a user-supplied provider site URL (Jira) against SSRF-relevant rules. */
+function validateProviderUrl(rawUrl: string | undefined): UrlCheckResult {
+  if (!rawUrl || rawUrl.trim() === '') {
+    return { valid: false, error: 'siteUrl is required' }
+  }
+  let parsed: URL
+  try {
+    parsed = new URL(rawUrl.trim())
+  } catch {
+    return { valid: false, error: `siteUrl "${rawUrl}" is not a valid URL` }
+  }
+  if (parsed.protocol !== 'https:') {
+    return { valid: false, error: 'siteUrl must use https' }
+  }
+  if (parsed.username || parsed.password) {
+    return { valid: false, error: 'siteUrl must not contain embedded credentials' }
+  }
+  if (!isSsrfSafeHostname(parsed.hostname)) {
+    return { valid: false, error: `siteUrl hostname "${parsed.hostname}" is not allowed` }
+  }
+  return { valid: true, parsed }
+}
+
+/**
+ * Performs the provider-specific live connection check. Exported (with
+ * injectable fetch/SSRF-check) so it is unit-testable without real network
+ * access; the router calls it with the default implementations.
+ */
+export async function testIntegrationConnection(
+  id: string,
+  creds: Record<string, string>,
+  options: { fetchImpl?: IntegrationFetchFn; ssrfCheck?: (hostname: string) => Promise<boolean> } = {},
+): Promise<{ ok: boolean; message: string }> {
+  const fetchImpl = options.fetchImpl ?? (fetch as IntegrationFetchFn)
+  const ssrfCheck = options.ssrfCheck ?? resolvedIpIsSsrfSafe
+
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 8000)
+
+  try {
+    switch (id) {
+      case 'github': {
+        const res = await fetchImpl('https://api.github.com/user', {
+          headers: { Authorization: `Bearer ${creds.token}`, 'User-Agent': 'Routini-Integrations/1.0' },
+          signal: controller.signal,
+        })
+        return res.ok ? { ok: true, message: 'Connected' } : { ok: false, message: `GitHub responded with ${res.status}` }
+      }
+      case 'slack': {
+        const res = await fetchImpl('https://slack.com/api/auth.test', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${creds.botToken}` },
+          signal: controller.signal,
+        })
+        const body = (await res.json().catch(() => ({ ok: false }))) as { ok?: boolean; error?: string }
+        return body.ok
+          ? { ok: true, message: 'Connected' }
+          : { ok: false, message: body.error ? `Slack error: ${body.error}` : 'Slack auth.test failed' }
+      }
+      case 'jira': {
+        const urlCheck = validateProviderUrl(creds.siteUrl)
+        if (!urlCheck.valid || !urlCheck.parsed) {
+          return { ok: false, message: urlCheck.error ?? 'Invalid siteUrl' }
+        }
+        const safe = await ssrfCheck(urlCheck.parsed.hostname)
+        if (!safe) {
+          return { ok: false, message: 'siteUrl resolved to a private or disallowed address' }
+        }
+        const authHeader = 'Basic ' + Buffer.from(`${creds.email}:${creds.apiToken}`).toString('base64')
+        const res = await fetchImpl(`${urlCheck.parsed.origin}/rest/api/3/myself`, {
+          headers: { Authorization: authHeader },
+          signal: controller.signal,
+        })
+        return res.ok ? { ok: true, message: 'Connected' } : { ok: false, message: `Jira responded with ${res.status}` }
+      }
+      case 'notion': {
+        const res = await fetchImpl('https://api.notion.com/v1/users/me', {
+          headers: { Authorization: `Bearer ${creds.token}`, 'Notion-Version': '2022-06-28' },
+          signal: controller.signal,
+        })
+        return res.ok ? { ok: true, message: 'Connected' } : { ok: false, message: `Notion responded with ${res.status}` }
+      }
+      case 'linear': {
+        const res = await fetchImpl('https://api.linear.app/graphql', {
+          method: 'POST',
+          headers: { Authorization: creds.apiKey, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query: '{ viewer { id } }' }),
+          signal: controller.signal,
+        })
+        if (!res.ok) return { ok: false, message: `Linear responded with ${res.status}` }
+        const body = (await res.json().catch(() => null)) as { data?: { viewer?: { id?: string } } } | null
+        return body?.data?.viewer?.id
+          ? { ok: true, message: 'Connected' }
+          : { ok: false, message: 'Linear viewer query failed' }
+      }
+      case 'monday': {
+        const res = await fetchImpl('https://api.monday.com/v2', {
+          method: 'POST',
+          headers: { Authorization: creds.apiToken, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query: 'query { me { id } }' }),
+          signal: controller.signal,
+        })
+        if (!res.ok) return { ok: false, message: `monday.com responded with ${res.status}` }
+        const body = (await res.json().catch(() => null)) as { data?: { me?: { id?: string } } } | null
+        return body?.data?.me?.id
+          ? { ok: true, message: 'Connected' }
+          : { ok: false, message: 'monday.com me query failed' }
+      }
+      case 'hubspot': {
+        const res = await fetchImpl('https://api.hubapi.com/account-info/v3/details', {
+          headers: { Authorization: `Bearer ${creds.token}` },
+          signal: controller.signal,
+        })
+        return res.ok ? { ok: true, message: 'Connected' } : { ok: false, message: `HubSpot responded with ${res.status}` }
+      }
+      default:
+        return { ok: false, message: `Unsupported integration "${id}"` }
     }
-
-    for (const f of def.fields) {
-      removeCredential(null, credentialKey(def.id, f.key))
+  } catch (err) {
+    if (err instanceof Error && err.name === 'AbortError') {
+      return { ok: false, message: 'Connection test timed out' }
     }
-    integrationMeta.set(def.id, defaultMetadata())
-
-    res.json(toResponseIntegration(def, defaultMetadata()))
-  },
-)
+    return { ok: false, message: 'Connection test failed' }
+  } finally {
+    clearTimeout(timer)
+  }
+}

@@ -99,6 +99,32 @@ async function saveRoutineSteps(taskId: string, steps: RoutineStep[]): Promise<v
   }
 }
 
+// ── Shared form pieces ────────────────────────────────────────────────────────
+
+/**
+ * Exported so other modals that reuse ConfigModal's overlay/panel chrome
+ * (see client/src/components/IntegrationModal.tsx) can build visually
+ * consistent forms without duplicating this markup.
+ */
+export function FormRow({ id, label, hint, children }: { id: string; label: string; hint?: string; children: ReactNode }) {
+  return (
+    <div className="cm-form-row">
+      <label htmlFor={id} className="cm-form-label">
+        {label}
+      </label>
+      {children}
+      {hint && <p className="cm-form-hint">{hint}</p>}
+    </div>
+  )
+}
+
+/** Exported for reuse by IntegrationModal — see FormRow above. */
+export function FormStatus({ error, saved, savedText = 'Saved' }: { error: string | null; saved: boolean; savedText?: string }) {
+  if (error) return <p className="cm-error" role="alert">{error}</p>
+  if (saved) return <p className="cm-success" role="status">{savedText}</p>
+  return null
+}
+
 // ── Daily task form ────────────────────────────────────────────────────────────
 
 function DailyForm({ task, onClose }: { task: DailyTask; onClose: () => void }) {
