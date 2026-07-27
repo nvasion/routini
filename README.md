@@ -29,7 +29,8 @@ routini/
 │   │       ├── auth.ts          # POST /login, /logout  GET /me
 │   │       ├── tasks.ts         # CRUD + trigger for tasks
 │   │       ├── settings.ts      # GET/PUT AI settings
-│   │       └── credentials.ts   # CRUD for stored credentials
+│   │       ├── credentials.ts   # CRUD for stored credentials
+│   │       └── integrations.ts  # Integrations catalog + DELETE /:id disconnect
 │   ├── vitest.config.ts         # Test runner config
 │   └── package.json
 ├── client/                      # React frontend
@@ -311,6 +312,21 @@ not through this endpoint.
 |--------|----------|-------|
 | `GET` | `/api/settings` | Returns `{ provider, model, defaultAgentId }` |
 | `PUT` | `/api/settings` | Partial update of any field |
+
+### Integrations – `/api/integrations`
+
+v1 catalog (`server/src/routes/integrations.ts`): GitHub, Slack, Jira, Notion, Linear, monday.com,
+HubSpot. `GET` (catalog + status), `PUT` (save credentials/scopes), and `POST /:id/test` (live
+provider check) land as separate follow-up work; disconnect is implemented now.
+
+| Method | Endpoint | Notes |
+|--------|----------|-------|
+| `DELETE` | `/api/integrations/:id` | Disconnect: removes every stored credential field for the integration and resets its persisted metadata. Idempotent — always returns 200 with the default `not_connected` view, including for an integration that was never connected. Unknown `:id` → 404. |
+
+Credential fields are stored write-only in the encrypted credential store (system scope) under
+`integration_<id>_<field>` keys — never returned by any endpoint. Non-secret status
+(`status`/`connectedAt`/`lastTestAt`/`lastTestOk`/`scopes`) is persisted in the `integration_metadata`
+SQLite table; a missing row means the integration has never been connected.
 
 ## Environment Variables
 
