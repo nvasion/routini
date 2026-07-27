@@ -44,10 +44,9 @@ routini/
 │   │   │   ├── TaskCard.tsx / .css / .test.tsx  # Clickable task card (see "Interacting with the config modal")
 │   │   │   ├── ConfigModal.tsx / .css / .test.tsx  # Centered, editable task config modal (see below)
 │   │   │   ├── configModal.utils.ts / (tested via tests/configModal.utils.test.ts)  # Pure form validation/payload helpers backing ConfigModal
-│   │   │   ├── FormControls.tsx       # Shared FormRow/FormStatus pieces reused by every cm-* chrome modal
-│   │   │   ├── IntegrationConnectModal.tsx / .css / .test.tsx  # Connect/edit-credentials modal for a single integration (see below)
-│   │   │   ├── integrationConnectModal.utils.ts  # Pure validation/payload helpers backing IntegrationConnectModal
-│   │   │   └── RoutineBuilder.tsx     # Step editor for routine tasks (embedded in ConfigModal)
+│   │   │   ├── RoutineBuilder.tsx     # Step editor for routine tasks (embedded in ConfigModal)
+│   │   │   ├── IntegrationConnectionPanel.tsx / .css / .test.tsx  # Test connection / scoping / Disconnect controls for a connected integration (see "Integrations" below)
+│   │   │   └── integrationConnectionPanel.utils.ts / (tested via tests/integrationConnectionPanel.utils.test.ts)  # Pure scoping/formatting helpers backing IntegrationConnectionPanel
 │   │   └── pages/
 │   │       ├── Dashboard.tsx / .css / .test.tsx  # Three-bucket task dashboard (see "Dashboard Layout" below)
 │   │       ├── MetricsPage.tsx / .css / .test.tsx  # Read-only task health metrics (see "Metrics Page" below)
@@ -256,6 +255,39 @@ mobile so each bucket remains fully readable without horizontal scrolling. The d
 view (`.dashboard-buckets--focused`) instead renders a single full-width bucket. Within a bucket,
 `TaskCard`s reflow using the same `auto-fill`/`minmax` grid pattern already used by `.task-grid`, so
 card width adapts smoothly between breakpoints.
+
+## Integrations
+
+Routini is adding an integrations catalog (GitHub, Slack, Jira, Notion, Linear, monday.com, HubSpot,
+and more) so tasks and coding-agent containers can use external tools via server-side, encrypted
+credentials rather than per-task secrets. The catalog page, the `/integrations` route/nav tab, and
+the connect modal (credential fields + setup links) are tracked separately; this repo currently ships
+the piece of that UI that applies to an **already-connected** integration:
+
+- **`client/src/components/IntegrationConnectionPanel.tsx`** — a content fragment (not a modal shell)
+  meant to be embedded inside the connect modal once `status: 'connected'`. It renders nothing for a
+  `not_connected` integration. It provides:
+  - **Test connection** — calls `POST /api/integrations/:id/test`, a server-side live provider check.
+    The button shows a busy state while in flight; the result (success/failure + any server-provided
+    message) and the persisted `lastTestAt` timestamp are displayed once the call resolves. A failed
+    call surfaces the server's error message inline rather than silently swallowing it.
+  - **Scoping panel** — checkboxes for allowed task types (`daily` / `developmental` / `routine`) and
+    allowed agents (`claude` / `opencode` / `omnimancer`), seeded from the integration's current
+    `scopes`. Saving calls `PUT /api/integrations/:id` with `{ scopes }` only — this UI is a
+    convenience; scoping is enforced **server-side** at agent-container spawn time, not just hidden
+    client-side.
+  - **Disconnect** — a two-step, in-UI confirmation (no `window.confirm`, for testability and
+    accessibility) before calling `DELETE /api/integrations/:id`, which removes the stored
+    credentials.
+- **`client/src/components/integrationConnectionPanel.utils.ts`** — the pure helpers backing the
+  panel (scope toggling, payload building, timestamp formatting), split out so they're testable
+  without React/JSX, mirroring the `configModal.utils.ts` pattern.
+- **`client/src/types.ts`** — adds `Integration`, `IntegrationStatus`, and `IntegrationScopes`. Like
+  every other client-visible task/settings type, `Integration` never carries secret values — the
+  credential store is write-only over the API (see "Credential Store" below).
+
+None of the three mutating calls above (`test`, scope `PUT`, `DELETE`) ever receive or display a
+credential value; they only exchange status metadata (`ok`, `message`, `lastTestAt`, `scopes`).
 
 ## Metrics Page
 

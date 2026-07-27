@@ -61,49 +61,35 @@ export interface AISettings {
 }
 
 // ──────────────────────────────────────────────
-// Integrations (server/src/routes/integrations.ts catalog)
+// Integrations (see PRD "Routini Integrations") — client-side mirror of the
+// per-integration status shape returned by GET /api/integrations. Credential
+// values themselves are write-only and never appear on this type: the server
+// never serializes secrets into any response.
 // ──────────────────────────────────────────────
 
 export type IntegrationStatus = 'not_connected' | 'connected' | 'error'
 
 /**
- * A single credential input an integration needs (e.g. a GitHub PAT, a Jira
- * site URL). `secret` fields render as password inputs and are write-only —
- * the server never returns their stored value, matching the AISettings
- * `hasApiKey` / daily-task `config` pattern used elsewhere in this app.
+ * Server-enforced authorization scope for a connected integration: which
+ * task types and which coding agents may use it at container-spawn time.
+ * An empty array means "no task types/agents may use this integration" —
+ * scoping is additive, not a placeholder for "all" (an unset/omitted
+ * integration is already unusable by definition).
  */
-export interface IntegrationField {
-  /** Key this field is sent under in the PUT /api/integrations/:id payload. */
-  key: string
-  label: string
-  secret: boolean
-  required: boolean
-  placeholder?: string
-}
-
-/** Which task types and coding agents are allowed to use a connected integration. */
 export interface IntegrationScopes {
   taskTypes: TaskType[]
   agents: AIProvider[]
 }
 
-/**
- * One catalog entry as returned by GET /api/integrations: static metadata
- * (fields, setup link) merged with this user's connection state. Never
- * carries secret values — only whether/when a connection was made and
- * last tested.
- */
 export interface Integration {
   id: string
   name: string
-  description: string
-  fields: IntegrationField[]
-  /** Link to the provider's page for creating the credential (e.g. a token settings page). */
-  setupUrl: string
-  setupLabel: string
   status: IntegrationStatus
+  /** ISO timestamp of when credentials were saved, or null when never connected. */
   connectedAt: string | null
+  /** ISO timestamp of the most recent Test connection call, or null if never tested. */
   lastTestAt: string | null
+  /** Result of the most recent test, or null if never tested. */
   lastTestOk: boolean | null
   scopes: IntegrationScopes
 }
