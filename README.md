@@ -38,7 +38,7 @@ routini/
 │   │   ├── App.tsx              # Router shell — see "Navigation & Pages" below
 │   │   ├── types.ts             # Client-side domain types
 │   │   ├── components/
-│   │   │   ├── Navbar.tsx / .css      # Top nav: Dashboard / Metrics / Settings tabs
+│   │   │   ├── Navbar.tsx / .css / .test.tsx  # Top nav: Dashboard / Metrics / Integrations / Settings tabs
 │   │   │   ├── TaskCard.tsx / .css / .test.tsx  # Clickable task card (see "Interacting with the config modal")
 │   │   │   ├── ConfigModal.tsx / .css / .test.tsx  # Centered, editable task config modal (see below)
 │   │   │   ├── configModal.utils.ts / (tested via tests/configModal.utils.test.ts)  # Pure form validation/payload helpers backing ConfigModal
@@ -46,6 +46,7 @@ routini/
 │   │   └── pages/
 │   │       ├── Dashboard.tsx / .css / .test.tsx  # Three-bucket task dashboard (see "Dashboard Layout" below)
 │   │       ├── MetricsPage.tsx / .css / .test.tsx  # Read-only task health metrics (see "Metrics Page" below)
+│   │       ├── IntegrationsPage.tsx / .css / .test.tsx  # `/integrations` placeholder (see "Navigation & Pages" below)
 │   │       ├── Login.tsx / .css       # Login page
 │   │       └── Settings.tsx / .css   # AI settings page
 │   ├── vitest.config.ts         # Component-test runner config (jsdom + React), see "Running Tests"
@@ -134,16 +135,22 @@ jest-dom matchers like `toHaveTextContent`.
 ## Navigation & Pages
 
 Every authenticated page is wrapped in `Navbar` (`client/src/components/Navbar.tsx`), which exposes
-three tabs and highlights whichever one matches the current route:
+four tabs and highlights whichever one matches the current route:
 
 | Tab | Route | Page |
 |-----|-------|------|
 | Dashboard | `/` (and `/?bucket=<type>` — see "Bucket drill-in" below) | `pages/Dashboard.tsx` |
 | Metrics | `/metrics` | `pages/MetricsPage.tsx` |
+| Integrations | `/integrations` | `pages/IntegrationsPage.tsx` |
 | Settings | `/settings` | `pages/Settings.tsx` |
 
-All three are protected routes (see `App.tsx`'s `Protected` wrapper) — an unauthenticated visitor is
+All four are protected routes (see `App.tsx`'s `Protected` wrapper) — an unauthenticated visitor is
 redirected to `/login`, and any unmatched path redirects back to `/`.
+
+The Integrations tab currently renders a placeholder page (`IntegrationsPage.tsx`) — this task only
+wires up the Navbar entry and the `/integrations` route per the "Routini Integrations v1" PRD. The
+catalog grid fed by `GET /api/integrations`, the connect modal, and the test/disconnect actions are
+built out in follow-up tasks.
 
 ## Dashboard Layout
 

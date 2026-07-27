@@ -1,0 +1,45 @@
+/* ── Integrations page ──────────────────────────────────────────
+ * Self-contained (own class names rather than reusing Dashboard.css /
+ * MetricsPage.css state-placeholder styles) so the follow-up task that
+ * builds the full catalog grid can restyle this page freely without
+ * touching or being coupled to other pages' CSS.
+ */
+
+.integrations-page {
+  width: 100%;
+  margin: 0 auto;
+  padding: 2rem;
+  box-sizing: border-box;
+}
+
+.integrations-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 1.75rem;
+}
+
+.integrations-header h1 {
+  font-size: 1.75rem;
+  font-weight: 700;
+}
+
+.integrations-subtitle {
+  color: var(--color-text-muted);
+  font-size: 0.875rem;
+  margin-top: 0.25rem;
+}
+
+.integrations-placeholder {
+  text-align: center;
+  padding: 4rem 2rem;
+  color: var(--color-text-muted);
+  background: var(--color-bg-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+}
+
+.integrations-placeholder-hint {
+  margin-top: 0.5rem;
+  font-size: 0.875rem;
+}
