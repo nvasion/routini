@@ -1,8 +1,8 @@
-/* ── Integrations page ──────────────────────────────────────────
- * Self-contained (own class names rather than reusing Dashboard.css /
- * MetricsPage.css state-placeholder styles) so the follow-up task that
- * builds the full catalog grid can restyle this page freely without
- * touching or being coupled to other pages' CSS.
+/* ── Integrations page ───────────────────────────────────────────
+ * Note: error-banner / state-placeholder duplicate small presentational
+ * classes also defined in Dashboard.css / MetricsPage.css rather than
+ * importing them, matching MetricsPage.css's precedent for keeping each
+ * page visually self-contained.
  */
 
 .integrations-page {
@@ -12,6 +12,7 @@
   box-sizing: border-box;
 }
 
+/* ── Header ─────────────────────────────────────────────────── */
 .integrations-header {
   display: flex;
   justify-content: space-between;
@@ -30,16 +31,96 @@
   margin-top: 0.25rem;
 }
 
-.integrations-placeholder {
+/* ── Error / empty / loading ────────────────────────────────── */
+.error-banner {
+  background: rgba(255, 0, 0, 0.08);
+  border: 1px solid rgba(255, 0, 0, 0.25);
+  color: var(--color-primary);
+  padding: 0.75rem 1rem;
+  border-radius: var(--radius);
+  margin-bottom: 1rem;
+  font-size: 0.875rem;
+}
+
+.state-placeholder {
   text-align: center;
   padding: 4rem 2rem;
   color: var(--color-text-muted);
+}
+
+/* ── Catalog grid ───────────────────────────────────────────── */
+.integrations-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 1rem;
+}
+
+.integration-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  text-align: left;
   background: var(--color-bg-card);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
+  padding: 1.25rem;
+  cursor: pointer;
+  transition: border-color 0.15s ease;
 }
 
-.integrations-placeholder-hint {
-  margin-top: 0.5rem;
-  font-size: 0.875rem;
+.integration-card:hover,
+.integration-card:focus-visible {
+  border-color: var(--color-secondary);
+  outline: none;
+}
+
+.integration-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.integration-card-name {
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.integration-card-description {
+  color: var(--color-text-muted);
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+
+.integration-card-meta {
+  color: var(--color-text-muted);
+  font-size: 0.75rem;
+}
+
+/* ── Status badges ──────────────────────────────────────────── */
+.integration-badge {
+  flex-shrink: 0;
+  display: inline-block;
+  padding: 0.15rem 0.5rem;
+  border-radius: 100px;
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+}
+
+.integration-badge--not-connected {
+  background: rgba(153, 153, 153, 0.15);
+  color: var(--color-text-muted);
+}
+
+.integration-badge--connected {
+  background: rgba(34, 197, 94, 0.15);
+  color: var(--color-success);
+}
+
+.integration-badge--error {
+  background: rgba(255, 0, 0, 0.15);
+  color: var(--color-error);
 }
