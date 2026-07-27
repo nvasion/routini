@@ -1,306 +1,445 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// Integrations catalog
+// Integrations API router
 //
-// Static definitions for the seven v1 integrations (see PRD "Routini
-// Integrations"): GitHub, Slack, Jira, Notion, Linear, monday.com, and
-// HubSpot. This module is pure metadata — it defines *what* an integration
-// looks like (its credential fields, where to obtain them, and its default
-// scoping) but holds no runtime state and performs no I/O. The HTTP handlers
-// that expose this catalog (GET/PUT/POST/DELETE /api/integrations/:id) and
-// the connection/status store that tracks per-integration state are added by
-// later tasks and will import from here rather than duplicate this data.
+// Backs the "Integrations" tab: a catalog of external tools (GitHub, Slack,
+// Jira, Notion, Linear, monday.com, HubSpot) that Routini tasks and coding
+// agent containers can be granted access to. See PRD "Routini Integrations v1".
+//
+// This module owns:
+//   – The v1 integration catalog (id, display metadata, credential field
+//     specs, setup-URL) — the single source of truth other integration
+//     endpoints (GET status, POST test, DELETE disconnect) should import
+//     rather than re-declaring.
+//   – PUT /api/integrations/:id — write-only credential + scoping persistence.
 //
 // Security properties:
-//   – This module never holds credential *values* — only field specs
-//     (key/label/type/required/placeholder/helpText) describing what a
-//     credential form should collect. There is nothing here for a GET
-//     response, log line, or error message to leak.
-//   – `credentialKey()` is the single place that defines the storage-key
-//     convention (`integration_<id>_<field>`) used by the encrypted
-//     credential store (see server/src/services/credentials.ts). Centralizing
-//     it here means every future route/service that needs the key derives it
-//     the same way instead of re-implementing the naming scheme.
-//   – Field keys and integration ids are restricted to a safe charset
-//     ([a-z0-9] plus camelCase letters) at catalog-definition time and
-//     asserted by tests, so they are safe to embed directly in credential
-//     store keys without further escaping.
+//   – Credentials are write-only over the API: PUT accepts field values in the
+//     request body and persists them through the encrypted credential store
+//     (server/src/services/credentials.ts, AES-256-GCM at rest). They are
+//     never echoed back in the response, logged, or otherwise serialized.
+//   – Each credential field is stored under the deterministic key
+//     `integration_<id>_<field>` in the "system" credential scope (userId =
+//     null), per the PRD storage design — integrations are a single
+//     server-wide configuration, mirroring how the AI API key is stored in
+//     server/src/routes/settings.ts.
+//   – Required fields are validated per-integration before anything is
+//     persisted, so a bad request never results in a partially-configured
+//     integration.
+//   – The `siteUrl` field (Jira) is validated as an https URL that does not
+//     resolve to a private/loopback hostname, guarding the provider
+//     health-check endpoint (POST /:id/test, implemented separately) against
+//     SSRF via a malicious site URL.
+//   – Scoping (allowed task types + allowed agents) is persisted alongside
+//     connection status so it can be enforced server-side at agent-container
+//     spawn time — not just hidden in the UI.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import type { AIProvider, TaskType } from '../types.js'
+import { Router, Request, Response } from 'express'
+import { requireAuth, requireCsrf } from './auth.js'
+import { saveCredential, removeCredential } from '../services/credentials.js'
+import { isSsrfSafeHostname } from '../utils/network.js'
+import type { TaskType, AIProvider } from '../types.js'
 
-// ── Types ────────────────────────────────────────────────────────────────────
+export const integrationsRouter = Router()
 
-/** Stable identifiers for the seven v1 integrations. */
-export const INTEGRATION_IDS = [
-  'github',
-  'slack',
-  'jira',
-  'notion',
-  'linear',
-  'monday',
-  'hubspot',
-] as const
+// ── Catalog types ─────────────────────────────────────────────────────────────
 
-export type IntegrationId = (typeof INTEGRATION_IDS)[number]
+/** The seven v1 integrations. Keep in sync with the PRD "Integration catalog". */
+export type IntegrationId =
+  | 'github'
+  | 'slack'
+  | 'jira'
+  | 'notion'
+  | 'linear'
+  | 'monday'
+  | 'hubspot'
 
-/**
- * Input type hint for rendering a credential field in the connect modal.
- * `password`-typed fields hold secret material (tokens/keys) and must never
- * be echoed back by any API response.
- */
-export type CredentialFieldType = 'text' | 'password' | 'url' | 'email'
-
-/** Describes one credential input the connect modal must collect. */
-export interface CredentialFieldSpec {
-  /** Logical field name, e.g. "apiToken". Combined with the integration id to
-   *  form the credential-store key — see `credentialKey()`. Must be a
-   *  non-empty camelCase identifier ([a-zA-Z0-9] only, starting with a
-   *  lowercase letter) so it is safe to embed in storage keys and DOM ids. */
+/** A single credential field an integration requires (e.g. an API token). */
+export interface IntegrationFieldSpec {
+  /** Field name, used verbatim in the credential store key and request body. */
   key: string
-  /** Human-readable label shown above the input. */
+  /** Human-readable label for the connect-modal form. */
   label: string
-  /** Input type hint for the modal (controls masking, keyboard, validation). */
-  type: CredentialFieldType
-  /** Whether this field must be non-empty for the integration to be saved. */
+  /** Whether PUT rejects the request when this field is missing/empty. */
   required: boolean
-  /** Optional example value shown as input placeholder text. */
-  placeholder?: string
-  /** Optional short help text shown under the input. */
-  helpText?: string
+  /** Whether the field holds a secret (password-style input) vs. plain text. */
+  secret: boolean
 }
 
-/** Default scoping applied to a newly connected integration ("default all"). */
-export interface IntegrationScopes {
-  /** Task types allowed to use this integration. */
-  taskTypes: TaskType[]
-  /** Coding agents allowed to use this integration. */
-  agents: AIProvider[]
-}
-
-/** Full catalog entry for one integration. */
+/** Catalog entry describing one integration's identity, fields, and setup link. */
 export interface IntegrationDefinition {
   id: IntegrationId
-  /** Display name shown on the catalog card, e.g. "GitHub". */
   name: string
-  /** One-line description shown on the catalog card. */
   description: string
-  /** Credential fields the connect modal must collect, in display order. */
-  credentialFields: CredentialFieldSpec[]
-  /** Provider page where the user generates the credential(s). */
+  /** Link to the provider's token/credential creation page. */
   setupUrl: string
-  /** Short inline instructions shown above the credential fields in the modal. */
-  setupInstructions: string
-  /** Scoping applied when the integration is first connected. */
-  defaultScopes: IntegrationScopes
+  fields: IntegrationFieldSpec[]
 }
 
-// ── Default scopes ──────────────────────────────────────────────────────────
+// ── Catalog ───────────────────────────────────────────────────────────────────
 
-/**
- * "Default all" scoping per the PRD UX summary: a newly connected
- * integration is available to every task type and every agent until the user
- * narrows it. Returns a fresh object each call so callers can safely mutate
- * their own copy without affecting the catalog or other callers.
- */
-export function defaultAllScopes(): IntegrationScopes {
-  return {
-    taskTypes: ['daily', 'developmental', 'routine'],
-    agents: ['claude', 'opencode', 'omnimancer'],
-  }
-}
-
-// ── Catalog ──────────────────────────────────────────────────────────────────
-
-const CATALOG: Readonly<Record<IntegrationId, IntegrationDefinition>> = {
+export const INTEGRATIONS: Record<IntegrationId, IntegrationDefinition> = {
   github: {
     id: 'github',
     name: 'GitHub',
-    description: 'Read and write repositories, issues, and pull requests.',
-    credentialFields: [
-      {
-        key: 'token',
-        label: 'Fine-grained personal access token',
-        type: 'password',
-        required: true,
-        placeholder: 'github_pat_…',
-        helpText: 'Grant only the repository permissions your tasks need.',
-      },
-    ],
+    description: 'Fine-grained personal access token for repository operations.',
     setupUrl: 'https://github.com/settings/personal-access-tokens/new',
-    setupInstructions:
-      'Create a fine-grained personal access token scoped to the repositories you want Routini to access.',
-    defaultScopes: defaultAllScopes(),
+    fields: [
+      { key: 'token', label: 'Fine-grained personal access token', required: true, secret: true },
+    ],
   },
   slack: {
     id: 'slack',
     name: 'Slack',
-    description: 'Post messages and read channel activity via a bot user.',
-    credentialFields: [
-      {
-        key: 'botToken',
-        label: 'Bot User OAuth Token',
-        type: 'password',
-        required: true,
-        placeholder: 'xoxb-…',
-        helpText: 'Found on the "OAuth & Permissions" page of your Slack app.',
-      },
-    ],
+    description: 'Bot token for posting and reading messages via a Slack app.',
     setupUrl: 'https://api.slack.com/apps',
-    setupInstructions:
-      'Create (or open) a Slack app, install it to your workspace, and copy the Bot User OAuth Token.',
-    defaultScopes: defaultAllScopes(),
+    fields: [
+      { key: 'botToken', label: 'Bot User OAuth Token', required: true, secret: true },
+    ],
   },
   jira: {
     id: 'jira',
     name: 'Jira',
-    description: 'Create and update issues in your Jira Cloud site.',
-    credentialFields: [
-      {
-        key: 'siteUrl',
-        label: 'Site URL',
-        type: 'url',
-        required: true,
-        placeholder: 'https://your-domain.atlassian.net',
-      },
-      {
-        key: 'email',
-        label: 'Account email',
-        type: 'email',
-        required: true,
-        placeholder: 'you@example.com',
-      },
-      {
-        key: 'apiToken',
-        label: 'API token',
-        type: 'password',
-        required: true,
-        helpText: 'Generated from your Atlassian account security settings.',
-      },
-    ],
+    description: 'API token + site URL + account email for Jira Cloud.',
     setupUrl: 'https://id.atlassian.com/manage-profile/security/api-tokens',
-    setupInstructions:
-      'Generate an API token for your Atlassian account, then enter it with your account email and Jira site URL.',
-    defaultScopes: defaultAllScopes(),
+    fields: [
+      { key: 'siteUrl', label: 'Site URL (e.g. https://acme.atlassian.net)', required: true, secret: false },
+      { key: 'email', label: 'Account email', required: true, secret: false },
+      { key: 'apiToken', label: 'API token', required: true, secret: true },
+    ],
   },
   notion: {
     id: 'notion',
     name: 'Notion',
-    description: 'Read and write pages and databases shared with the integration.',
-    credentialFields: [
-      {
-        key: 'token',
-        label: 'Internal integration token',
-        type: 'password',
-        required: true,
-        placeholder: 'secret_…',
-        helpText: 'Remember to share the relevant pages/databases with the integration in Notion.',
-      },
-    ],
+    description: 'Internal integration token for a Notion workspace.',
     setupUrl: 'https://www.notion.so/my-integrations',
-    setupInstructions:
-      'Create an internal integration in Notion and copy its secret token.',
-    defaultScopes: defaultAllScopes(),
+    fields: [
+      { key: 'token', label: 'Internal integration token', required: true, secret: true },
+    ],
   },
   linear: {
     id: 'linear',
     name: 'Linear',
-    description: 'Create and update issues in your Linear workspace.',
-    credentialFields: [
-      {
-        key: 'apiKey',
-        label: 'API key',
-        type: 'password',
-        required: true,
-        placeholder: 'lin_api_…',
-      },
-    ],
+    description: 'Personal API key for reading and writing Linear issues.',
     setupUrl: 'https://linear.app/settings/api',
-    setupInstructions: 'Create a personal API key from your Linear workspace settings.',
-    defaultScopes: defaultAllScopes(),
+    fields: [
+      { key: 'apiKey', label: 'API key', required: true, secret: true },
+    ],
   },
   monday: {
     id: 'monday',
     name: 'monday.com',
-    description: 'Read and update items and boards on monday.com.',
-    credentialFields: [
-      {
-        key: 'apiToken',
-        label: 'API token',
-        type: 'password',
-        required: true,
-      },
+    description: 'API token for monday.com boards and items.',
+    setupUrl: 'https://monday.com/developers/apps/manage/api',
+    fields: [
+      { key: 'apiToken', label: 'API token', required: true, secret: true },
     ],
-    setupUrl: 'https://monday.com/developers/v2#authentication-section',
-    setupInstructions: 'Copy your personal API token from the monday.com Developers page.',
-    defaultScopes: defaultAllScopes(),
   },
   hubspot: {
     id: 'hubspot',
     name: 'HubSpot',
-    description: 'Read and update CRM records via a private app.',
-    credentialFields: [
-      {
-        key: 'accessToken',
-        label: 'Private app access token',
-        type: 'password',
-        required: true,
-        placeholder: 'pat-…',
-      },
+    description: 'Private-app access token for HubSpot CRM objects.',
+    setupUrl: 'https://app.hubspot.com/private-apps',
+    fields: [
+      { key: 'token', label: 'Private-app access token', required: true, secret: true },
     ],
-    setupUrl: 'https://developers.hubspot.com/docs/api/private-apps',
-    setupInstructions:
-      'Create a private app in your HubSpot account and copy its access token.',
-    defaultScopes: defaultAllScopes(),
   },
 }
 
-/** Ordered catalog list — the order the catalog grid should render cards in. */
-export const INTEGRATIONS: readonly IntegrationDefinition[] = INTEGRATION_IDS.map(
-  (id) => CATALOG[id],
-)
-
-// ── Helpers ──────────────────────────────────────────────────────────────────
+const INTEGRATION_IDS = Object.keys(INTEGRATIONS) as IntegrationId[]
 
 /** Type guard for the fixed integration-id union. */
 export function isIntegrationId(value: unknown): value is IntegrationId {
-  return (
-    typeof value === 'string' &&
-    (INTEGRATION_IDS as readonly string[]).includes(value)
-  )
-}
-
-/** Look up a catalog entry by id. Returns undefined for an unknown id. */
-export function getIntegrationDefinition(
-  id: string,
-): IntegrationDefinition | undefined {
-  return isIntegrationId(id) ? CATALOG[id] : undefined
+  return typeof value === 'string' && (INTEGRATION_IDS as string[]).includes(value)
 }
 
 /**
- * Build the credential-store key for one field of one integration, e.g.
- * `integration_github_token`. This is the single source of truth for the
- * naming convention described in the PRD ("Storage: credential store entries
- * `integration_<id>_<field>`") so route handlers and services never
- * hand-construct the key themselves.
- *
- * Throws when `id` is not a known integration or `field` is not one of that
- * integration's declared credential fields — callers should treat this as a
- * programming error (never triggered by unvalidated user input reaching this
- * function directly).
+ * Build the credential-store key for a given integration field, per the PRD
+ * storage design: `integration_<id>_<field>`. Exported so the (separately
+ * implemented) test and disconnect endpoints derive the same key rather than
+ * duplicating the naming scheme.
  */
-export function credentialKey(id: IntegrationId, field: string): string {
-  const def = CATALOG[id]
-  if (!def) {
-    throw new Error(`Unknown integration id: ${id}`)
-  }
-  const known = def.credentialFields.some((f) => f.key === field)
-  if (!known) {
-    throw new Error(`Unknown credential field "${field}" for integration "${id}"`)
-  }
-  return `integration_${id}_${field}`
+export function integrationCredentialKey(id: IntegrationId, fieldKey: string): string {
+  return `integration_${id}_${fieldKey}`
 }
 
-/** The `key`s of every credential field declared for an integration. */
-export function requiredCredentialFieldKeys(id: IntegrationId): string[] {
-  return CATALOG[id].credentialFields.filter((f) => f.required).map((f) => f.key)
+// ── Scoping ───────────────────────────────────────────────────────────────────
+
+const ALL_TASK_TYPES: readonly TaskType[] = ['daily', 'developmental', 'routine']
+const ALL_AGENTS: readonly AIProvider[] = ['claude', 'opencode', 'omnimancer']
+
+export interface IntegrationScopes {
+  /** Task types allowed to use this integration's credentials. Default: all. */
+  taskTypes: TaskType[]
+  /** Coding agents allowed to use this integration's credentials. Default: all. */
+  agents: AIProvider[]
 }
+
+function defaultScopes(): IntegrationScopes {
+  return { taskTypes: [...ALL_TASK_TYPES], agents: [...ALL_AGENTS] }
+}
+
+// ── Metadata (non-secret) ─────────────────────────────────────────────────────
+//
+// Connection status/timestamps/scopes are non-secret metadata. They currently
+// live in memory, mirroring the pattern used by server/src/routes/settings.ts
+// (`currentSettings`) and server/src/routes/tasks.ts (`tasks`); durable sqlite
+// persistence for this metadata is a follow-up implementation task per the
+// PRD ("DELETE ... plus sqlite persistence for integration metadata surviving
+// restart"). Secrets themselves are already durable today via the encrypted
+// credential store regardless of this.
+
+export type IntegrationStatus = 'not_connected' | 'connected' | 'error'
+
+export interface IntegrationMetadata {
+  status: IntegrationStatus
+  connectedAt: string | null
+  lastTestAt: string | null
+  lastTestOk: boolean | null
+  scopes: IntegrationScopes
+}
+
+function defaultMetadata(): IntegrationMetadata {
+  return {
+    status: 'not_connected',
+    connectedAt: null,
+    lastTestAt: null,
+    lastTestOk: null,
+    scopes: defaultScopes(),
+  }
+}
+
+/**
+ * In-memory metadata store, keyed by integration id. Exported (like
+ * `tasks`/`currentSettings` elsewhere in this codebase) so tests can inspect
+ * and reset state between cases.
+ */
+export const integrationMetadata = new Map<IntegrationId, IntegrationMetadata>()
+
+function getMetadata(id: IntegrationId): IntegrationMetadata {
+  const existing = integrationMetadata.get(id)
+  if (existing) return existing
+  const fresh = defaultMetadata()
+  integrationMetadata.set(id, fresh)
+  return fresh
+}
+
+// ── Validation ────────────────────────────────────────────────────────────────
+
+/** Bound on a single credential field's length (tokens/URLs are short). */
+const MAX_FIELD_VALUE_LEN = 4096
+
+/**
+ * Small validation-error class so handlers can distinguish expected client
+ * errors (400) from unexpected service failures (500) without sniffing
+ * message strings — mirrors the pattern in routes/credentials.ts.
+ */
+class ValidationError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'ValidationError'
+  }
+}
+
+/**
+ * Validate the Jira `siteUrl` field. Must be an https URL that does not
+ * resolve (by literal hostname) to a private/loopback address, so a stored
+ * site URL cannot later be used to make the server-side test/health-check
+ * request (POST /api/integrations/:id/test) target internal infrastructure.
+ */
+function validateSiteUrl(value: string): void {
+  let parsed: URL
+  try {
+    parsed = new URL(value)
+  } catch {
+    throw new ValidationError('Field "siteUrl" must be a valid URL')
+  }
+  if (parsed.protocol !== 'https:') {
+    throw new ValidationError('Field "siteUrl" must use https')
+  }
+  if (!isSsrfSafeHostname(parsed.hostname)) {
+    throw new ValidationError('Field "siteUrl" must not point to a private or loopback address')
+  }
+}
+
+/**
+ * Validate the `credentials` object in the request body against an
+ * integration's field specs. Returns the map of field key → trimmed value for
+ * every field that was provided (required fields are guaranteed present).
+ *
+ * Throws ValidationError for: a non-object payload, an unrecognised field
+ * key, a non-string value, a missing/blank required field, an over-length
+ * value, or (for `siteUrl`) a URL that fails the SSRF guard.
+ */
+function validateCredentialFields(
+  def: IntegrationDefinition,
+  input: unknown,
+): Record<string, string> {
+  const raw = input ?? {}
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new ValidationError('credentials must be an object of field name to value')
+  }
+  const record = raw as Record<string, unknown>
+
+  const allowedKeys = new Set(def.fields.map((f) => f.key))
+  for (const key of Object.keys(record)) {
+    if (!allowedKeys.has(key)) {
+      throw new ValidationError(`Unknown credential field "${key}" for integration "${def.id}"`)
+    }
+  }
+
+  const result: Record<string, string> = {}
+  const missing: string[] = []
+
+  for (const field of def.fields) {
+    const value = record[field.key]
+    if (value === undefined) {
+      if (field.required) missing.push(field.key)
+      continue
+    }
+    if (typeof value !== 'string') {
+      throw new ValidationError(`Field "${field.key}" must be a string`)
+    }
+    const trimmed = value.trim()
+    if (trimmed === '') {
+      if (field.required) missing.push(field.key)
+      continue
+    }
+    if (trimmed.length > MAX_FIELD_VALUE_LEN) {
+      throw new ValidationError(
+        `Field "${field.key}" must be at most ${MAX_FIELD_VALUE_LEN} characters`,
+      )
+    }
+    if (field.key === 'siteUrl') {
+      validateSiteUrl(trimmed)
+    }
+    result[field.key] = trimmed
+  }
+
+  if (missing.length > 0) {
+    throw new ValidationError(`Missing required field(s): ${missing.join(', ')}`)
+  }
+
+  return result
+}
+
+/** Validate a single scope list (taskTypes or agents) against its allowed set. */
+function validateScopeList<T extends string>(
+  value: unknown,
+  allowed: readonly T[],
+  fieldName: string,
+): T[] {
+  if (value === undefined) return [...allowed]
+  if (!Array.isArray(value)) {
+    throw new ValidationError(`scopes.${fieldName} must be an array`)
+  }
+  const result = new Set<T>()
+  for (const item of value) {
+    if (typeof item !== 'string' || !(allowed as readonly string[]).includes(item)) {
+      throw new ValidationError(`scopes.${fieldName} contains an invalid value: ${String(item)}`)
+    }
+    result.add(item as T)
+  }
+  return Array.from(result)
+}
+
+/**
+ * Validate the `scopes` object in the request body. Missing/omitted lists
+ * default to "all" (matching the PRD's "default all" behaviour); an
+ * explicitly empty array is honoured as "none" (a valid, if unusual, choice).
+ */
+function validateScopes(input: unknown): IntegrationScopes {
+  if (input === undefined || input === null) {
+    return defaultScopes()
+  }
+  if (typeof input !== 'object' || Array.isArray(input)) {
+    throw new ValidationError('scopes must be an object')
+  }
+  const record = input as Record<string, unknown>
+  return {
+    taskTypes: validateScopeList(record['taskTypes'], ALL_TASK_TYPES, 'taskTypes'),
+    agents: validateScopeList(record['agents'], ALL_AGENTS, 'agents'),
+  }
+}
+
+// ── Middleware ───────────────────────────────────────────────────────────────
+
+// Every endpoint requires a valid authenticated user. requireAuth populates
+// req.user with a safe user object (id, email, createdAt).
+integrationsRouter.use(requireAuth)
+
+// ── PUT /api/integrations/:id ─────────────────────────────────────────────────
+//
+// Create or replace an integration's connection: persists write-only
+// credential fields (encrypted, per-field) and the scoping configuration.
+// Never returns credential values.
+
+integrationsRouter.put('/:id', requireCsrf, (req: Request, res: Response) => {
+  const { id } = req.params
+
+  if (!isIntegrationId(id)) {
+    res.status(404).json({ error: `Unknown integration: ${id}` })
+    return
+  }
+
+  const definition = INTEGRATIONS[id]
+  const body = (req.body ?? {}) as Record<string, unknown>
+
+  let fieldValues: Record<string, string>
+  let scopes: IntegrationScopes
+  try {
+    fieldValues = validateCredentialFields(definition, body['credentials'])
+    scopes = validateScopes(body['scopes'])
+  } catch (err) {
+    if (err instanceof ValidationError) {
+      res.status(400).json({ error: err.message })
+      return
+    }
+    throw err
+  }
+
+  // Persist each provided field to the encrypted credential store under the
+  // system scope. Validation above already guarantees every required field is
+  // present, so only a real store failure (not a bad value) reaches here.
+  //
+  // System-scoped rows (user_id IS NULL) never match SQLite's
+  // ON CONFLICT(user_id, key) target — NULL is never equal to NULL in a
+  // UNIQUE index — so a bare saveCredential() on an existing key would insert
+  // a second row and collide on the primary key instead of updating in
+  // place. Removing first guarantees a clean insert, matching the same
+  // workaround used for the system-scoped AI API key in routes/settings.ts.
+  try {
+    for (const field of definition.fields) {
+      const value = fieldValues[field.key]
+      if (value === undefined) continue // optional field, not supplied
+      const key = integrationCredentialKey(id, field.key)
+      removeCredential(null, key)
+      saveCredential(null, key, value)
+    }
+  } catch (err) {
+    // Never leak credential values or raw crypto/storage detail.
+    console.error(
+      `[integrations] failed to store credentials for "${id}":`,
+      (err as Error).message,
+    )
+    res.status(500).json({ error: 'Failed to store integration credentials' })
+    return
+  }
+
+  const existing = getMetadata(id)
+  const now = new Date().toISOString()
+  const updated: IntegrationMetadata = {
+    status: 'connected',
+    // Preserve the original connection timestamp across reconnects/updates;
+    // only set it the first time this integration becomes connected.
+    connectedAt: existing.connectedAt ?? now,
+    // Credentials just changed — any previously persisted test result is
+    // stale, so clear it rather than surface a misleading status.
+    lastTestAt: null,
+    lastTestOk: null,
+    scopes,
+  }
+  integrationMetadata.set(id, updated)
+
+  res.json({ id, ...updated })
+})
