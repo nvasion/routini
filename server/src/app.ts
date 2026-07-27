@@ -7,6 +7,7 @@ import { tasksRouter } from './routes/tasks.js'
 import { settingsRouter } from './routes/settings.js'
 import { notificationsRouter } from './routes/notifications.js'
 import { credentialsRouter } from './routes/credentials.js'
+import { integrationsRouter } from './routes/integrations.js'
 
 export const app = express()
 
@@ -57,6 +58,10 @@ app.use('/api/notifications', requireAuth, notificationsRouter)
 // without a mount-level requireAuth to keep CSRF handling colocated with the
 // route definitions.
 app.use('/api/credentials', credentialsRouter)
+// Protected: integrations catalog + status.  Authentication is enforced
+// inside the router itself (mirroring credentialsRouter above); future
+// write endpoints (PUT/POST test/DELETE) will add their own requireCsrf.
+app.use('/api/integrations', integrationsRouter)
 
 // ── Health check (public) ─────────────────────────────────────────
 

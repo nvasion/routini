@@ -24,12 +24,14 @@ routini/
 │   │   ├── db/
 │   │   │   └── index.ts         # SQLite persistence module (ROUTINI_DB_PATH)
 │   │   ├── services/
-│   │   │   └── credentialStore.ts # Encrypted credential store (CREDENTIALS_MASTER_KEY)
+│   │   │   ├── credentials.ts   # Encrypted credential store (CREDENTIALS_MASTER_KEY)
+│   │   │   └── integrations.ts  # Integrations catalog + status derivation
 │   │   └── routes/
 │   │       ├── auth.ts          # POST /login, /logout  GET /me
 │   │       ├── tasks.ts         # CRUD + trigger for tasks
 │   │       ├── settings.ts      # GET/PUT AI settings
-│   │       └── credentials.ts   # CRUD for stored credentials
+│   │       ├── credentials.ts   # CRUD for stored credentials
+│   │       └── integrations.ts  # GET catalog + status for user-facing integrations
 │   ├── vitest.config.ts         # Test runner config
 │   └── package.json
 ├── client/                      # React frontend
@@ -311,6 +313,42 @@ not through this endpoint.
 |--------|----------|-------|
 | `GET` | `/api/settings` | Returns `{ provider, model, defaultAgentId }` |
 | `PUT` | `/api/settings` | Partial update of any field |
+
+### Integrations – `/api/integrations`
+
+The integrations catalog (GitHub, Slack, Jira, Notion, Linear, monday.com, HubSpot — see
+`server/src/services/integrations.ts`) lets tasks and coding-agent containers reach external tools
+via token/API-key credentials. Credential material is stored write-only in the existing encrypted
+credential store (`integration_<id>_<field>`, system scope) and is **never** included in any
+response; connection status is derived from whether an integration's required fields are present.
+
+| Method | Endpoint | Notes |
+|--------|----------|-------|
+| `GET` | `/api/integrations` | `Authorization: Bearer <token>` → `{ integrations: IntegrationSummary[] }` |
+
+Each `IntegrationSummary` includes the catalog fields (`id`, `name`, `description`, `setupUrl`,
+`fields`) plus live status:
+
+```json
+{
+  "id": "github",
+  "name": "GitHub",
+  "description": "...",
+  "setupUrl": "https://github.com/settings/personal-access-tokens/new",
+  "fields": [{ "key": "token", "label": "Fine-grained personal access token", "type": "password", "required": true }],
+  "status": "not_connected",
+  "connectedAt": null,
+  "lastTestAt": null,
+  "lastTestOk": null,
+  "scopes": { "taskTypes": ["daily", "developmental", "routine"], "agents": ["claude", "opencode", "omnimancer"] }
+}
+```
+
+`status` is `connected` once every required field has a stored credential, `error` when the most
+recent connection test (persisted in the `integration_metadata` table) failed, and `not_connected`
+otherwise. Writing credentials (`PUT /api/integrations/:id`), running a live connection test
+(`POST /api/integrations/:id/test`), and disconnecting (`DELETE /api/integrations/:id`) are planned
+follow-up endpoints on the same router.
 
 ## Environment Variables
 
