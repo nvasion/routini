@@ -1,0 +1,23 @@
+/* ── IntegrationConnectModal ──────────────────────────────────────────────
+   Adds only the pieces the shared ConfigModal chrome (cm-overlay, cm-panel,
+   cm-header, cm-body, cm-form-row, cm-input, cm-footer, ...) doesn't already
+   cover: the integration description and the provider setup link.
+   ────────────────────────────────────────────────────────────────────────── */
+
+.icm-description {
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+}
+
+.icm-setup-link {
+  align-self: flex-start;
+  font-size: 0.82rem;
+  color: var(--color-secondary);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition: border-color 0.15s;
+}
+
+.icm-setup-link:hover {
+  border-color: var(--color-secondary);
+}

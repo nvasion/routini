@@ -30,9 +30,9 @@
  */
 
 import { useEffect, useState } from 'react'
-import type { ReactNode } from 'react'
 import type { Task, DailyTask, DevTask, Routine, DailyActionType, RoutineStep } from '../types'
 import { RoutineBuilder } from './RoutineBuilder'
+import { FormRow, FormStatus } from './FormControls'
 import { apiFetch } from '../api'
 import {
   AGENT_OPTIONS,
@@ -97,26 +97,6 @@ async function saveRoutineSteps(taskId: string, steps: RoutineStep[]): Promise<v
     const body = (await res.json().catch(() => ({}))) as { error?: string }
     throw new Error(body.error ?? `Failed to save routine steps (HTTP ${res.status})`)
   }
-}
-
-// ── Shared form pieces ────────────────────────────────────────────────────────
-
-function FormRow({ id, label, hint, children }: { id: string; label: string; hint?: string; children: ReactNode }) {
-  return (
-    <div className="cm-form-row">
-      <label htmlFor={id} className="cm-form-label">
-        {label}
-      </label>
-      {children}
-      {hint && <p className="cm-form-hint">{hint}</p>}
-    </div>
-  )
-}
-
-function FormStatus({ error, saved }: { error: string | null; saved: boolean }) {
-  if (error) return <p className="cm-error" role="alert">{error}</p>
-  if (saved) return <p className="cm-success" role="status">Saved</p>
-  return null
 }
 
 // ── Daily task form ────────────────────────────────────────────────────────────

@@ -44,6 +44,9 @@ routini/
 │   │   │   ├── TaskCard.tsx / .css / .test.tsx  # Clickable task card (see "Interacting with the config modal")
 │   │   │   ├── ConfigModal.tsx / .css / .test.tsx  # Centered, editable task config modal (see below)
 │   │   │   ├── configModal.utils.ts / (tested via tests/configModal.utils.test.ts)  # Pure form validation/payload helpers backing ConfigModal
+│   │   │   ├── FormControls.tsx       # Shared FormRow/FormStatus pieces reused by every cm-* chrome modal
+│   │   │   ├── IntegrationConnectModal.tsx / .css / .test.tsx  # Connect/edit-credentials modal for a single integration (see below)
+│   │   │   ├── integrationConnectModal.utils.ts  # Pure validation/payload helpers backing IntegrationConnectModal
 │   │   │   └── RoutineBuilder.tsx     # Step editor for routine tasks (embedded in ConfigModal)
 │   │   └── pages/
 │   │       ├── Dashboard.tsx / .css / .test.tsx  # Three-bucket task dashboard (see "Dashboard Layout" below)
@@ -217,6 +220,25 @@ Only one config modal is open across the whole dashboard at a time — opening a
 whichever was previously open (see `useOpenPanel` / `openPanelStore.ts`). Changes propagate back to
 the task list either optimistically (via the modal's own save) or via the SSE `task:updated` event
 (see `useTaskEvents`).
+
+### Connecting an integration
+
+`IntegrationConnectModal` (`client/src/components/IntegrationConnectModal.tsx`) reuses the same
+`cm-overlay`/`cm-panel` chrome as `ConfigModal` — same dimmed backdrop, centered card, ✕/backdrop/
+`Escape` close affordances, and `cm-*` form styling — rather than duplicating it, via a small shared
+`FormControls.tsx` (`FormRow`/`FormStatus`) that both modals import. It renders one input per
+credential field defined on the `Integration` catalog entry (`client/src/types.ts`), a link to the
+provider's setup page (opens in a new tab), and a **Connect** (or **Save**, once already connected)
+button that persists via `PUT /api/integrations/:id`.
+
+Credential fields are **write-only**: `GET /api/integrations` never returns a stored secret, so
+every field always starts blank, even when editing an already-connected integration. Saving only
+sends fields the user actually typed into (`integrationConnectModal.utils.ts`'s
+`buildConnectPayload`) — a field left blank keeps its stored value unchanged rather than being
+cleared. Client-side validation requires every `required` field to be filled in for a first-time
+connection, and requires at least one field to be filled in when editing an existing connection (to
+reject a no-op save). This component is invoked by the `/integrations` catalog grid page with the
+`Integration` the user clicked; it does not fetch the catalog itself.
 
 ### Search behavior across buckets
 

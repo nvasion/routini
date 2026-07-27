@@ -61,54 +61,46 @@ export interface AISettings {
 }
 
 // ──────────────────────────────────────────────
-// Integrations (see PRD: Routini Integrations)
+// Integrations (server/src/routes/integrations.ts catalog)
 // ──────────────────────────────────────────────
 
-/** The seven v1 credential-based integrations. */
-export type IntegrationId =
-  | 'github'
-  | 'slack'
-  | 'jira'
-  | 'notion'
-  | 'linear'
-  | 'monday'
-  | 'hubspot'
-
-/**
- * Connection status as computed server-side:
- *  - 'not_connected' — no credentials stored yet
- *  - 'connected'      — credentials stored and the last test (if any) succeeded
- *  - 'error'          — credentials stored but the last test connection failed
- */
 export type IntegrationStatus = 'not_connected' | 'connected' | 'error'
 
-/** Describes one write-only credential field the connect modal must collect. */
+/**
+ * A single credential input an integration needs (e.g. a GitHub PAT, a Jira
+ * site URL). `secret` fields render as password inputs and are write-only —
+ * the server never returns their stored value, matching the AISettings
+ * `hasApiKey` / daily-task `config` pattern used elsewhere in this app.
+ */
 export interface IntegrationField {
+  /** Key this field is sent under in the PUT /api/integrations/:id payload. */
   key: string
   label: string
-  /** True for secrets (tokens/keys) — rendered as a password input, never pre-filled. */
   secret: boolean
   required: boolean
+  placeholder?: string
 }
 
-/** Server-enforced scoping: which task types and agents may use this integration. */
+/** Which task types and coding agents are allowed to use a connected integration. */
 export interface IntegrationScopes {
   taskTypes: TaskType[]
   agents: AIProvider[]
 }
 
 /**
- * A single catalog entry as returned by GET /api/integrations. Never contains
- * secrets — only metadata about whether/when the integration was connected
- * and tested.
+ * One catalog entry as returned by GET /api/integrations: static metadata
+ * (fields, setup link) merged with this user's connection state. Never
+ * carries secret values — only whether/when a connection was made and
+ * last tested.
  */
 export interface Integration {
-  id: IntegrationId
+  id: string
   name: string
   description: string
-  /** Link to the provider's token/setup page, shown in the connect modal. */
-  setupUrl: string
   fields: IntegrationField[]
+  /** Link to the provider's page for creating the credential (e.g. a token settings page). */
+  setupUrl: string
+  setupLabel: string
   status: IntegrationStatus
   connectedAt: string | null
   lastTestAt: string | null
