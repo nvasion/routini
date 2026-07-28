@@ -29,7 +29,7 @@ import {
   describeTestResult,
   formatTimestamp,
   toggleValue,
-} from './integrationConnectionPanel.utils'
+} from './integrationConnectionPanel.utils.ts'
 import './ConfigModal.css'
 import './IntegrationConnectionPanel.css'
 
