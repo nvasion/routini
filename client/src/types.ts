@@ -59,3 +59,38 @@ export interface AISettings {
   /** True when an API key has been stored; the key itself is never returned by the server. */
   hasApiKey: boolean
 }
+
+// ── Integrations ──────────────────────────────────────────────────
+
+export type IntegrationStatus = 'not_connected' | 'connected' | 'error'
+
+/** Describes one credential field a connect form needs to render — never carries a value. */
+export interface IntegrationField {
+  key: string
+  label: string
+  secret: boolean
+}
+
+export interface IntegrationScopes {
+  taskTypes: TaskType[]
+  agents: string[]
+}
+
+/**
+ * One catalog integration as returned by GET /api/integrations. Mirrors the
+ * server's response shape (server/src/routes/integrations.ts) and never
+ * contains credential values — only field metadata for rendering the connect
+ * form, plus non-secret connection status.
+ */
+export interface Integration {
+  id: string
+  name: string
+  description: string
+  setupUrl: string
+  fields: IntegrationField[]
+  status: IntegrationStatus
+  connectedAt: string | null
+  lastTestAt: string | null
+  lastTestOk: boolean | null
+  scopes: IntegrationScopes
+}

@@ -30,9 +30,9 @@
  */
 
 import { useEffect, useState } from 'react'
-import type { ReactNode } from 'react'
 import type { Task, DailyTask, DevTask, Routine, DailyActionType, RoutineStep } from '../types'
 import { RoutineBuilder } from './RoutineBuilder'
+import { FormRow, FormStatus } from './FormControls'
 import { apiFetch } from '../api'
 import {
   AGENT_OPTIONS,
@@ -101,7 +101,12 @@ async function saveRoutineSteps(taskId: string, steps: RoutineStep[]): Promise<v
 
 // ── Shared form pieces ────────────────────────────────────────────────────────
 
-function FormRow({ id, label, hint, children }: { id: string; label: string; hint?: string; children: ReactNode }) {
+/**
+ * Exported so other modals that reuse ConfigModal's overlay/panel chrome
+ * (see client/src/components/IntegrationModal.tsx) can build visually
+ * consistent forms without duplicating this markup.
+ */
+export function FormRow({ id, label, hint, children }: { id: string; label: string; hint?: string; children: ReactNode }) {
   return (
     <div className="cm-form-row">
       <label htmlFor={id} className="cm-form-label">
@@ -113,9 +118,10 @@ function FormRow({ id, label, hint, children }: { id: string; label: string; hin
   )
 }
 
-function FormStatus({ error, saved }: { error: string | null; saved: boolean }) {
+/** Exported for reuse by IntegrationModal — see FormRow above. */
+export function FormStatus({ error, saved, savedText = 'Saved' }: { error: string | null; saved: boolean; savedText?: string }) {
   if (error) return <p className="cm-error" role="alert">{error}</p>
-  if (saved) return <p className="cm-success" role="status">Saved</p>
+  if (saved) return <p className="cm-success" role="status">{savedText}</p>
   return null
 }
 

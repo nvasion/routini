@@ -40,6 +40,7 @@ export function Navbar() {
         <ul className="navbar-links" role="list">
           {navLink('/', 'Dashboard')}
           {navLink('/metrics', 'Metrics')}
+          {navLink('/integrations', 'Integrations')}
           {navLink('/settings', 'Settings')}
         </ul>
       )}
