@@ -8,6 +8,7 @@
  *   – user CRUD helpers (upsert/get by id and email)
  *   – revoked-JWT helpers (revoke/idempotency/lookup/pruning)
  *   – credential helpers (upsert/get/delete, system vs per-user scoping)
+ *   – integration metadata helpers (upsert/get/list/delete)
  *   – ROUTINI_DB_PATH override (file-based vs :memory:)
  *   – resetDb() isolation and guard outside test env
  */
@@ -26,6 +27,10 @@ import {
   getCredential,
   deleteCredential,
   credentialId,
+  getIntegrationMetadata,
+  listIntegrationMetadata,
+  upsertIntegrationMetadata,
+  deleteIntegrationMetadata,
 } from '../server/src/db/index.js'
 
 const originalDbPath = process.env['ROUTINI_DB_PATH']
@@ -64,18 +69,21 @@ describe('getDb() connection', () => {
     expect(names).toContain('users')
     expect(names).toContain('revoked_jwts')
     expect(names).toContain('credentials')
+    expect(names).toContain('integration_metadata')
     expect(names).toContain('schema_migrations')
   })
 
   it('does not error when schema is applied twice (idempotent)', () => {
     const db = getDb()
-    // Re-running the migration ledger query should be a no-op: v1 already
-    // recorded, so the pending list is empty and nothing re-runs.
+    // Re-running the migration ledger query should be a no-op: every
+    // migration is already recorded, so the pending list is empty and
+    // nothing re-runs (no duplicate ledger rows for the same version).
     const applied = db
-      .prepare('SELECT version FROM schema_migrations')
+      .prepare('SELECT version FROM schema_migrations ORDER BY version')
       .all() as { version: number }[]
-    expect(applied).toHaveLength(1)
-    expect(applied[0].version).toBe(1)
+    const versions = applied.map((row) => row.version)
+    expect(new Set(versions).size).toBe(versions.length)
+    expect(versions).toContain(1)
   })
 })
 
@@ -286,6 +294,88 @@ describe('credential helpers', () => {
     })
     expect(deleteCredential('u-a', 'shared_key')).toBe(1)
     expect(getCredential('u-b', 'shared_key')).toBeDefined()
+  })
+})
+
+// ── Integration metadata ─────────────────────────────────────────────────────
+
+describe('integration metadata helpers', () => {
+  it('returns undefined for an integration that has never been written', () => {
+    expect(getIntegrationMetadata('github')).toBeUndefined()
+  })
+
+  it('stores and retrieves an integration metadata row', () => {
+    upsertIntegrationMetadata({
+      id: 'github',
+      last_test_at: '2024-01-01T00:00:00.000Z',
+      last_test_ok: 1,
+      scope_task_types: JSON.stringify(['daily']),
+      scope_agents: JSON.stringify(['claude']),
+      updated_at: '2024-01-01T00:00:00.000Z',
+    })
+    const row = getIntegrationMetadata('github')
+    expect(row).toBeDefined()
+    expect(row!.last_test_ok).toBe(1)
+    expect(row!.scope_task_types).toBe(JSON.stringify(['daily']))
+  })
+
+  it('updates an existing row on conflict (upsert by id)', () => {
+    upsertIntegrationMetadata({
+      id: 'slack',
+      last_test_at: '2024-01-01T00:00:00.000Z',
+      last_test_ok: 0,
+      scope_task_types: null,
+      scope_agents: null,
+      updated_at: '2024-01-01T00:00:00.000Z',
+    })
+    upsertIntegrationMetadata({
+      id: 'slack',
+      last_test_at: '2024-02-01T00:00:00.000Z',
+      last_test_ok: 1,
+      scope_task_types: JSON.stringify(['routine']),
+      scope_agents: JSON.stringify(['opencode']),
+      updated_at: '2024-02-01T00:00:00.000Z',
+    })
+    const row = getIntegrationMetadata('slack')
+    expect(row!.last_test_at).toBe('2024-02-01T00:00:00.000Z')
+    expect(row!.last_test_ok).toBe(1)
+    expect(row!.scope_task_types).toBe(JSON.stringify(['routine']))
+  })
+
+  it('lists all stored integration metadata rows ordered by id', () => {
+    upsertIntegrationMetadata({
+      id: 'notion',
+      last_test_at: null,
+      last_test_ok: null,
+      scope_task_types: null,
+      scope_agents: null,
+      updated_at: '2024-01-01T00:00:00.000Z',
+    })
+    upsertIntegrationMetadata({
+      id: 'github',
+      last_test_at: null,
+      last_test_ok: null,
+      scope_task_types: null,
+      scope_agents: null,
+      updated_at: '2024-01-01T00:00:00.000Z',
+    })
+    const rows = listIntegrationMetadata()
+    expect(rows.map((r) => r.id)).toEqual(['github', 'notion'])
+  })
+
+  it('deletes a metadata row and reports rows removed', () => {
+    upsertIntegrationMetadata({
+      id: 'linear',
+      last_test_at: null,
+      last_test_ok: null,
+      scope_task_types: null,
+      scope_agents: null,
+      updated_at: '2024-01-01T00:00:00.000Z',
+    })
+    expect(deleteIntegrationMetadata('linear')).toBe(1)
+    expect(getIntegrationMetadata('linear')).toBeUndefined()
+    // Deleting again removes nothing.
+    expect(deleteIntegrationMetadata('linear')).toBe(0)
   })
 })
 

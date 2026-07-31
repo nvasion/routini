@@ -1,0 +1,69 @@
+/* ── IntegrationModal ───────────────────────────────────────────────────────
+   Integration-specific pieces layered on top of ConfigModal's shared cm-*
+   overlay/panel/form chrome (imported by IntegrationModal.tsx alongside this
+   file) — only what's unique to the connect/scope/test flow lives here.
+   ────────────────────────────────────────────────────────────────────────── */
+
+.im-setup-link {
+  align-self: flex-start;
+  color: var(--color-secondary);
+  font-size: 0.82rem;
+  text-decoration: none;
+}
+
+.im-setup-link:hover {
+  text-decoration: underline;
+}
+
+.im-scopes {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.im-scope-group {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 0.6rem 0.85rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.im-scope-group legend {
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-text-muted);
+  padding: 0 0.35rem;
+}
+
+.im-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+  color: var(--color-text);
+}
+
+.im-test-section {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.4rem;
+}
+
+.im-test-result {
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+}
+
+.im-test-result--ok {
+  color: var(--color-success);
+}
+
+.im-test-result--fail {
+  color: var(--color-error);
+}

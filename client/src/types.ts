@@ -86,3 +86,48 @@ export interface AISettings {
   /** Which endpoints have an API key stored; the keys themselves are never returned. */
   endpointKeys: Record<string, boolean>
 }
+
+// ── Integrations ──────────────────────────────────────────────────
+
+export type IntegrationStatus = 'not_connected' | 'connected' | 'error'
+
+/** Describes one credential field a connect form needs to render — never carries a value. */
+export interface IntegrationField {
+  key: string
+  label: string
+  secret: boolean
+  /**
+   * Whether this field must be filled in on a first-time connect. Defaults
+   * to required (true) when omitted — the server's integration catalog only
+   * ever sends `required: false` for genuinely optional fields, so treating
+   * a missing value as "not required" would silently bypass validation. See
+   * validateConnectForm in integrationConnectModal.utils.ts.
+   */
+  required?: boolean
+  /** Optional input placeholder text, e.g. an example value for the field. */
+  placeholder?: string
+}
+
+export interface IntegrationScopes {
+  taskTypes: TaskType[]
+  agents: string[]
+}
+
+/**
+ * One catalog integration as returned by GET /api/integrations. Mirrors the
+ * server's response shape (server/src/routes/integrations.ts) and never
+ * contains credential values — only field metadata for rendering the connect
+ * form, plus non-secret connection status.
+ */
+export interface Integration {
+  id: string
+  name: string
+  description: string
+  setupUrl: string
+  fields: IntegrationField[]
+  status: IntegrationStatus
+  connectedAt: string | null
+  lastTestAt: string | null
+  lastTestOk: boolean | null
+  scopes: IntegrationScopes
+}
