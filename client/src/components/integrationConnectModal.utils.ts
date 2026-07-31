@@ -18,8 +18,12 @@ export function initialFieldValues(integration: Integration): Record<string, str
 /**
  * Returns a validation error message, or null when the form is ready to submit.
  *
- *  - First-time connect (status !== 'connected'): every `required` field must
- *    have a non-blank value.
+ *  - First-time connect (status !== 'connected'): every field must have a
+ *    non-blank value unless it is explicitly marked `required: false`. A
+ *    field's `required` flag defaults to true when omitted — the server's
+ *    integration catalog only sends `required: false` for genuinely optional
+ *    fields, so treating a missing/undefined flag as "not required" would
+ *    silently let a first-time connect through with blank credentials.
  *  - Editing an already-connected integration: fields may be left blank to
  *    keep their stored value unchanged (write-only, so the client can't tell
  *    which ones already hold something) — but at least one field must be
@@ -31,7 +35,7 @@ export function validateConnectForm(integration: Integration, values: Record<str
     return anyFilled ? null : 'Enter at least one field to update'
   }
 
-  const missing = integration.fields.filter(field => field.required && !(values[field.key] ?? '').trim())
+  const missing = integration.fields.filter(field => field.required !== false && !(values[field.key] ?? '').trim())
   if (missing.length === 0) return null
   const verb = missing.length > 1 ? 'are' : 'is'
   return `${missing.map(field => field.label).join(', ')} ${verb} required`

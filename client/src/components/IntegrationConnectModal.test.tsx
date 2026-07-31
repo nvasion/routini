@@ -123,6 +123,35 @@ describe('IntegrationConnectModal', () => {
       expect(mockedApiFetch).not.toHaveBeenCalled()
     })
 
+    // Regression test: the real GET /api/integrations catalog never sends a
+    // `required` flag at all (see server/src/routes/integrations.ts, e.g.
+    // `{ key: 'token', label: 'Personal Access Token', secret: true }`) — it
+    // relies on the client defaulting an absent flag to "required". A field
+    // with `field.required` merely undefined must still block a blank
+    // first-time connect instead of silently passing validation.
+    it('rejects a blank first-time connect when fields omit the required flag entirely', async () => {
+      const integration = makeIntegration({
+        fields: [{ key: 'token', label: 'Personal Access Token', secret: true }],
+      })
+      render(<IntegrationConnectModal integration={integration} onClose={vi.fn()} />)
+
+      fireEvent.click(screen.getByRole('button', { name: 'Connect' }))
+
+      const alert = await screen.findByRole('alert')
+      expect(alert.textContent).toMatch(/Personal Access Token/)
+      expect(mockedApiFetch).not.toHaveBeenCalled()
+    })
+
+    it('does not label a field omitting the required flag as optional', () => {
+      const integration = makeIntegration({
+        fields: [{ key: 'token', label: 'Personal Access Token', secret: true }],
+      })
+      render(<IntegrationConnectModal integration={integration} onClose={vi.fn()} />)
+
+      expect(screen.getByText('Personal Access Token')).toBeTruthy()
+      expect(screen.queryByText('Personal Access Token (optional)')).toBeNull()
+    })
+
     it('rejects an all-blank save on an already-connected integration as a no-op', async () => {
       render(<IntegrationConnectModal integration={makeIntegration({ status: 'connected' })} onClose={vi.fn()} />)
 
