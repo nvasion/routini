@@ -32,3 +32,11 @@ build/
 
 # Test caches
 .vitest-cache/
+
+# SQLite databases
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+server/data/
