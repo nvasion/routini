@@ -31,7 +31,7 @@
 
 import { useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
-import type { Task, DailyTask, DevTask, Routine, DailyActionType, RoutineStep } from '../types'
+import type { Task, TaskType, DailyTask, DevTask, Routine, DailyActionType, RoutineStep } from '../types'
 import { RoutineBuilder } from './RoutineBuilder'
 import { apiFetch } from '../api'
 import {
@@ -81,6 +81,25 @@ async function saveTask(taskId: string, payload: Record<string, unknown>): Promi
 }
 
 /**
+ * Creates a task via POST /api/tasks and returns the server's created task.
+ * Used by the same forms as saveTask when they run in "create" mode (task
+ * prop is null — see DailyForm/DevForm and CreateTaskModal below).
+ */
+async function createTask(payload: Record<string, unknown>): Promise<Task> {
+  const res = await apiFetch('/api/tasks', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+
+  const body = (await res.json().catch(() => ({}))) as Task & { error?: string }
+  if (!res.ok) {
+    throw new Error((body as { error?: string }).error ?? `Failed to create task (HTTP ${res.status})`)
+  }
+  return body
+}
+
+/**
  * Persists routine steps via PUT /api/tasks/:id/steps (unchanged from the
  * previous TaskConfigPanel). The server broadcasts a 'task:updated' SSE
  * event on success, which is how the rest of the app (Dashboard's task
@@ -120,16 +139,30 @@ function FormStatus({ error, saved }: { error: string | null; saved: boolean }) 
 }
 
 // ── Daily task form ────────────────────────────────────────────────────────────
+//
+// Serves both modes: editing an existing task (task set → PUT) and creating
+// a new one (task null → POST, then onCreated + close). The fields, styling,
+// validation, and payload building are identical either way.
 
-function DailyForm({ task, onClose }: { task: DailyTask; onClose: () => void }) {
-  const [name, setName] = useState(task.name)
-  const [description, setDescription] = useState(task.description)
-  const [schedule, setSchedule] = useState(task.schedule)
-  const [actionType, setActionType] = useState<DailyActionType>(task.actionType)
+interface DailyFormProps {
+  task: DailyTask | null
+  onClose: () => void
+  /** Called with the created task after a successful create (task === null). */
+  onCreated?: (task: Task) => void
+}
+
+function DailyForm({ task, onClose, onCreated }: DailyFormProps) {
+  const [name, setName] = useState(task?.name ?? '')
+  const [description, setDescription] = useState(task?.description ?? '')
+  const [schedule, setSchedule] = useState(task?.schedule ?? '')
+  const [actionType, setActionType] = useState<DailyActionType>(task?.actionType ?? DAILY_ACTION_TYPES[0])
   const [configRows, setConfigRows] = useState<ConfigRow[]>([{ key: '', value: '' }])
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [saved, setSaved] = useState(false)
+
+  const isCreate = task === null
+  const idSuffix = task?.id ?? 'new'
 
   const markDirty = () => {
     setSaved(false)
@@ -160,10 +193,16 @@ function DailyForm({ task, onClose }: { task: DailyTask; onClose: () => void }) 
     setSaving(true)
     setError(null)
     try {
-      await saveTask(task.id, buildDailyUpdatePayload(values))
-      setSaved(true)
+      if (isCreate) {
+        const created = await createTask({ type: 'daily', ...buildDailyUpdatePayload(values) })
+        onCreated?.(created)
+        onClose()
+      } else {
+        await saveTask(task.id, buildDailyUpdatePayload(values))
+        setSaved(true)
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save task')
+      setError(err instanceof Error ? err.message : isCreate ? 'Failed to create task' : 'Failed to save task')
     } finally {
       setSaving(false)
     }
@@ -171,9 +210,9 @@ function DailyForm({ task, onClose }: { task: DailyTask; onClose: () => void }) 
 
   return (
     <>
-      <FormRow id={`cm-name-${task.id}`} label="Name">
+      <FormRow id={`cm-name-${idSuffix}`} label="Name">
         <input
-          id={`cm-name-${task.id}`}
+          id={`cm-name-${idSuffix}`}
           className="cm-input"
           value={name}
           onChange={e => {
@@ -183,9 +222,9 @@ function DailyForm({ task, onClose }: { task: DailyTask; onClose: () => void }) 
         />
       </FormRow>
 
-      <FormRow id={`cm-desc-${task.id}`} label="Description">
+      <FormRow id={`cm-desc-${idSuffix}`} label="Description">
         <textarea
-          id={`cm-desc-${task.id}`}
+          id={`cm-desc-${idSuffix}`}
           className="cm-input cm-textarea"
           rows={2}
           value={description}
@@ -196,9 +235,9 @@ function DailyForm({ task, onClose }: { task: DailyTask; onClose: () => void }) 
         />
       </FormRow>
 
-      <FormRow id={`cm-schedule-${task.id}`} label="Schedule" hint="Cron expression, e.g. 0 9 * * *">
+      <FormRow id={`cm-schedule-${idSuffix}`} label="Schedule" hint="Cron expression, e.g. 0 9 * * *">
         <input
-          id={`cm-schedule-${task.id}`}
+          id={`cm-schedule-${idSuffix}`}
           className="cm-input"
           value={schedule}
           onChange={e => {
@@ -208,9 +247,9 @@ function DailyForm({ task, onClose }: { task: DailyTask; onClose: () => void }) 
         />
       </FormRow>
 
-      <FormRow id={`cm-action-${task.id}`} label="Action Type">
+      <FormRow id={`cm-action-${idSuffix}`} label="Action Type">
         <select
-          id={`cm-action-${task.id}`}
+          id={`cm-action-${idSuffix}`}
           className="cm-input"
           value={actionType}
           onChange={e => {
@@ -229,8 +268,9 @@ function DailyForm({ task, onClose }: { task: DailyTask; onClose: () => void }) 
       <div className="cm-form-row">
         <span className="cm-form-label">Config</span>
         <p className="cm-form-hint">
-          Existing values aren't shown here (they may hold credentials). Fill in rows to set or
-          replace individual keys — leave every row blank to keep the stored config unchanged.
+          {isCreate
+            ? 'Optional key/value settings for the action (e.g. url, host, username).'
+            : "Existing values aren't shown here (they may hold credentials). Fill in rows to set or replace individual keys — leave every row blank to keep the stored config unchanged."}
         </p>
         <div className="cm-config-rows">
           {configRows.map((row, i) => (
@@ -274,7 +314,7 @@ function DailyForm({ task, onClose }: { task: DailyTask; onClose: () => void }) 
           Cancel
         </button>
         <button type="button" className="cm-btn-save" onClick={handleSave} disabled={saving} aria-busy={saving}>
-          {saving ? 'Saving…' : 'Save'}
+          {saving ? (isCreate ? 'Creating…' : 'Saving…') : isCreate ? 'Create' : 'Save'}
         </button>
       </div>
     </>
@@ -282,16 +322,29 @@ function DailyForm({ task, onClose }: { task: DailyTask; onClose: () => void }) 
 }
 
 // ── Developmental task form ───────────────────────────────────────────────────
+//
+// Same dual-mode contract as DailyForm: task set → edit via PUT; task null →
+// create via POST then onCreated + close.
 
-function DevForm({ task, onClose }: { task: DevTask; onClose: () => void }) {
-  const [name, setName] = useState(task.name)
-  const [description, setDescription] = useState(task.description)
-  const [repoUrl, setRepoUrl] = useState(task.repoUrl)
-  const [branch, setBranch] = useState(task.branch)
-  const [agentId, setAgentId] = useState(task.agentId)
+interface DevFormProps {
+  task: DevTask | null
+  onClose: () => void
+  /** Called with the created task after a successful create (task === null). */
+  onCreated?: (task: Task) => void
+}
+
+function DevForm({ task, onClose, onCreated }: DevFormProps) {
+  const [name, setName] = useState(task?.name ?? '')
+  const [description, setDescription] = useState(task?.description ?? '')
+  const [repoUrl, setRepoUrl] = useState(task?.repoUrl ?? '')
+  const [branch, setBranch] = useState(task?.branch ?? 'main')
+  const [agentId, setAgentId] = useState(task?.agentId ?? AGENT_OPTIONS[0].value)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [saved, setSaved] = useState(false)
+
+  const isCreate = task === null
+  const idSuffix = task?.id ?? 'new'
 
   const markDirty = () => {
     setSaved(false)
@@ -309,10 +362,16 @@ function DevForm({ task, onClose }: { task: DevTask; onClose: () => void }) {
     setSaving(true)
     setError(null)
     try {
-      await saveTask(task.id, buildDevUpdatePayload(values))
-      setSaved(true)
+      if (isCreate) {
+        const created = await createTask({ type: 'developmental', ...buildDevUpdatePayload(values) })
+        onCreated?.(created)
+        onClose()
+      } else {
+        await saveTask(task.id, buildDevUpdatePayload(values))
+        setSaved(true)
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save task')
+      setError(err instanceof Error ? err.message : isCreate ? 'Failed to create task' : 'Failed to save task')
     } finally {
       setSaving(false)
     }
@@ -320,9 +379,9 @@ function DevForm({ task, onClose }: { task: DevTask; onClose: () => void }) {
 
   return (
     <>
-      <FormRow id={`cm-name-${task.id}`} label="Name">
+      <FormRow id={`cm-name-${idSuffix}`} label="Name">
         <input
-          id={`cm-name-${task.id}`}
+          id={`cm-name-${idSuffix}`}
           className="cm-input"
           value={name}
           onChange={e => {
@@ -332,9 +391,9 @@ function DevForm({ task, onClose }: { task: DevTask; onClose: () => void }) {
         />
       </FormRow>
 
-      <FormRow id={`cm-desc-${task.id}`} label="Description">
+      <FormRow id={`cm-desc-${idSuffix}`} label="Description">
         <textarea
-          id={`cm-desc-${task.id}`}
+          id={`cm-desc-${idSuffix}`}
           className="cm-input cm-textarea"
           rows={2}
           value={description}
@@ -345,9 +404,9 @@ function DevForm({ task, onClose }: { task: DevTask; onClose: () => void }) {
         />
       </FormRow>
 
-      <FormRow id={`cm-repo-${task.id}`} label="Repository">
+      <FormRow id={`cm-repo-${idSuffix}`} label="Repository">
         <input
-          id={`cm-repo-${task.id}`}
+          id={`cm-repo-${idSuffix}`}
           className="cm-input"
           value={repoUrl}
           onChange={e => {
@@ -357,9 +416,9 @@ function DevForm({ task, onClose }: { task: DevTask; onClose: () => void }) {
         />
       </FormRow>
 
-      <FormRow id={`cm-branch-${task.id}`} label="Branch">
+      <FormRow id={`cm-branch-${idSuffix}`} label="Branch">
         <input
-          id={`cm-branch-${task.id}`}
+          id={`cm-branch-${idSuffix}`}
           className="cm-input"
           value={branch}
           onChange={e => {
@@ -369,9 +428,9 @@ function DevForm({ task, onClose }: { task: DevTask; onClose: () => void }) {
         />
       </FormRow>
 
-      <FormRow id={`cm-agent-${task.id}`} label="Agent">
+      <FormRow id={`cm-agent-${idSuffix}`} label="Agent">
         <select
-          id={`cm-agent-${task.id}`}
+          id={`cm-agent-${idSuffix}`}
           className="cm-input"
           value={agentId}
           onChange={e => {
@@ -394,7 +453,7 @@ function DevForm({ task, onClose }: { task: DevTask; onClose: () => void }) {
           Cancel
         </button>
         <button type="button" className="cm-btn-save" onClick={handleSave} disabled={saving} aria-busy={saving}>
-          {saving ? 'Saving…' : 'Save'}
+          {saving ? (isCreate ? 'Creating…' : 'Saving…') : isCreate ? 'Create' : 'Save'}
         </button>
       </div>
     </>
@@ -541,6 +600,148 @@ export function ConfigModal({ task, allTasks = [], onClose }: ConfigModalProps) 
           ) : (
             <DevForm task={task} onClose={onClose} />
           )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Routine create form ───────────────────────────────────────────────────────
+//
+// Creating a routine only needs name/description — steps are added afterwards
+// by opening the new card's config modal (RoutineBuilder needs an existing
+// task id to save steps against). Reuses the same FormRow/FormStatus/footer
+// pieces as the edit forms.
+
+function RoutineCreateForm({ onClose, onCreated }: { onClose: () => void; onCreated?: (task: Task) => void }) {
+  const [name, setName] = useState('')
+  const [description, setDescription] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const handleCreate = async () => {
+    const values = { name, description }
+    const validationError = validateMetaForm(values)
+    if (validationError) {
+      setError(validationError)
+      return
+    }
+
+    setSaving(true)
+    setError(null)
+    try {
+      const created = await createTask({ type: 'routine', ...buildMetaUpdatePayload(values) })
+      onCreated?.(created)
+      onClose()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to create task')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <>
+      <FormRow id="cm-name-new" label="Name">
+        <input
+          id="cm-name-new"
+          className="cm-input"
+          value={name}
+          onChange={e => {
+            setName(e.target.value)
+            setError(null)
+          }}
+        />
+      </FormRow>
+
+      <FormRow id="cm-desc-new" label="Description">
+        <textarea
+          id="cm-desc-new"
+          className="cm-input cm-textarea"
+          rows={2}
+          value={description}
+          onChange={e => {
+            setDescription(e.target.value)
+            setError(null)
+          }}
+        />
+      </FormRow>
+
+      <p className="cm-form-hint">Steps can be added after creation by opening the routine's configuration.</p>
+
+      <FormStatus error={error} saved={false} />
+
+      <div className="cm-footer">
+        <button type="button" className="cm-btn-ghost" onClick={onClose} disabled={saving}>
+          Cancel
+        </button>
+        <button type="button" className="cm-btn-save" onClick={handleCreate} disabled={saving} aria-busy={saving}>
+          {saving ? 'Creating…' : 'Create'}
+        </button>
+      </div>
+    </>
+  )
+}
+
+// ── Create modal ──────────────────────────────────────────────────────────────
+//
+// The per-bucket "+" buttons open this: the exact same centered pop-up chrome
+// (overlay, panel, header) and the exact same type-specific forms as the ⚙
+// configuration modal, just running in create mode (POST instead of PUT).
+
+const CREATE_LABELS: Record<TaskType, string> = {
+  daily: 'Daily Task',
+  developmental: 'Developmental Task',
+  routine: 'Routine',
+}
+
+export interface CreateTaskModalProps {
+  type: TaskType
+  /** Called with the created task so the caller can merge it into its list. */
+  onCreated: (task: Task) => void
+  onClose: () => void
+}
+
+export function CreateTaskModal({ type, onCreated, onClose }: CreateTaskModalProps) {
+  // Close on Escape for keyboard/accessibility parity with the close button.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [onClose])
+
+  const label = CREATE_LABELS[type]
+
+  return (
+    <div className="cm-overlay" role="presentation" onClick={onClose}>
+      <div
+        className="cm-panel"
+        role="dialog"
+        aria-modal="true"
+        aria-label={`New ${label}`}
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="cm-header">
+          <div>
+            <h2 className="cm-title">New {label}</h2>
+            <p className="cm-subtitle">Configure and create</p>
+          </div>
+          <button
+            className="cm-close"
+            onClick={onClose}
+            aria-label="Close create modal"
+            title="Close"
+          >
+            ✕
+          </button>
+        </div>
+
+        <div className="cm-body">
+          {type === 'daily' && <DailyForm task={null} onClose={onClose} onCreated={onCreated} />}
+          {type === 'developmental' && <DevForm task={null} onClose={onClose} onCreated={onCreated} />}
+          {type === 'routine' && <RoutineCreateForm onClose={onClose} onCreated={onCreated} />}
         </div>
       </div>
     </div>

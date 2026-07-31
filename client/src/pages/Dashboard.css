@@ -76,17 +76,20 @@
   font-size: 0.875rem;
 }
 
-/* ── New Routine form ───────────────────────────────────────── */
-.new-routine-form {
-  display: flex;
-  gap: 0.5rem;
-  margin-bottom: 1.25rem;
-  flex-wrap: wrap;
-}
-
-.new-routine-form .search-input {
-  flex: 1;
-  min-width: 180px;
+/* ── Per-bucket "+" (opens the create modal) ─────────────────────
+   A compact square primary (red) button sitting at the right edge of
+   each bucket header, after the title and count badge. */
+.dashboard-bucket-add {
+  margin-left: auto;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.15rem;
+  line-height: 1;
+  flex-shrink: 0;
 }
 
 /* ── Buckets (daily / developmental / routine columns) ─────────

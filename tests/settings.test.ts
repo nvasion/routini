@@ -270,6 +270,135 @@ describe('PUT /api/settings – apiKey storage', () => {
   })
 })
 
+// ── Per-agent endpoint configuration ──────────────────────────────
+
+describe('PUT /api/settings – agents endpoint configuration', () => {
+  it('GET includes per-agent endpoint config and endpointKeys map', async () => {
+    const res = await request.get('/api/settings').set(auth())
+    expect(res.status).toBe(200)
+    expect(res.body.agents).toBeDefined()
+    expect(res.body.agents.claude.endpoint).toBeDefined()
+    expect(res.body.agents.opencode).toBeDefined()
+    expect(res.body.agents.omnimancer).toBeDefined()
+    expect(typeof res.body.endpointKeys).toBe('object')
+    // The gateway is not a keyed endpoint.
+    expect(res.body.endpointKeys.gateway).toBeUndefined()
+  })
+
+  it('updates an allowed endpoint for claude (openrouter)', async () => {
+    const res = await request
+      .put('/api/settings')
+      .set(auth())
+      .send({ agents: { claude: { endpoint: 'openrouter', model: 'anthropic/claude-opus-4.5' } } })
+    expect(res.status).toBe(200)
+    expect(res.body.agents.claude.endpoint).toBe('openrouter')
+    expect(res.body.agents.claude.model).toBe('anthropic/claude-opus-4.5')
+  })
+
+  it('rejects an endpoint outside the agent allow-list (google for claude)', async () => {
+    const res = await request
+      .put('/api/settings')
+      .set(auth())
+      .send({ agents: { claude: { endpoint: 'google' } } })
+    expect(res.status).toBe(400)
+    expect(res.body.error).toMatch(/not available/i)
+  })
+
+  it('allows omnimancer to use any non-gateway endpoint (google)', async () => {
+    const res = await request
+      .put('/api/settings')
+      .set(auth())
+      .send({ agents: { omnimancer: { endpoint: 'google' } } })
+    expect(res.status).toBe(200)
+    expect(res.body.agents.omnimancer.endpoint).toBe('google')
+  })
+
+  it('rejects the gateway endpoint for omnimancer (talks to providers natively)', async () => {
+    const res = await request
+      .put('/api/settings')
+      .set(auth())
+      .send({ agents: { omnimancer: { endpoint: 'gateway', gatewayUrl: 'http://gw:8080' } } })
+    expect(res.status).toBe(400)
+  })
+
+  it('requires a valid http(s) gatewayUrl when claude selects the gateway', async () => {
+    const missing = await request
+      .put('/api/settings')
+      .set(auth())
+      .send({ agents: { claude: { endpoint: 'gateway' } } })
+    expect(missing.status).toBe(400)
+    expect(missing.body.error).toMatch(/gatewayUrl/i)
+
+    const invalid = await request
+      .put('/api/settings')
+      .set(auth())
+      .send({ agents: { claude: { endpoint: 'gateway', gatewayUrl: 'not-a-url' } } })
+    expect(invalid.status).toBe(400)
+
+    const valid = await request
+      .put('/api/settings')
+      .set(auth())
+      .send({ agents: { claude: { endpoint: 'gateway', gatewayUrl: 'http://gateway-host:8080' } } })
+    expect(valid.status).toBe(200)
+    expect(valid.body.agents.claude.endpoint).toBe('gateway')
+    expect(valid.body.agents.claude.gatewayUrl).toBe('http://gateway-host:8080')
+  })
+
+  it('rejects an unknown agent id', async () => {
+    const res = await request
+      .put('/api/settings')
+      .set(auth())
+      .send({ agents: { copilot: { endpoint: 'openai' } } })
+    expect(res.status).toBe(400)
+    expect(res.body.error).toMatch(/unknown agent/i)
+  })
+
+  it('partial agent updates preserve other agents', async () => {
+    await request
+      .put('/api/settings')
+      .set(auth())
+      .send({ agents: { opencode: { endpoint: 'openai', model: 'gpt-5' } } })
+
+    const res = await request.get('/api/settings').set(auth())
+    expect(res.body.agents.opencode.endpoint).toBe('openai')
+    // claude still has the gateway config set by the previous test.
+    expect(res.body.agents.claude.endpoint).toBe('gateway')
+  })
+})
+
+// ── Per-endpoint API keys ─────────────────────────────────────────
+
+describe('PUT /api/settings – endpointApiKeys', () => {
+  it('stores keys per endpoint and reports them in endpointKeys without echoing values', async () => {
+    const res = await request
+      .put('/api/settings')
+      .set(auth())
+      .send({ endpointApiKeys: { anthropic: 'sk-ant-test-123', openrouter: 'sk-or-test-456' } })
+    expect(res.status).toBe(200)
+    expect(res.body.endpointKeys.anthropic).toBe(true)
+    expect(res.body.endpointKeys.openrouter).toBe(true)
+    expect(res.body.endpointKeys.openai).toBe(false)
+    expect(JSON.stringify(res.body)).not.toContain('sk-ant-test-123')
+    expect(JSON.stringify(res.body)).not.toContain('sk-or-test-456')
+  })
+
+  it('rejects an unknown endpoint name', async () => {
+    const res = await request
+      .put('/api/settings')
+      .set(auth())
+      .send({ endpointApiKeys: { gateway: 'nope' } })
+    expect(res.status).toBe(400)
+  })
+
+  it('rejects empty key values', async () => {
+    const res = await request
+      .put('/api/settings')
+      .set(auth())
+      .send({ endpointApiKeys: { anthropic: '   ' } })
+    expect(res.status).toBe(400)
+  })
+})
+
 // ── Internal state verification ───────────────────────────────────
 
 describe('internal state – storedApiKey is isolated from responses', () => {

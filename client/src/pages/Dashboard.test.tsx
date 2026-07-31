@@ -164,12 +164,12 @@ describe('Dashboard', () => {
 
   // ── Per-bucket "create" buttons ─────────────────────────────────────────
   //
-  // Each bucket owns its own type-specific create form/button (there is no
-  // longer a single global "+ New Routine" action) — see toggleCreateForm
-  // and the BUCKETS array in Dashboard.tsx.
+  // Each bucket header has a "+" button that opens the same centered pop-up
+  // used by the ⚙ configuration button, running in create mode — see
+  // CreateTaskModal in components/ConfigModal.tsx.
 
   describe('per-bucket create buttons', () => {
-    it('renders a distinct "+ New" button for each bucket, scoped to that bucket only', async () => {
+    it('renders a distinct "+" button for each bucket, scoped to that bucket only', async () => {
       mockTasksResponse(makeTasks())
       render(<Dashboard />)
 
@@ -182,7 +182,7 @@ describe('Dashboard', () => {
       expect(screen.getByRole('button', { name: 'New Routine' })).toBeTruthy()
     })
 
-    it('opens only the daily bucket\'s create form when its button is clicked', async () => {
+    it('opens the centered create modal for the clicked bucket type only', async () => {
       mockTasksResponse(makeTasks())
       render(<Dashboard />)
 
@@ -192,12 +192,16 @@ describe('Dashboard', () => {
 
       fireEvent.click(screen.getByRole('button', { name: 'New Daily Task' }))
 
-      expect(screen.getByRole('form', { name: 'Create daily task' })).toBeTruthy()
-      expect(screen.queryByRole('form', { name: 'Create developmental task' })).toBeNull()
-      expect(screen.queryByRole('form', { name: 'Create routine' })).toBeNull()
+      expect(screen.getByRole('dialog', { name: 'New Daily Task' })).toBeTruthy()
+      expect(screen.queryByRole('dialog', { name: 'New Developmental Task' })).toBeNull()
+      expect(screen.queryByRole('dialog', { name: 'New Routine' })).toBeNull()
+      // The create modal exposes the same editable fields as the ⚙ config modal.
+      expect(screen.getByLabelText('Name')).toBeTruthy()
+      expect(screen.getByLabelText('Schedule')).toBeTruthy()
+      expect(screen.getByLabelText('Action Type')).toBeTruthy()
     })
 
-    it('toggles the create form closed when clicking the same bucket button again', async () => {
+    it('closes the create modal via its Cancel button', async () => {
       mockTasksResponse(makeTasks())
       render(<Dashboard />)
 
@@ -206,13 +210,13 @@ describe('Dashboard', () => {
       })
 
       fireEvent.click(screen.getByRole('button', { name: 'New Routine' }))
-      expect(screen.getByRole('form', { name: 'Create routine' })).toBeTruthy()
+      expect(screen.getByRole('dialog', { name: 'New Routine' })).toBeTruthy()
 
-      fireEvent.click(screen.getByRole('button', { name: 'Cancel Routine' }))
-      expect(screen.queryByRole('form', { name: 'Create routine' })).toBeNull()
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+      expect(screen.queryByRole('dialog', { name: 'New Routine' })).toBeNull()
     })
 
-    it('switching buckets closes the previously open form and opens the new one', async () => {
+    it('can open a different bucket\'s create modal after closing the first', async () => {
       mockTasksResponse(makeTasks())
       render(<Dashboard />)
 
@@ -221,14 +225,16 @@ describe('Dashboard', () => {
       })
 
       fireEvent.click(screen.getByRole('button', { name: 'New Daily Task' }))
-      expect(screen.getByRole('form', { name: 'Create daily task' })).toBeTruthy()
+      expect(screen.getByRole('dialog', { name: 'New Daily Task' })).toBeTruthy()
+
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+      expect(screen.queryByRole('dialog', { name: 'New Daily Task' })).toBeNull()
 
       fireEvent.click(screen.getByRole('button', { name: 'New Routine' }))
-      expect(screen.queryByRole('form', { name: 'Create daily task' })).toBeNull()
-      expect(screen.getByRole('form', { name: 'Create routine' })).toBeTruthy()
+      expect(screen.getByRole('dialog', { name: 'New Routine' })).toBeTruthy()
     })
 
-    it('submits the routine create form via POST /api/tasks and appends the created task', async () => {
+    it('creates a routine via POST /api/tasks, appends it, and closes the modal', async () => {
       mockedApiFetch.mockImplementation(async (_url: string, init?: RequestInit) => {
         if (init?.method === 'POST') {
           const body = JSON.parse(init.body as string)
@@ -257,15 +263,15 @@ describe('Dashboard', () => {
       })
 
       fireEvent.click(screen.getByRole('button', { name: 'New Routine' }))
-      fireEvent.change(screen.getByLabelText('Routine name'), { target: { value: 'Brand new routine' } })
+      fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Brand new routine' } })
       fireEvent.click(screen.getByRole('button', { name: 'Create' }))
 
       await waitFor(() => {
         expect(screen.getByText('Brand new routine')).toBeTruthy()
       })
 
-      // Form closes and resets after a successful create.
-      expect(screen.queryByRole('form', { name: 'Create routine' })).toBeNull()
+      // Modal closes after a successful create.
+      expect(screen.queryByRole('dialog', { name: 'New Routine' })).toBeNull()
 
       const postCall = mockedApiFetch.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === 'POST')
       expect(postCall).toBeDefined()
@@ -273,7 +279,7 @@ describe('Dashboard', () => {
       expect(postBody).toMatchObject({ name: 'Brand new routine', type: 'routine' })
     })
 
-    it('disables the routine submit button until a name is entered', async () => {
+    it('blocks creation and shows a validation error when the name is empty', async () => {
       mockTasksResponse(makeTasks())
       render(<Dashboard />)
 
@@ -282,14 +288,16 @@ describe('Dashboard', () => {
       })
 
       fireEvent.click(screen.getByRole('button', { name: 'New Routine' }))
-      const submit = screen.getByRole('button', { name: 'Create' })
-      expect(submit).toHaveProperty('disabled', true)
+      fireEvent.click(screen.getByRole('button', { name: 'Create' }))
 
-      fireEvent.change(screen.getByLabelText('Routine name'), { target: { value: 'Named' } })
-      expect(submit).toHaveProperty('disabled', false)
+      expect(screen.getByRole('alert').textContent).toContain('Name is required')
+      // No POST was made and the modal stays open.
+      const postCall = mockedApiFetch.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === 'POST')
+      expect(postCall).toBeUndefined()
+      expect(screen.getByRole('dialog', { name: 'New Routine' })).toBeTruthy()
     })
 
-    it('surfaces the server error and keeps the form open when creation fails', async () => {
+    it('surfaces the server error and keeps the modal open when creation fails', async () => {
       mockedApiFetch.mockImplementation(async (_url: string, init?: RequestInit) => {
         if (init?.method === 'POST') {
           return { ok: false, status: 400, json: async () => ({ error: 'Name already taken' }) } as Response
@@ -304,13 +312,13 @@ describe('Dashboard', () => {
       })
 
       fireEvent.click(screen.getByRole('button', { name: 'New Routine' }))
-      fireEvent.change(screen.getByLabelText('Routine name'), { target: { value: 'Dup Routine' } })
+      fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Dup Routine' } })
       fireEvent.click(screen.getByRole('button', { name: 'Create' }))
 
       await waitFor(() => {
         expect(screen.getByRole('alert').textContent).toContain('Name already taken')
       })
-      expect(screen.getByRole('form', { name: 'Create routine' })).toBeTruthy()
+      expect(screen.getByRole('dialog', { name: 'New Routine' })).toBeTruthy()
     })
   })
 

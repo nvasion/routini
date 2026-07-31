@@ -52,10 +52,37 @@ export interface User {
   createdAt: string
 }
 
+/**
+ * Model endpoints a coding agent can talk to. 'gateway' points Claude Code at
+ * a claude-code-model-gateway instance, which opens ALL endpoints behind one
+ * URL (mirror of server/src/types.ts).
+ */
+export type AIEndpoint =
+  | 'anthropic'
+  | 'openrouter'
+  | 'digitalocean'
+  | 'aws-bedrock'
+  | 'openai'
+  | 'google'
+  | 'azure'
+  | 'gateway'
+
+/** Per-coding-agent endpoint configuration. */
+export interface AgentEndpointConfig {
+  endpoint: AIEndpoint
+  model: string
+  /** Base URL of a claude-code-model-gateway instance; required when endpoint is 'gateway'. */
+  gatewayUrl?: string
+}
+
 export interface AISettings {
   provider: AIProvider | string
   model: string
   defaultAgentId: string
   /** True when an API key has been stored; the key itself is never returned by the server. */
   hasApiKey: boolean
+  /** Endpoint configuration per coding agent (claude / opencode / omnimancer). */
+  agents: Record<string, AgentEndpointConfig>
+  /** Which endpoints have an API key stored; the keys themselves are never returned. */
+  endpointKeys: Record<string, boolean>
 }
