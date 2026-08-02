@@ -153,10 +153,9 @@ four tabs and highlights whichever one matches the current route:
 All four are protected routes (see `App.tsx`'s `Protected` wrapper) — an unauthenticated visitor is
 redirected to `/login`, and any unmatched path redirects back to `/`.
 
-The Integrations tab currently renders a placeholder page (`IntegrationsPage.tsx`) — this task only
-wires up the Navbar entry and the `/integrations` route per the "Routini Integrations v1" PRD. The
-catalog grid fed by `GET /api/integrations`, the connect modal, and the test/disconnect actions are
-built out in follow-up tasks.
+The Integrations tab (`pages/Integrations.tsx`) renders the full catalog grid fed by
+`GET /api/integrations`; clicking a card opens `IntegrationModal`, which handles connect, live test,
+scoping, and disconnect — see "Integrations" below for the full feature writeup.
 
 ## Dashboard Layout
 
@@ -224,22 +223,27 @@ the task list either optimistically (via the modal's own save) or via the SSE `t
 
 ### Connecting an integration
 
-`IntegrationConnectModal` (`client/src/components/IntegrationConnectModal.tsx`) reuses the same
-`cm-overlay`/`cm-panel` chrome as `ConfigModal` — same dimmed backdrop, centered card, ✕/backdrop/
-`Escape` close affordances, and `cm-*` form styling — rather than duplicating it, via a small shared
-`FormControls.tsx` (`FormRow`/`FormStatus`) that both modals import. It renders one input per
-credential field defined on the `Integration` catalog entry (`client/src/types.ts`), a link to the
-provider's setup page (opens in a new tab), and a **Connect** (or **Save**, once already connected)
-button that persists via `PUT /api/integrations/:id`.
+`IntegrationModal` (`client/src/components/IntegrationModal.tsx`) reuses the same `cm-overlay`/
+`cm-panel` chrome as `ConfigModal` — same dimmed backdrop, centered card, ✕/backdrop/`Escape` close
+affordances, and `cm-*` form styling, plus `ConfigModal`'s exported `FormRow`/`FormStatus` pieces —
+rather than duplicating that layout. It renders one input per credential field defined on the
+`Integration` catalog entry (`client/src/types.ts`), a link to the provider's setup page (opens in a
+new tab), and a **Connect** (or **Save**, once already connected) button that persists via
+`PUT /api/integrations/:id`. This component is invoked by the `/integrations` catalog grid page
+(`pages/Integrations.tsx`) with the `Integration` the user clicked; it does not fetch the catalog
+itself.
 
 Credential fields are **write-only**: `GET /api/integrations` never returns a stored secret, so
 every field always starts blank, even when editing an already-connected integration. Saving only
-sends fields the user actually typed into (`integrationConnectModal.utils.ts`'s
-`buildConnectPayload`) — a field left blank keeps its stored value unchanged rather than being
-cleared. Client-side validation requires every `required` field to be filled in for a first-time
-connection, and requires at least one field to be filled in when editing an existing connection (to
-reject a no-op save). This component is invoked by the `/integrations` catalog grid page with the
-`Integration` the user clicked; it does not fetch the catalog itself.
+sends fields the user actually typed into — a field left blank keeps its stored value unchanged
+rather than being cleared, and the write-only fields are cleared from React state immediately after
+a successful save so plaintext credentials aren't held in memory longer than necessary.
+Client-side validation requires every field to be filled in for a first-time connection.
+
+Two other integration-connect components exist in the tree
+(`components/IntegrationConnectModal.tsx` and `components/IntegrationConnectionPanel.tsx`, with their
+own `.utils.ts` helpers) but are not currently mounted by any page — `IntegrationModal.tsx` above is
+the one actually reachable from `/integrations`.
 
 ### Search behavior across buckets
 
@@ -258,39 +262,6 @@ view (`.dashboard-buckets--focused`) instead renders a single full-width bucket.
 `TaskCard`s reflow using the same `auto-fill`/`minmax` grid pattern already used by `.task-grid`, so
 card width adapts smoothly between breakpoints.
 
-## Integrations
-
-Routini is adding an integrations catalog (GitHub, Slack, Jira, Notion, Linear, monday.com, HubSpot,
-and more) so tasks and coding-agent containers can use external tools via server-side, encrypted
-credentials rather than per-task secrets. The catalog page, the `/integrations` route/nav tab, and
-the connect modal (credential fields + setup links) are tracked separately; this repo currently ships
-the piece of that UI that applies to an **already-connected** integration:
-
-- **`client/src/components/IntegrationConnectionPanel.tsx`** — a content fragment (not a modal shell)
-  meant to be embedded inside the connect modal once `status: 'connected'`. It renders nothing for a
-  `not_connected` integration. It provides:
-  - **Test connection** — calls `POST /api/integrations/:id/test`, a server-side live provider check.
-    The button shows a busy state while in flight; the result (success/failure + any server-provided
-    message) and the persisted `lastTestAt` timestamp are displayed once the call resolves. A failed
-    call surfaces the server's error message inline rather than silently swallowing it.
-  - **Scoping panel** — checkboxes for allowed task types (`daily` / `developmental` / `routine`) and
-    allowed agents (`claude` / `opencode` / `omnimancer`), seeded from the integration's current
-    `scopes`. Saving calls `PUT /api/integrations/:id` with `{ scopes }` only — this UI is a
-    convenience; scoping is enforced **server-side** at agent-container spawn time, not just hidden
-    client-side.
-  - **Disconnect** — a two-step, in-UI confirmation (no `window.confirm`, for testability and
-    accessibility) before calling `DELETE /api/integrations/:id`, which removes the stored
-    credentials.
-- **`client/src/components/integrationConnectionPanel.utils.ts`** — the pure helpers backing the
-  panel (scope toggling, payload building, timestamp formatting), split out so they're testable
-  without React/JSX, mirroring the `configModal.utils.ts` pattern.
-- **`client/src/types.ts`** — adds `Integration`, `IntegrationStatus`, and `IntegrationScopes`. Like
-  every other client-visible task/settings type, `Integration` never carries secret values — the
-  credential store is write-only over the API (see "Credential Store" below).
-
-None of the three mutating calls above (`test`, scope `PUT`, `DELETE`) ever receive or display a
-credential value; they only exchange status metadata (`ok`, `message`, `lastTestAt`, `scopes`).
-
 ## Metrics Page
 
 `client/src/pages/MetricsPage.tsx` (`/metrics`) is a read-only view of task health at a glance. It
@@ -307,7 +278,7 @@ endpoints.
 ## Integrations
 
 `client/src/pages/Integrations.tsx` (`/integrations`) is a catalog grid of the external tools tasks
-and coding agents can connect to. v1 ships seven token/API-key integrations, each with its own
+and coding agents can connect to. v1 ships eight token/API-key integrations, each with its own
 credential field(s) and a link to the provider's token-generation page:
 
 | Integration | Credential fields | Setup page |
@@ -319,6 +290,7 @@ credential field(s) and a link to the provider's token-generation page:
 | Linear | API Key | linear.app API settings |
 | monday.com | API Token | monday.com developer apps |
 | HubSpot | Private App Token | HubSpot private-app docs |
+| Factory Nexus | API Key | app.factorynexus.com API key settings |
 
 Unlike openworker (the source of this catalog), Routini is a self-hosted, multi-user web service:
 there is no third-party OAuth broker for v1 — connecting is credentials-first, secrets are stored
@@ -349,12 +321,13 @@ layout, per the catalog's shared card/modal design:
 
 ### Test connection
 
-Test connection calls `POST /api/integrations/:id/test`, which performs a server-side live check
-against the provider using the already-stored credentials (GitHub `GET /user`, Slack `auth.test`,
-Jira `GET /rest/api/3/myself`, Notion `GET /v1/users/me`, Linear's `viewer` GraphQL query,
-monday.com's `me` GraphQL query, HubSpot account-info). The result (`lastTestOk` + `lastTestAt`) is
-persisted and flips the card's badge to **Error** on failure — it never accepts credentials in the
-request body, only reads what is already stored.
+Test connection calls `POST /api/integrations/:id/test`, which delegates to the single
+per-provider implementation in `server/src/services/integrationProviders.ts` and performs a
+server-side live check against the provider using the already-stored credentials (GitHub `GET /user`,
+Slack `auth.test`, Jira `GET /rest/api/3/myself`, Notion `GET /v1/users/me`, Linear's `viewer`
+GraphQL query, monday.com's `me` GraphQL query, HubSpot account-info, Factory Nexus `GET /v1/me`).
+The result (`lastTestOk` + `lastTestAt`) is persisted and flips the card's badge to **Error** on
+failure — it never accepts credentials in the request body, only reads what is already stored.
 
 ### Security
 
@@ -366,12 +339,15 @@ request body, only reads what is already stored.
   the same pattern used by `tasks.ts` and `credentials.ts`).
 - Jira's site URL is user-supplied, so the live-check runs it through the same SSRF guard used by
   the HTTP daily-task service (`https:`-only, no embedded credentials, private/loopback hostnames
-  and their resolved IPs rejected) before making the request. The other six providers use fixed,
+  and their resolved IPs rejected) before making the request. The other seven providers use fixed,
   hardcoded API hostnames, not user input.
 - Scoping (`taskTypes` / `agents`) is validated against a fixed enum and persisted server-side by
-  this API — it is not merely a client-side hidden field. Enforcing it at task/container-spawn time
-  (i.e. actually gating which running tasks or agent containers may read a given integration's
-  credentials) is part of a later execution and not yet wired into task execution.
+  this API — it is not merely a client-side hidden field. It is also enforced at task/container-spawn
+  time: `server/src/services/integrations.ts`'s `getScopedIntegrationEnv`, called from
+  `devTask.ts` on every developmental-task container spawn, only injects a connected integration's
+  credential as an env var when the running task's type and agent fall within that integration's
+  current scope — out-of-scope or disconnected integrations are silently omitted, never injected
+  with a placeholder value.
 - Non-secret status/scoping metadata (`connectedAt`, `lastTestAt`, `lastTestOk`, `scopes`) persists
   to sqlite via the `integration_metadata` table (see "Database Persistence" below) so it survives a
   restart; disconnecting removes both the stored credentials and this metadata row.
@@ -457,13 +433,13 @@ includes a credential value — see "Integrations" above for the full connect/te
 
 | Method | Endpoint | Notes |
 |--------|----------|-------|
-| `GET` | `/api/integrations` | Catalog (all 7 v1 integrations) + per-integration `{ status, connectedAt, lastTestAt, lastTestOk, scopes }` |
+| `GET` | `/api/integrations` | Catalog (all 8 v1 integrations) + per-integration `{ status, connectedAt, lastTestAt, lastTestOk, scopes }` |
 | `PUT` | `/api/integrations/:id` | Body: `{ credentials?: Record<field, string>, scopes?: { taskTypes?, agents? } }`. All credential fields are required on first connect; once connected, omitted fields keep their stored value and a scopes-only update is allowed. |
 | `POST` | `/api/integrations/:id/test` | Runs the provider's live health check using stored credentials; 400 if not yet connected. Persists `lastTestAt`/`lastTestOk`. |
 | `DELETE` | `/api/integrations/:id` | Disconnects: removes stored credentials and resets metadata to `not_connected` with default scopes. |
 
-`:id` is one of `github` / `slack` / `jira` / `notion` / `linear` / `monday` / `hubspot`; an unknown
-id 404s on every route.
+`:id` is one of `github` / `slack` / `jira` / `notion` / `linear` / `monday` / `hubspot` /
+`factoryNexus`; an unknown id 404s on every route.
 
 ## Environment Variables
 

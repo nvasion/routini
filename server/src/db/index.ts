@@ -458,3 +458,14 @@ export function deleteIntegrationMetadata(id: string): number {
   const result = getDb().prepare('DELETE FROM integration_metadata WHERE id = ?').run(id)
   return result.changes
 }
+
+/** List every persisted integration metadata row, ordered by id. */
+export function listIntegrationMetadata(): IntegrationMetadataRow[] {
+  return getDb()
+    .prepare(
+      `SELECT id, connected_at, last_test_at, last_test_ok, scope_task_types, scope_agents, updated_at
+       FROM integration_metadata
+       ORDER BY id`,
+    )
+    .all() as IntegrationMetadataRow[]
+}

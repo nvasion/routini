@@ -1,12 +1,11 @@
 import { describe, it, expect } from 'vitest'
 import {
   INTEGRATIONS,
-  INTEGRATION_IDS,
-  getIntegrationDefinition,
-  isIntegrationId,
-  credentialKey,
-  requiredCredentialFieldKeys,
-  defaultAllScopes,
+  VALID_TASK_TYPES,
+  VALID_AGENTS,
+  getIntegrationDef,
+  integrationCredentialKey,
+  testIntegrationConnection,
 } from './integrations.js'
 
 // A safe identifier: lowercase-start camelCase, letters/digits only. Field
@@ -15,12 +14,10 @@ import {
 // whitespace, or control characters.
 const SAFE_IDENTIFIER = /^[a-z][a-zA-Z0-9]*$/
 
-const TASK_TYPES = ['daily', 'developmental', 'routine']
-const AGENTS = ['claude', 'opencode', 'omnimancer']
-
 describe('integrations catalog', () => {
-  it('defines exactly the seven v1 integrations', () => {
-    expect(INTEGRATION_IDS).toEqual([
+  it('defines exactly the eight v1 integrations, in a stable order', () => {
+    const ids = INTEGRATIONS.map((i) => i.id)
+    expect(ids).toEqual([
       'github',
       'slack',
       'jira',
@@ -28,18 +25,17 @@ describe('integrations catalog', () => {
       'linear',
       'monday',
       'hubspot',
+      'factoryNexus',
     ])
-    expect(INTEGRATIONS).toHaveLength(7)
   })
 
-  it('has unique ids matching the catalog order', () => {
+  it('has unique ids', () => {
     const ids = INTEGRATIONS.map((i) => i.id)
     expect(new Set(ids).size).toBe(ids.length)
-    expect(ids).toEqual([...INTEGRATION_IDS])
   })
 
-  it.each(INTEGRATION_IDS)('%s has well-formed metadata', (id) => {
-    const def = getIntegrationDefinition(id)
+  it.each(INTEGRATIONS.map((def) => def.id))('%s has well-formed catalog metadata', (id) => {
+    const def = getIntegrationDef(id)
     expect(def).toBeDefined()
     if (!def) return
 
@@ -52,123 +48,98 @@ describe('integrations catalog', () => {
     expect(typeof def.description).toBe('string')
     expect(def.description.trim().length).toBeGreaterThan(0)
 
-    expect(typeof def.setupInstructions).toBe('string')
-    expect(def.setupInstructions.trim().length).toBeGreaterThan(0)
-
     // setupUrl must be a valid absolute https URL — it's rendered as a link
     // in the connect modal, so it must never be javascript:/data: etc.
     expect(() => new URL(def.setupUrl)).not.toThrow()
     expect(new URL(def.setupUrl).protocol).toBe('https:')
 
-    expect(Array.isArray(def.credentialFields)).toBe(true)
-    expect(def.credentialFields.length).toBeGreaterThan(0)
+    expect(Array.isArray(def.fields)).toBe(true)
+    expect(def.fields.length).toBeGreaterThan(0)
 
-    const fieldKeys = def.credentialFields.map((f) => f.key)
+    const fieldKeys = def.fields.map((f) => f.key)
     expect(new Set(fieldKeys).size).toBe(fieldKeys.length) // unique per integration
 
-    for (const field of def.credentialFields) {
+    for (const field of def.fields) {
       expect(SAFE_IDENTIFIER.test(field.key)).toBe(true)
       expect(field.label.trim().length).toBeGreaterThan(0)
-      expect(['text', 'password', 'url', 'email']).toContain(field.type)
-      expect(typeof field.required).toBe('boolean')
+      expect(typeof field.secret).toBe('boolean')
       // The catalog is pure metadata — it must never carry an actual secret
       // value alongside a field spec.
       expect(field).not.toHaveProperty('value')
-      expect(field).not.toHaveProperty('secret')
     }
-  })
-
-  it('every integration defaults to all task types and all agents', () => {
-    for (const def of INTEGRATIONS) {
-      expect([...def.defaultScopes.taskTypes].sort()).toEqual([...TASK_TYPES].sort())
-      expect([...def.defaultScopes.agents].sort()).toEqual([...AGENTS].sort())
-    }
-  })
-
-  it('defaultAllScopes returns a fresh object each call', () => {
-    const a = defaultAllScopes()
-    const b = defaultAllScopes()
-    expect(a).toEqual(b)
-    expect(a).not.toBe(b)
-    a.taskTypes.push('daily')
-    expect(b.taskTypes).toEqual(['daily', 'developmental', 'routine']) // unaffected by mutation of `a`
   })
 
   it('at least one integration requires more than a single field (Jira)', () => {
-    const jira = getIntegrationDefinition('jira')
-    expect(jira?.credentialFields.length).toBeGreaterThan(1)
-    expect(requiredCredentialFieldKeys('jira')).toEqual(
-      expect.arrayContaining(['siteUrl', 'email', 'apiToken']),
-    )
+    const jira = getIntegrationDef('jira')
+    expect(jira?.fields.length).toBeGreaterThan(1)
+    expect(jira?.fields.map((f) => f.key)).toEqual(['siteUrl', 'email', 'apiToken'])
+  })
+
+  it('Factory Nexus is registered with a single secret API key field', () => {
+    const factoryNexus = getIntegrationDef('factoryNexus')
+    expect(factoryNexus).toBeDefined()
+    expect(factoryNexus?.name).toBe('Factory Nexus')
+    expect(factoryNexus?.fields).toEqual([{ key: 'apiKey', label: 'API Key', secret: true }])
   })
 })
 
-describe('isIntegrationId', () => {
-  it('accepts every catalog id', () => {
-    for (const id of INTEGRATION_IDS) {
-      expect(isIntegrationId(id)).toBe(true)
-    }
-  })
-
-  it('rejects unknown strings, non-strings, and case variants', () => {
-    expect(isIntegrationId('github ')).toBe(false)
-    expect(isIntegrationId('GitHub')).toBe(false)
-    expect(isIntegrationId('gmail')).toBe(false) // later-execution integration, not v1
-    expect(isIntegrationId('')).toBe(false)
-    expect(isIntegrationId(undefined)).toBe(false)
-    expect(isIntegrationId(null)).toBe(false)
-    expect(isIntegrationId(42)).toBe(false)
-    expect(isIntegrationId({})).toBe(false)
+describe('VALID_TASK_TYPES / VALID_AGENTS', () => {
+  it('matches the scoping enums used elsewhere in the integrations feature', () => {
+    expect([...VALID_TASK_TYPES].sort()).toEqual(['daily', 'developmental', 'routine'])
+    expect([...VALID_AGENTS].sort()).toEqual(['claude', 'omnimancer', 'opencode'])
   })
 })
 
-describe('getIntegrationDefinition', () => {
+describe('getIntegrationDef', () => {
   it('returns undefined for an unknown id instead of throwing', () => {
-    expect(getIntegrationDefinition('not-a-real-integration')).toBeUndefined()
-    expect(getIntegrationDefinition('')).toBeUndefined()
+    expect(getIntegrationDef('not-a-real-integration')).toBeUndefined()
+    expect(getIntegrationDef('')).toBeUndefined()
   })
 
   it('returns the matching definition for each known id', () => {
-    for (const id of INTEGRATION_IDS) {
-      expect(getIntegrationDefinition(id)?.id).toBe(id)
+    for (const id of INTEGRATIONS.map((def) => def.id)) {
+      expect(getIntegrationDef(id)?.id).toBe(id)
     }
   })
 })
 
-describe('credentialKey', () => {
+describe('integrationCredentialKey', () => {
   it('builds the integration_<id>_<field> convention', () => {
-    expect(credentialKey('github', 'token')).toBe('integration_github_token')
-    expect(credentialKey('jira', 'siteUrl')).toBe('integration_jira_siteUrl')
-  })
-
-  it('throws for a field not declared on the integration', () => {
-    expect(() => credentialKey('github', 'botToken')).toThrow(/Unknown credential field/)
-  })
-
-  it('throws for an unknown integration id', () => {
-    // @ts-expect-error — deliberately passing an invalid id to exercise the guard
-    expect(() => credentialKey('not-a-real-integration', 'token')).toThrow(
-      /Unknown integration id/,
-    )
+    expect(integrationCredentialKey('github', 'token')).toBe('integration_github_token')
+    expect(integrationCredentialKey('jira', 'siteUrl')).toBe('integration_jira_siteUrl')
+    expect(integrationCredentialKey('factoryNexus', 'apiKey')).toBe('integration_factoryNexus_apiKey')
   })
 
   it('produces a distinct key per field for multi-field integrations', () => {
-    const keys = requiredCredentialFieldKeys('jira').map((f) => credentialKey('jira', f))
+    const jira = getIntegrationDef('jira')
+    const keys = (jira?.fields ?? []).map((f) => integrationCredentialKey('jira', f.key))
     expect(new Set(keys).size).toBe(keys.length)
   })
 })
 
-describe('requiredCredentialFieldKeys', () => {
-  it('returns only required fields, in declaration order', () => {
-    expect(requiredCredentialFieldKeys('github')).toEqual(['token'])
+describe('testIntegrationConnection', () => {
+  it('reports an unsupported-integration failure for an unknown id, without calling fetch', async () => {
+    const fetchImpl = () => {
+      throw new Error('should never be called')
+    }
+    const result = await testIntegrationConnection('bogus', {}, { fetchImpl })
+    expect(result.ok).toBe(false)
+    expect(result.message).toMatch(/Unsupported/)
   })
 
-  it('every declared field across the catalog is required in v1', () => {
-    // v1 has no optional credential fields; this guards against a future
-    // field being added as optional without updating validation logic that
-    // assumes requiredCredentialFieldKeys covers every field.
-    for (const def of INTEGRATIONS) {
-      expect(requiredCredentialFieldKeys(def.id)).toEqual(def.credentialFields.map((f) => f.key))
-    }
+  it('delegates to the shared provider test for every catalog id (Factory Nexus succeeds on 200)', async () => {
+    const fetchImpl = async () =>
+      ({ status: 200, json: async () => ({}) }) as unknown as Response
+    const result = await testIntegrationConnection('factoryNexus', { apiKey: 'fn_test_key' }, { fetchImpl })
+    expect(result.ok).toBe(true)
+  })
+
+  it('reports a Factory Nexus failure on a non-2xx status without leaking the key', async () => {
+    const fetchImpl = async () =>
+      ({ status: 401, json: async () => ({}) }) as unknown as Response
+    const result = await testIntegrationConnection('factoryNexus', { apiKey: 'super-secret-fn-key' }, { fetchImpl })
+    expect(result.ok).toBe(false)
+    expect(result.message).toMatch(/401/)
+    expect(JSON.stringify(result)).not.toContain('super-secret-fn-key')
   })
 })

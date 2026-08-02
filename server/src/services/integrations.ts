@@ -2,7 +2,8 @@
  * Integration credential scoping and container-env injection.
  *
  * Routini's v1 integrations (GitHub, Slack, Jira, Notion, Linear,
- * monday.com, HubSpot) are single-token, credentials-first connections: a
+ * monday.com, HubSpot, Factory Nexus) are single-token, credentials-first
+ * connections: a
  * user stores a token via the encrypted credential store and Routini
  * injects it into agent container spawns as an environment variable so the
  * task's coding agent (or scripted action) can call the provider's API.
@@ -35,7 +36,7 @@ import type { TaskType } from '../types.js'
 
 // ── Catalog ──────────────────────────────────────────────────────────────────
 
-/** The seven v1 token/API-key integrations. */
+/** The eight v1 token/API-key integrations. */
 export type IntegrationId =
   | 'github'
   | 'slack'
@@ -44,6 +45,7 @@ export type IntegrationId =
   | 'linear'
   | 'monday'
   | 'hubspot'
+  | 'factoryNexus'
 
 /**
  * All task types and agent ids that can ever appear in scope.  Mirrors
@@ -74,7 +76,7 @@ function defaultScope(): IntegrationScope {
   return { taskTypes: [...ALL_TASK_TYPES], agents: [...ALL_AGENT_IDS] }
 }
 
-/** The seven v1 integrations and the env var each one's token is injected as. */
+/** The eight v1 integrations and the env var each one's token is injected as. */
 export const INTEGRATIONS: Readonly<Record<IntegrationId, IntegrationDefinition>> = {
   github: { id: 'github', name: 'GitHub', envVar: 'GITHUB_TOKEN' },
   slack: { id: 'slack', name: 'Slack', envVar: 'SLACK_BOT_TOKEN' },
@@ -83,6 +85,7 @@ export const INTEGRATIONS: Readonly<Record<IntegrationId, IntegrationDefinition>
   linear: { id: 'linear', name: 'Linear', envVar: 'LINEAR_API_KEY' },
   monday: { id: 'monday', name: 'monday.com', envVar: 'MONDAY_TOKEN' },
   hubspot: { id: 'hubspot', name: 'HubSpot', envVar: 'HUBSPOT_TOKEN' },
+  factoryNexus: { id: 'factoryNexus', name: 'Factory Nexus', envVar: 'FACTORY_NEXUS_API_KEY' },
 }
 
 /** Type guard for the fixed integration-id union. */

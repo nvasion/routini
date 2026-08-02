@@ -57,8 +57,8 @@ const unsafeSsrf = async () => false
 // ── Registry ──────────────────────────────────────────────────────────────────
 
 describe('hasProviderTest', () => {
-  it('is true for all seven v1 catalog ids', () => {
-    for (const id of ['github', 'slack', 'jira', 'notion', 'linear', 'monday', 'hubspot']) {
+  it('is true for all eight v1 catalog ids', () => {
+    for (const id of ['github', 'slack', 'jira', 'notion', 'linear', 'monday', 'hubspot', 'factoryNexus']) {
       expect(hasProviderTest(id)).toBe(true)
     }
   })
@@ -166,10 +166,16 @@ describe('Jira', () => {
     expect(result.message).toMatch(/not a valid url/i)
   })
 
-  it('rejects a non-http(s) scheme', async () => {
+  it('rejects a non-https scheme', async () => {
     const result = await runProviderTest('jira', { ...creds, siteUrl: 'ftp://acme.atlassian.net' }, { ssrfCheck: safeSsrf })
     expect(result.ok).toBe(false)
-    expect(result.message).toMatch(/http or https/i)
+    expect(result.message).toMatch(/https/i)
+  })
+
+  it('rejects a plain http siteUrl (credentials would be sent in cleartext)', async () => {
+    const result = await runProviderTest('jira', { ...creds, siteUrl: 'http://acme.atlassian.net' }, { ssrfCheck: safeSsrf })
+    expect(result.ok).toBe(false)
+    expect(result.message).toMatch(/https/i)
   })
 
   it('rejects a site URL with embedded credentials', async () => {
@@ -184,7 +190,7 @@ describe('Jira', () => {
 
   it('rejects a loopback/private hostname before making any request', async () => {
     const fetchImpl = mockFetch(200, {})
-    const result = await runProviderTest('jira', { ...creds, siteUrl: 'http://localhost:8080' }, { fetchImpl, ssrfCheck: safeSsrf })
+    const result = await runProviderTest('jira', { ...creds, siteUrl: 'https://localhost:8080' }, { fetchImpl, ssrfCheck: safeSsrf })
     expect(result.ok).toBe(false)
     expect(result.message).toMatch(/not allowed/i)
     expect(fetchImpl).not.toHaveBeenCalled()
@@ -282,5 +288,41 @@ describe('HubSpot', () => {
   it('fails on 401', async () => {
     const result = await runProviderTest('hubspot', { token: 'bad' }, { fetchImpl: mockFetch(401) })
     expect(result.ok).toBe(false)
+  })
+})
+
+// ── Factory Nexus ────────────────────────────────────────────────────────────
+
+describe('Factory Nexus', () => {
+  it('succeeds on 200', async () => {
+    const result = await runProviderTest('factoryNexus', { apiKey: 'fn_x' }, { fetchImpl: mockFetch(200, { id: 'acct_1' }) })
+    expect(result.ok).toBe(true)
+  })
+
+  it('fails on 401 (bad key)', async () => {
+    const result = await runProviderTest('factoryNexus', { apiKey: 'bad' }, { fetchImpl: mockFetch(401) })
+    expect(result.ok).toBe(false)
+    expect(result.message).toMatch(/401/)
+  })
+
+  it('never includes the key in the result message', async () => {
+    const result = await runProviderTest('factoryNexus', { apiKey: 'super-secret-fn-key' }, { fetchImpl: mockFetch(401) })
+    expect(JSON.stringify(result)).not.toContain('super-secret-fn-key')
+  })
+
+  it('reports a network failure safely', async () => {
+    const result = await runProviderTest('factoryNexus', { apiKey: 'x' }, { fetchImpl: failingFetch(new Error('ECONNREFUSED')) })
+    expect(result.ok).toBe(false)
+    expect(result.message).toMatch(/network error/i)
+  })
+
+  it('reports a timeout', async () => {
+    const result = await runProviderTest(
+      'factoryNexus',
+      { apiKey: 'x' },
+      { fetchImpl: timingOutFetch(), timeoutMs: 20 },
+    )
+    expect(result.ok).toBe(false)
+    expect(result.message).toMatch(/timed out/i)
   })
 })

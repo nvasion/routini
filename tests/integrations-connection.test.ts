@@ -113,6 +113,23 @@ describe('testIntegrationConnection', () => {
     expect(result.ok).toBe(true)
   })
 
+  it('factoryNexus: reports ok on a successful /v1/me call', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(200, {}))
+    const result = await testIntegrationConnection('factoryNexus', { apiKey: 'fn_x' }, { fetchImpl })
+    expect(result.ok).toBe(true)
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://api.factorynexus.com/v1/me',
+      expect.objectContaining({ headers: expect.objectContaining({ Authorization: 'Bearer fn_x' }) }),
+    )
+  })
+
+  it('factoryNexus: reports failure with the response status on a 401', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(401, {}))
+    const result = await testIntegrationConnection('factoryNexus', { apiKey: 'bad' }, { fetchImpl })
+    expect(result.ok).toBe(false)
+    expect(result.message).toMatch(/401/)
+  })
+
   it('returns a failure result (not a throw) when fetch rejects', async () => {
     const fetchImpl = vi.fn().mockRejectedValue(new Error('network down'))
     const result = await testIntegrationConnection('github', { token: 'x' }, { fetchImpl })

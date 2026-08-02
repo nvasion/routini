@@ -2,10 +2,12 @@
 // Integrations API router
 //
 // Defines the v1 catalog of token/API-key integrations (GitHub, Slack, Jira,
-// Notion, Linear, monday.com, HubSpot) and exposes CRUD + live-test endpoints
-// over them. Consumers are Routini tasks and coding-agent containers — this
-// router only manages the server-side connection lifecycle (credentials,
-// scoping, connection status), not runtime injection into a running task.
+// Notion, Linear, monday.com, HubSpot, Factory Nexus) and exposes CRUD +
+// live-test endpoints over them. Consumers are Routini tasks and coding-agent
+// containers — this router only manages the server-side connection lifecycle
+// (credentials, scoping, connection status), not runtime injection into a
+// running task (see server/src/services/integrations.ts's
+// `getScopedIntegrationEnv`, called from devTask.ts, for that).
 //
 // Security properties:
 //   – Secrets are NEVER returned by any endpoint. PUT accepts credential
@@ -22,11 +24,14 @@
 //     accepted, values are non-empty bounded strings, and scoping values are
 //     restricted to the known task-type/agent enums — arbitrary keys/values
 //     are rejected with 400 rather than silently stored.
-//   – The Jira test check accepts a user-supplied site URL, so it is run
-//     through the same SSRF guard used by the HTTP daily-task service
-//     (https-only, no embedded credentials, private/loopback IPs blocked,
-//     post-DNS-resolution re-check). The other providers use fixed,
-//     hardcoded API hostnames, not user input.
+//   – The live provider check (POST /:id/test) delegates to
+//     server/src/services/integrationProviders.ts, the single implementation
+//     of each provider's health-check call, so the request-shaping and SSRF
+//     logic exists in exactly one place. The Jira check accepts a
+//     user-supplied site URL, so it is run through the same SSRF guard used
+//     by the HTTP daily-task service (https-only, no embedded credentials,
+//     private/loopback IPs blocked, post-DNS-resolution re-check). The other
+//     providers use fixed, hardcoded API hostnames, not user input.
 //   – Errors from provider test calls are wrapped with a generic message;
 //     the raw error (which could echo back a URL or header detail) is logged
 //     server-side only, and credential values are never logged.
@@ -45,7 +50,7 @@ import {
   deleteIntegrationMetadata,
   type IntegrationMetadataRow,
 } from '../db/index.js'
-import { isSsrfSafeHostname, resolvedIpIsSsrfSafe } from '../utils/network.js'
+import { hasProviderTest, runProviderTest, type FetchFn } from '../services/integrationProviders.js'
 
 export const integrationsRouter = Router()
 
@@ -126,6 +131,13 @@ export const INTEGRATIONS: readonly IntegrationDef[] = [
     setupUrl: 'https://developers.hubspot.com/docs/api/private-apps',
     fields: [{ key: 'token', label: 'Private App Token', secret: true }],
   },
+  {
+    id: 'factoryNexus',
+    name: 'Factory Nexus',
+    description: 'API key for Factory Nexus workflow orchestration and agent runs.',
+    setupUrl: 'https://app.factorynexus.com/settings/api-keys',
+    fields: [{ key: 'apiKey', label: 'API Key', secret: true }],
+  },
 ] as const
 
 const DEFAULT_SCOPES = {
@@ -140,8 +152,13 @@ export function getIntegrationDef(id: string): IntegrationDef | undefined {
   return INTEGRATIONS.find((def) => def.id === id)
 }
 
-/** Builds the credential-store key for a given integration field. */
-function credentialFieldKey(integrationId: string, fieldKey: string): string {
+/**
+ * Builds the `integration_<id>_<field>` credential-store key for a given
+ * integration field. Exported so callers outside this router (tests seeding
+ * connected state directly through the credential store) never have to
+ * duplicate the naming convention.
+ */
+export function integrationCredentialKey(integrationId: string, fieldKey: string): string {
   return `integration_${integrationId}_${fieldKey}`
 }
 
@@ -327,7 +344,7 @@ integrationsRouter.put('/:id', requireCsrf, (req: Request, res: Response) => {
 
   try {
     for (const [key, value] of Object.entries(validatedCreds)) {
-      saveCredential(null, credentialFieldKey(def.id, key), value)
+      saveCredential(null, integrationCredentialKey(def.id, key), value)
     }
   } catch (err) {
     // Never leak crypto/storage detail or the credential value to the client.
@@ -379,7 +396,7 @@ integrationsRouter.post('/:id/test', requireCsrf, async (req: Request, res: Resp
 
   const creds: Record<string, string> = {}
   for (const field of def.fields) {
-    const value = getCredentialSecret(null, credentialFieldKey(def.id, field.key))
+    const value = getCredentialSecret(null, integrationCredentialKey(def.id, field.key))
     if (value === undefined) {
       res.status(500).json({ error: 'Stored credentials are incomplete; reconnect the integration' })
       return
@@ -422,7 +439,7 @@ integrationsRouter.delete('/:id', requireCsrf, (req: Request, res: Response) => 
   }
 
   for (const field of def.fields) {
-    removeCredential(null, credentialFieldKey(def.id, field.key))
+    removeCredential(null, integrationCredentialKey(def.id, field.key))
   }
   deleteIntegrationMetadata(def.id)
 
@@ -432,143 +449,33 @@ integrationsRouter.delete('/:id', requireCsrf, (req: Request, res: Response) => 
 // ── Provider live-check implementations ───────────────────────────────────────
 
 /**
- * Injectable fetch signature, matching services/http.ts's FetchFn convention.
- * Uses `globalThis.Response` (the Fetch API response) rather than the bare
- * `Response` identifier, which in this file refers to express's Response
- * type imported above for the route handlers.
+ * Injectable fetch signature, matching services/integrationProviders.ts's
+ * `FetchFn` convention. Kept as a distinct exported alias (rather than a bare
+ * re-export) so this router's public type surface doesn't change shape for
+ * any external caller, even though the implementation now delegates entirely
+ * to integrationProviders.ts.
  */
-export type IntegrationFetchFn = (url: string, init: RequestInit) => Promise<globalThis.Response>
-
-interface UrlCheckResult {
-  valid: boolean
-  parsed?: URL
-  error?: string
-}
-
-/** Validates a user-supplied provider site URL (Jira) against SSRF-relevant rules. */
-function validateProviderUrl(rawUrl: string | undefined): UrlCheckResult {
-  if (!rawUrl || rawUrl.trim() === '') {
-    return { valid: false, error: 'siteUrl is required' }
-  }
-  let parsed: URL
-  try {
-    parsed = new URL(rawUrl.trim())
-  } catch {
-    return { valid: false, error: `siteUrl "${rawUrl}" is not a valid URL` }
-  }
-  if (parsed.protocol !== 'https:') {
-    return { valid: false, error: 'siteUrl must use https' }
-  }
-  if (parsed.username || parsed.password) {
-    return { valid: false, error: 'siteUrl must not contain embedded credentials' }
-  }
-  if (!isSsrfSafeHostname(parsed.hostname)) {
-    return { valid: false, error: `siteUrl hostname "${parsed.hostname}" is not allowed` }
-  }
-  return { valid: true, parsed }
-}
+export type IntegrationFetchFn = FetchFn
 
 /**
- * Performs the provider-specific live connection check. Exported (with
- * injectable fetch/SSRF-check) so it is unit-testable without real network
- * access; the router calls it with the default implementations.
+ * Performs the provider-specific live connection check. Thin dispatcher over
+ * server/src/services/integrationProviders.ts — the single implementation of
+ * each provider's request shape, response parsing, and (for Jira) SSRF
+ * guarding — so this router never re-implements that logic. Exported (with
+ * injectable fetch/SSRF-check passed straight through) so it stays
+ * unit-testable without real network access; the router below calls it with
+ * the default implementations.
  */
 export async function testIntegrationConnection(
   id: string,
   creds: Record<string, string>,
   options: { fetchImpl?: IntegrationFetchFn; ssrfCheck?: (hostname: string) => Promise<boolean> } = {},
 ): Promise<{ ok: boolean; message: string }> {
-  const fetchImpl = options.fetchImpl ?? (fetch as IntegrationFetchFn)
-  const ssrfCheck = options.ssrfCheck ?? resolvedIpIsSsrfSafe
-
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), 8000)
-
-  try {
-    switch (id) {
-      case 'github': {
-        const res = await fetchImpl('https://api.github.com/user', {
-          headers: { Authorization: `Bearer ${creds.token}`, 'User-Agent': 'Routini-Integrations/1.0' },
-          signal: controller.signal,
-        })
-        return res.ok ? { ok: true, message: 'Connected' } : { ok: false, message: `GitHub responded with ${res.status}` }
-      }
-      case 'slack': {
-        const res = await fetchImpl('https://slack.com/api/auth.test', {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${creds.botToken}` },
-          signal: controller.signal,
-        })
-        const body = (await res.json().catch(() => ({ ok: false }))) as { ok?: boolean; error?: string }
-        return body.ok
-          ? { ok: true, message: 'Connected' }
-          : { ok: false, message: body.error ? `Slack error: ${body.error}` : 'Slack auth.test failed' }
-      }
-      case 'jira': {
-        const urlCheck = validateProviderUrl(creds.siteUrl)
-        if (!urlCheck.valid || !urlCheck.parsed) {
-          return { ok: false, message: urlCheck.error ?? 'Invalid siteUrl' }
-        }
-        const safe = await ssrfCheck(urlCheck.parsed.hostname)
-        if (!safe) {
-          return { ok: false, message: 'siteUrl resolved to a private or disallowed address' }
-        }
-        const authHeader = 'Basic ' + Buffer.from(`${creds.email}:${creds.apiToken}`).toString('base64')
-        const res = await fetchImpl(`${urlCheck.parsed.origin}/rest/api/3/myself`, {
-          headers: { Authorization: authHeader },
-          signal: controller.signal,
-        })
-        return res.ok ? { ok: true, message: 'Connected' } : { ok: false, message: `Jira responded with ${res.status}` }
-      }
-      case 'notion': {
-        const res = await fetchImpl('https://api.notion.com/v1/users/me', {
-          headers: { Authorization: `Bearer ${creds.token}`, 'Notion-Version': '2022-06-28' },
-          signal: controller.signal,
-        })
-        return res.ok ? { ok: true, message: 'Connected' } : { ok: false, message: `Notion responded with ${res.status}` }
-      }
-      case 'linear': {
-        const res = await fetchImpl('https://api.linear.app/graphql', {
-          method: 'POST',
-          headers: { Authorization: creds.apiKey, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ query: '{ viewer { id } }' }),
-          signal: controller.signal,
-        })
-        if (!res.ok) return { ok: false, message: `Linear responded with ${res.status}` }
-        const body = (await res.json().catch(() => null)) as { data?: { viewer?: { id?: string } } } | null
-        return body?.data?.viewer?.id
-          ? { ok: true, message: 'Connected' }
-          : { ok: false, message: 'Linear viewer query failed' }
-      }
-      case 'monday': {
-        const res = await fetchImpl('https://api.monday.com/v2', {
-          method: 'POST',
-          headers: { Authorization: creds.apiToken, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ query: 'query { me { id } }' }),
-          signal: controller.signal,
-        })
-        if (!res.ok) return { ok: false, message: `monday.com responded with ${res.status}` }
-        const body = (await res.json().catch(() => null)) as { data?: { me?: { id?: string } } } | null
-        return body?.data?.me?.id
-          ? { ok: true, message: 'Connected' }
-          : { ok: false, message: 'monday.com me query failed' }
-      }
-      case 'hubspot': {
-        const res = await fetchImpl('https://api.hubapi.com/account-info/v3/details', {
-          headers: { Authorization: `Bearer ${creds.token}` },
-          signal: controller.signal,
-        })
-        return res.ok ? { ok: true, message: 'Connected' } : { ok: false, message: `HubSpot responded with ${res.status}` }
-      }
-      default:
-        return { ok: false, message: `Unsupported integration "${id}"` }
-    }
-  } catch (err) {
-    if (err instanceof Error && err.name === 'AbortError') {
-      return { ok: false, message: 'Connection test timed out' }
-    }
-    return { ok: false, message: 'Connection test failed' }
-  } finally {
-    clearTimeout(timer)
+  if (!hasProviderTest(id)) {
+    return { ok: false, message: `Unsupported integration "${id}"` }
   }
+  return runProviderTest(id, creds, {
+    fetchImpl: options.fetchImpl,
+    ssrfCheck: options.ssrfCheck,
+  })
 }

@@ -45,11 +45,11 @@ afterAll(() => {
 function row(overrides: Partial<IntegrationMetadataRow> = {}): IntegrationMetadataRow {
   return {
     id: 'github',
-    status: 'connected',
     connected_at: '2024-01-01T00:00:00.000Z',
     last_test_at: '2024-01-02T00:00:00.000Z',
     last_test_ok: 1,
-    scopes: JSON.stringify({ taskTypes: ['daily'], agents: ['claude'] }),
+    scope_task_types: JSON.stringify(['daily']),
+    scope_agents: JSON.stringify(['claude']),
     updated_at: '2024-01-02T00:00:00.000Z',
     ...overrides,
   }
@@ -70,19 +70,18 @@ describe('upsertIntegrationMetadata / getIntegrationMetadata', () => {
     upsertIntegrationMetadata(row())
     const found = getIntegrationMetadata('github')
     expect(found).toBeDefined()
-    expect(found!.status).toBe('connected')
     expect(found!.connected_at).toBe('2024-01-01T00:00:00.000Z')
     expect(found!.last_test_ok).toBe(1)
-    expect(JSON.parse(found!.scopes)).toEqual({ taskTypes: ['daily'], agents: ['claude'] })
+    expect(JSON.parse(found!.scope_task_types)).toEqual(['daily'])
+    expect(JSON.parse(found!.scope_agents)).toEqual(['claude'])
   })
 
   it('updates an existing row in place on conflict (no duplicate rows)', () => {
     upsertIntegrationMetadata(row())
     upsertIntegrationMetadata(
-      row({ status: 'error', last_test_ok: 0, updated_at: '2024-01-03T00:00:00.000Z' }),
+      row({ last_test_ok: 0, updated_at: '2024-01-03T00:00:00.000Z' }),
     )
     const found = getIntegrationMetadata('github')
-    expect(found!.status).toBe('error')
     expect(found!.last_test_ok).toBe(0)
     expect(found!.updated_at).toBe('2024-01-03T00:00:00.000Z')
     expect(listIntegrationMetadata().filter((r) => r.id === 'github')).toHaveLength(1)
@@ -90,9 +89,10 @@ describe('upsertIntegrationMetadata / getIntegrationMetadata', () => {
 
   it('stores null connected_at/last_test_at/last_test_ok for a never-tested integration', () => {
     upsertIntegrationMetadata(
-      row({ status: 'connected', connected_at: '2024-01-01T00:00:00.000Z', last_test_at: null, last_test_ok: null }),
+      row({ connected_at: null, last_test_at: null, last_test_ok: null }),
     )
     const found = getIntegrationMetadata('github')
+    expect(found!.connected_at).toBeNull()
     expect(found!.last_test_at).toBeNull()
     expect(found!.last_test_ok).toBeNull()
   })
@@ -146,7 +146,7 @@ describe('persistence across a simulated restart', () => {
     closeDb()
 
     try {
-      upsertIntegrationMetadata(row({ id: 'linear', status: 'connected' }))
+      upsertIntegrationMetadata(row({ id: 'linear' }))
       expect(getIntegrationMetadata('linear')).toBeDefined()
 
       // Simulate a process restart: close the connection and reopen from the
@@ -154,7 +154,7 @@ describe('persistence across a simulated restart', () => {
       closeDb()
       const reopened = getIntegrationMetadata('linear')
       expect(reopened).toBeDefined()
-      expect(reopened!.status).toBe('connected')
+      expect(reopened!.connected_at).toBe('2024-01-01T00:00:00.000Z')
     } finally {
       closeDb()
       delete process.env['ROUTINI_DB_PATH']

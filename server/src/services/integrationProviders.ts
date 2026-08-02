@@ -2,19 +2,20 @@
  * Integration provider health checks
  *
  * Implements the live "test connection" call for each of the v1 integration
- * providers (GitHub, Slack, Jira, Notion, Linear, monday.com, HubSpot). Each
- * check makes a single, cheap, read-only API call using the stored
- * credentials and reports whether the credentials are valid.
+ * providers (GitHub, Slack, Jira, Notion, Linear, monday.com, HubSpot,
+ * Factory Nexus). Each check makes a single, cheap, read-only API call using
+ * the stored credentials and reports whether the credentials are valid.
  *
  * These checks are invoked exclusively from the server (POST
- * /api/integrations/:id/test) — credentials never leave the server process.
+ * /api/integrations/:id/test, via server/src/routes/integrations.ts's
+ * `testIntegrationConnection`) — credentials never leave the server process.
  *
  * SECURITY:
  *   – Every provider except Jira calls a fixed, hard-coded first-party API
  *     host, so there is no user-controlled URL and therefore no SSRF surface.
  *   – Jira is the one exception: the user supplies `siteUrl` (their Atlassian
  *     site). It is validated the same way the HTTP daily-task service
- *     validates URLs (server/src/services/http.ts): http(s) only, no
+ *     validates URLs (server/src/services/http.ts): https only, no
  *     embedded credentials, and both the literal hostname and its resolved
  *     IP are checked against private/loopback ranges before the request is
  *     made (server/src/utils/network.ts).
@@ -180,8 +181,8 @@ async function testJira(
     return { ok: false, message: 'Jira site URL is not a valid URL' }
   }
 
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    return { ok: false, message: 'Jira site URL must use http or https' }
+  if (parsed.protocol !== 'https:') {
+    return { ok: false, message: 'Jira site URL must use https' }
   }
   if (parsed.username || parsed.password) {
     return { ok: false, message: 'Jira site URL must not contain embedded credentials' }
@@ -338,6 +339,32 @@ async function testHubspot(
   }
 }
 
+// ── Factory Nexus ─────────────────────────────────────────────────────────────
+
+async function testFactoryNexus(
+  creds: Record<string, string>,
+  ctx: ProviderTestContext,
+): Promise<ProviderTestResult> {
+  const fetchImpl = ctx.fetchImpl ?? (fetch as FetchFn)
+  try {
+    const { status } = await fetchJson(
+      fetchImpl,
+      'https://api.factorynexus.com/v1/me',
+      {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${creds['apiKey']}` },
+      },
+      ctx.timeoutMs,
+    )
+    if (isSuccessStatus(status)) {
+      return { ok: true, message: 'Factory Nexus API key is valid' }
+    }
+    return { ok: false, message: `Factory Nexus API returned status ${status}` }
+  } catch (err) {
+    return networkFailureResult('Factory Nexus', err)
+  }
+}
+
 // ── Registry ──────────────────────────────────────────────────────────────────
 
 type ProviderTestFn = (
@@ -353,6 +380,7 @@ const PROVIDER_TESTS: Readonly<Record<string, ProviderTestFn>> = {
   linear: testLinear,
   monday: testMonday,
   hubspot: testHubspot,
+  factoryNexus: testFactoryNexus,
 }
 
 /** Returns true when a live test implementation exists for the given integration id. */

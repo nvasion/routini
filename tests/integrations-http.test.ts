@@ -56,11 +56,11 @@ function seedConnectedJira() {
   saveCredential(null, integrationCredentialKey('jira', 'email'), 'ops@acme.example')
   upsertIntegrationMetadata({
     id: 'jira',
-    status: 'connected',
     connected_at: '2024-01-01T00:00:00.000Z',
     last_test_at: '2024-01-02T00:00:00.000Z',
     last_test_ok: 1,
-    scopes: JSON.stringify({ taskTypes: ['developmental'], agents: ['claude'] }),
+    scope_task_types: JSON.stringify(['developmental']),
+    scope_agents: JSON.stringify(['claude']),
     updated_at: '2024-01-02T00:00:00.000Z',
   })
 }
@@ -70,11 +70,11 @@ function seedConnectedGithub() {
   saveCredential(null, integrationCredentialKey('github', 'token'), 'ghp_supersecrettoken')
   upsertIntegrationMetadata({
     id: 'github',
-    status: 'connected',
     connected_at: '2024-01-01T00:00:00.000Z',
     last_test_at: null,
     last_test_ok: null,
-    scopes: JSON.stringify({ taskTypes: ['daily', 'routine'], agents: ['opencode'] }),
+    scope_task_types: JSON.stringify(['daily', 'routine']),
+    scope_agents: JSON.stringify(['opencode']),
     updated_at: '2024-01-01T00:00:00.000Z',
   })
 }
@@ -165,7 +165,7 @@ describe('DELETE /api/integrations/:id', () => {
     expect(getCredentialSecret(null, integrationCredentialKey('github', 'token'))).toBe(
       'ghp_supersecrettoken',
     )
-    expect(getIntegrationMetadata('github')?.status).toBe('connected')
+    expect(getIntegrationMetadata('github')?.connected_at).not.toBeNull()
   })
 
   it('returns 404 for an unknown integration id', async () => {
@@ -180,7 +180,7 @@ describe('DELETE /api/integrations/:id', () => {
     expect(getCredentialSecret(null, integrationCredentialKey('github', 'token'))).toBe(
       'ghp_supersecrettoken',
     )
-    expect(getIntegrationMetadata('github')?.status).toBe('connected')
+    expect(getIntegrationMetadata('github')?.connected_at).not.toBeNull()
   })
 })
 
