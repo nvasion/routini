@@ -7,7 +7,10 @@ FROM node:20-alpine
 WORKDIR /app
 
 COPY package.json package-lock.json* ./
-RUN npm install --ignore-scripts
+# --ignore-scripts skips arbitrary postinstall scripts (supply-chain hygiene),
+# but that also skips better-sqlite3's native binding download — rebuild it
+# explicitly so the credential store works inside the container.
+RUN npm install --ignore-scripts && npm rebuild better-sqlite3
 
 EXPOSE 3001
 

@@ -80,12 +80,44 @@ export interface User {
 
 // ── Settings ──────────────────────────────────
 
+/**
+ * Model endpoints a coding agent can talk to.
+ *
+ * 'gateway' is special: it points Claude Code at a claude-code-model-gateway
+ * instance (Anthropic-Messages-API proxy) via ANTHROPIC_BASE_URL, which opens
+ * ALL endpoints (anthropic, openai, openrouter, google, bedrock, azure,
+ * DigitalOcean inference, local) behind a single URL.
+ */
+export type AIEndpoint =
+  | 'anthropic'
+  | 'openrouter'
+  | 'digitalocean'
+  | 'aws-bedrock'
+  | 'openai'
+  | 'google'
+  | 'azure'
+  | 'gateway'
+
+/** Per-coding-agent endpoint configuration. */
+export interface AgentEndpointConfig {
+  /** Which endpoint this agent's model calls go to. */
+  endpoint: AIEndpoint
+  /** Model identifier understood by the chosen endpoint. */
+  model: string
+  /** Base URL of a claude-code-model-gateway instance; required when endpoint is 'gateway'. */
+  gatewayUrl?: string
+}
+
 export interface AISettings {
   provider: AIProvider | string
   model: string
   defaultAgentId: string
   /** True when an API key has been stored for the current provider; the key itself is never returned. */
   hasApiKey: boolean
+  /** Endpoint configuration per coding agent (claude / opencode / omnimancer). */
+  agents: Record<string, AgentEndpointConfig>
+  /** Which endpoints have an API key stored; the keys themselves are never returned. */
+  endpointKeys: Record<string, boolean>
 }
 
 /** Controls if and when email notifications are sent for task outcomes. */
