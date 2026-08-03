@@ -135,7 +135,7 @@ export function IntegrationConnectModal({ integration, onClose, onSaved }: Integ
             target="_blank"
             rel="noopener noreferrer"
           >
-<<<<<<< Updated upstream
+            Get a {integration.name} credential ↗
             Get a {integration.name} credential ↗
 =======
             {integration.setupLabel ?? 'Setup guide'} ↗
