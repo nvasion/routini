@@ -15,6 +15,9 @@ function makeIntegration(overrides: Partial<Integration> = {}): Integration {
   return {
     id: 'github',
     name: 'GitHub',
+    description: 'Fine-grained personal access token for repository access.',
+    setupUrl: 'https://github.com/settings/personal-access-tokens/new',
+    fields: [{ key: 'token', label: 'Personal Access Token', secret: true }],
     status: 'connected',
     connectedAt: '2026-01-01T00:00:00.000Z',
     lastTestAt: null,

@@ -66,12 +66,14 @@ describe('authentication', () => {
 // ── GET /api/integrations ─────────────────────────────────────────────────────
 
 describe('GET /api/integrations', () => {
-  it('returns all seven v1 integrations, not connected by default', async () => {
+  it('returns all eight v1 integrations, not connected by default', async () => {
     const res = await request.get('/api/integrations').set(auth())
     expect(res.status).toBe(200)
-    expect(res.body.integrations).toHaveLength(7)
+    expect(res.body.integrations).toHaveLength(8)
     const ids = res.body.integrations.map((i: { id: string }) => i.id).sort()
-    expect(ids).toEqual(['github', 'hubspot', 'jira', 'linear', 'monday', 'notion', 'slack'].sort())
+    expect(ids).toEqual(
+      ['factoryNexus', 'github', 'hubspot', 'jira', 'linear', 'monday', 'notion', 'slack'].sort(),
+    )
     for (const integration of res.body.integrations) {
       expect(integration.status).toBe('not_connected')
       expect(integration.connectedAt).toBeNull()

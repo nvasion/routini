@@ -110,7 +110,9 @@ export interface IntegrationField {
 
 export interface IntegrationScopes {
   taskTypes: TaskType[]
-  agents: string[]
+  // The server validates agents against the same closed set as AIProvider
+  // (server/src/routes/integrations.ts VALID_AGENTS), so the narrow type is safe.
+  agents: AIProvider[]
 }
 
 /**
@@ -124,6 +126,9 @@ export interface Integration {
   name: string
   description: string
   setupUrl: string
+  // Optional per-integration label for the setup link; the server does not
+  // send one yet, so consumers must fall back to a generic label.
+  setupLabel?: string
   fields: IntegrationField[]
   status: IntegrationStatus
   connectedAt: string | null

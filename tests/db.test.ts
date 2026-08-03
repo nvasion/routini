@@ -307,6 +307,7 @@ describe('integration metadata helpers', () => {
   it('stores and retrieves an integration metadata row', () => {
     upsertIntegrationMetadata({
       id: 'github',
+      connected_at: '2024-01-01T00:00:00.000Z',
       last_test_at: '2024-01-01T00:00:00.000Z',
       last_test_ok: 1,
       scope_task_types: JSON.stringify(['daily']),
@@ -322,14 +323,16 @@ describe('integration metadata helpers', () => {
   it('updates an existing row on conflict (upsert by id)', () => {
     upsertIntegrationMetadata({
       id: 'slack',
+      connected_at: '2024-01-01T00:00:00.000Z',
       last_test_at: '2024-01-01T00:00:00.000Z',
       last_test_ok: 0,
-      scope_task_types: null,
-      scope_agents: null,
+      scope_task_types: JSON.stringify([]),
+      scope_agents: JSON.stringify([]),
       updated_at: '2024-01-01T00:00:00.000Z',
     })
     upsertIntegrationMetadata({
       id: 'slack',
+      connected_at: '2024-01-01T00:00:00.000Z',
       last_test_at: '2024-02-01T00:00:00.000Z',
       last_test_ok: 1,
       scope_task_types: JSON.stringify(['routine']),
@@ -345,18 +348,20 @@ describe('integration metadata helpers', () => {
   it('lists all stored integration metadata rows ordered by id', () => {
     upsertIntegrationMetadata({
       id: 'notion',
+      connected_at: null,
       last_test_at: null,
       last_test_ok: null,
-      scope_task_types: null,
-      scope_agents: null,
+      scope_task_types: JSON.stringify([]),
+      scope_agents: JSON.stringify([]),
       updated_at: '2024-01-01T00:00:00.000Z',
     })
     upsertIntegrationMetadata({
       id: 'github',
+      connected_at: null,
       last_test_at: null,
       last_test_ok: null,
-      scope_task_types: null,
-      scope_agents: null,
+      scope_task_types: JSON.stringify([]),
+      scope_agents: JSON.stringify([]),
       updated_at: '2024-01-01T00:00:00.000Z',
     })
     const rows = listIntegrationMetadata()
@@ -366,10 +371,11 @@ describe('integration metadata helpers', () => {
   it('deletes a metadata row and reports rows removed', () => {
     upsertIntegrationMetadata({
       id: 'linear',
+      connected_at: null,
       last_test_at: null,
       last_test_ok: null,
-      scope_task_types: null,
-      scope_agents: null,
+      scope_task_types: JSON.stringify([]),
+      scope_agents: JSON.stringify([]),
       updated_at: '2024-01-01T00:00:00.000Z',
     })
     expect(deleteIntegrationMetadata('linear')).toBe(1)

@@ -25,7 +25,6 @@ function makeIntegration(overrides: Partial<Integration> = {}): Integration {
     description: 'Connect a fine-grained personal access token.',
     fields: [{ key: 'token', label: 'Personal Access Token', secret: true, required: true }],
     setupUrl: 'https://github.com/settings/personal-access-tokens/new',
-    setupLabel: 'Create a GitHub token',
     status: 'not_connected',
     connectedAt: null,
     lastTestAt: null,
@@ -46,7 +45,6 @@ function makeJiraIntegration(overrides: Partial<Integration> = {}): Integration 
       { key: 'apiToken', label: 'API Token', secret: true, required: true },
     ],
     setupUrl: 'https://id.atlassian.com/manage-profile/security/api-tokens',
-    setupLabel: 'Create a Jira API token',
     ...overrides,
   })
 }
@@ -70,7 +68,7 @@ describe('IntegrationConnectModal', () => {
       expect(screen.getByLabelText('Email')).toHaveProperty('value', '')
       expect(screen.getByLabelText('API Token')).toHaveProperty('value', '')
 
-      const link = screen.getByRole('link', { name: /Create a Jira API token/ })
+      const link = screen.getByRole('link', { name: /Get a Jira credential/ })
       expect(link.getAttribute('href')).toBe(integration.setupUrl)
       expect(link.getAttribute('target')).toBe('_blank')
       expect(link.getAttribute('rel')).toContain('noopener')

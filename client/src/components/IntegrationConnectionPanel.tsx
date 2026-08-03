@@ -20,7 +20,7 @@
  */
 
 import { useState } from 'react'
-import type { AIProvider, Integration, IntegrationScopes, TaskType } from '../types'
+import type { Integration, IntegrationScopes, TaskType } from '../types'
 import { apiFetch } from '../api'
 import {
   AGENT_SCOPE_OPTIONS,
@@ -111,7 +111,7 @@ export function IntegrationConnectionPanel({
 
   // ── Scoping panel ────────────────────────────────────────────────────────
   const [taskTypes, setTaskTypes] = useState<TaskType[]>(integration.scopes.taskTypes)
-  const [agents, setAgents] = useState<AIProvider[]>(integration.scopes.agents)
+  const [agents, setAgents] = useState<string[]>(integration.scopes.agents)
   const [scopesSaving, setScopesSaving] = useState(false)
   const [scopesError, setScopesError] = useState<string | null>(null)
   const [scopesSaved, setScopesSaved] = useState(false)
