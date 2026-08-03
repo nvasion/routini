@@ -52,12 +52,39 @@ export interface User {
   createdAt: string
 }
 
+/**
+ * Model endpoints a coding agent can talk to. 'gateway' points Claude Code at
+ * a claude-code-model-gateway instance, which opens ALL endpoints behind one
+ * URL (mirror of server/src/types.ts).
+ */
+export type AIEndpoint =
+  | 'anthropic'
+  | 'openrouter'
+  | 'digitalocean'
+  | 'aws-bedrock'
+  | 'openai'
+  | 'google'
+  | 'azure'
+  | 'gateway'
+
+/** Per-coding-agent endpoint configuration. */
+export interface AgentEndpointConfig {
+  endpoint: AIEndpoint
+  model: string
+  /** Base URL of a claude-code-model-gateway instance; required when endpoint is 'gateway'. */
+  gatewayUrl?: string
+}
+
 export interface AISettings {
   provider: AIProvider | string
   model: string
   defaultAgentId: string
   /** True when an API key has been stored; the key itself is never returned by the server. */
   hasApiKey: boolean
+  /** Endpoint configuration per coding agent (claude / opencode / omnimancer). */
+  agents: Record<string, AgentEndpointConfig>
+  /** Which endpoints have an API key stored; the keys themselves are never returned. */
+  endpointKeys: Record<string, boolean>
 }
 
 // ── Integrations ──────────────────────────────────────────────────
@@ -83,7 +110,9 @@ export interface IntegrationField {
 
 export interface IntegrationScopes {
   taskTypes: TaskType[]
-  agents: string[]
+  // The server validates agents against the same closed set as AIProvider
+  // (server/src/routes/integrations.ts VALID_AGENTS), so the narrow type is safe.
+  agents: AIProvider[]
 }
 
 /**
@@ -97,6 +126,9 @@ export interface Integration {
   name: string
   description: string
   setupUrl: string
+  // Optional per-integration label for the setup link; the server does not
+  // send one yet, so consumers must fall back to a generic label.
+  setupLabel?: string
   fields: IntegrationField[]
   status: IntegrationStatus
   connectedAt: string | null
