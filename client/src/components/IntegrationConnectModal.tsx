@@ -136,10 +136,7 @@ export function IntegrationConnectModal({ integration, onClose, onSaved }: Integ
             rel="noopener noreferrer"
           >
             Get a {integration.name} credential ↗
-            Get a {integration.name} credential ↗
-=======
             {integration.setupLabel ?? 'Setup guide'} ↗
->>>>>>> Stashed changes
           </a>
 
           {isReconnect && (
