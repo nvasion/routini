@@ -50,6 +50,8 @@ export interface EngineOptions {
   }
   /** Delay before a failed step is retried (ms). Default: 5s × attempt. */
   retryDelayMs?: (attempt: number) => number
+  /** Called when a step is found orphaned by a dead worker (e.g. to kill its container). */
+  onStepLost?: (run: Run, idx: number) => Promise<void>
   /** Called once when a run reaches a terminal status. */
   onRunFinished?: (run: Run) => Promise<void>
 }

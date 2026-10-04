@@ -13,11 +13,22 @@ import { addIdentity, addMembership, countUsers, createOrg, createUser, pruneRev
 import { runNotifier } from './engine/notify.js'
 import { Scheduler } from './engine/scheduler.js'
 import { Worker } from './engine/worker.js'
+import { agentExecutor, killStepContainers } from './engine/agent.js'
+import { DockerService } from './services/docker.js'
 
 export async function bootstrap(config: Config = loadConfig()): Promise<AppContext> {
   const db = await openDb({ databaseUrl: config.databaseUrl, dataDir: config.dataDir })
   const base = { config, db, box: createSecretBox(config.masterKey) }
-  const ctx = createContext(base, { onRunFinished: runNotifier(base) })
+  // Docker comes from DOCKER_HOST (local socket by default; ssh:// or tcp:// for a remote runner host).
+  const docker = new DockerService()
+  const ctx = createContext(base, {
+    executors: { agent: agentExecutor({ docker }) },
+    onStepLost: async (run, idx) => {
+      const killed = await killStepContainers(docker, run.id, idx)
+      if (killed) console.log(`[engine] removed ${killed} orphaned container(s) of run ${run.id} step ${idx}`)
+    },
+    onRunFinished: runNotifier(base),
+  })
   await seedFirstAccount(ctx)
   return ctx
 }

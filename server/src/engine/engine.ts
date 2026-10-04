@@ -176,6 +176,7 @@ export function createEngine(app: AppContext, opts: EngineOptions = {}): Engine 
       // Recover steps interrupted by a dead worker.
       for (const s of steps.filter((x) => x.status === 'running')) {
         const spec = run.jobSnapshot.steps[s.idx]!
+        await opts.onStepLost?.(run, s.idx).catch((err) => console.error('[engine] onStepLost failed:', (err as Error).message))
         await db.org(run.orgId, async (q) => {
           await appendEvent(q, run.orgId, run.id, 'log', { message: 'Worker lost while this step was running' }, s.idx)
           if (s.attempt <= spec.retries) await updateStep(q, run, s.idx, { status: 'pending', error: 'worker lost' })
