@@ -211,7 +211,9 @@ export function createAuth(ctx: AppContext): Auth {
     requireAuth,
     ah(async (req, res) => {
       const user = currentUser(req)
-      res.json({ user, orgs: publicMemberships(await listOrgsForUser(db, user.id)) })
+      // Cookie sessions get their CSRF token back so a new tab can make changes.
+      // Cross-origin pages cannot read this response (CORS), so this does not weaken CSRF protection.
+      res.json({ user, orgs: publicMemberships(await listOrgsForUser(db, user.id)), ...(req.csrfToken ? { csrfToken: req.csrfToken } : {}) })
     }),
   )
 

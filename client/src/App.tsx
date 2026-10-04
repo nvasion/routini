@@ -1,116 +1,90 @@
-/**
- * App root — sets up React Router and renders the appropriate page.
- *
- * Route structure:
- *   /login             — public login page (pages/Login.tsx)
- *   /                  — protected dashboard  (pages/Dashboard.tsx)
- *   /?bucket=<type>    — dashboard, drilled into a single bucket
- *                        (daily | developmental | routine). This is a query
- *                        parameter rather than a distinct <Route> because the
- *                        drill-in view is a display mode of the same
- *                        Dashboard page, not a different page — Dashboard
- *                        reads/writes it via the History API so the view is
- *                        bookmarkable and works with back/forward.
- *   /integrations      — protected integrations catalog (pages/Integrations.tsx)
- *   /settings          — protected AI settings (pages/Settings.tsx)
- *   *                  — redirect to /
- *
- * Session architecture:
- *   - The JWT is stored in an HTTP-only, SameSite=Strict cookie set by the
- *     server. It is never accessible to JavaScript, protecting it from XSS.
- *   - A CSRF token is returned in the login response body and stored in
- *     sessionStorage. It is injected as X-CSRF-Token on every state-changing
- *     request by apiFetch (Double-Submit Cookie pattern).
- *   - getToken() returns the CSRF token as an auth-presence proxy: it is set
- *     on login and cleared on logout, mirroring the cookie lifecycle.
- *   - Expired sessions are handled centrally in apiFetch: a 401 response
- *     clears the CSRF token and redirects to /login automatically.
- */
+import type { ReactNode } from 'react'
+import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom'
+import { AuthProvider, pickDefaultOrg, useAuth } from './lib/auth'
+import { ThemeProvider } from './lib/theme'
+import { DockWindow, OrgShell } from './shell/Shell'
+import { LoginPage } from './pages/LoginPage'
+import { InboxPage } from './pages/InboxPage'
+import { RunsPage } from './pages/RunsPage'
+import { RunPage } from './pages/RunPage'
+import { JobsPage } from './pages/JobsPage'
+import { JobEditorPage } from './pages/JobEditorPage'
+import { IntegrationsPage } from './pages/IntegrationsPage'
+import { SettingsPage } from './pages/SettingsPage'
 
-import React from 'react'
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
-import { Navbar } from './components/Navbar'
-import { Login } from './pages/Login'
-import { Dashboard } from './pages/Dashboard'
-import { MetricsPage } from './pages/MetricsPage'
-import { Integrations } from './pages/Integrations'
-import { Settings } from './pages/Settings'
-import { getToken } from './api'
-
-// ── Auth gate ─────────────────────────────────────────────────────────────────
-
-interface ProtectedProps {
-  children: React.ReactNode
+function RequireAuth({ children }: { children: ReactNode }) {
+  const { session, loading } = useAuth()
+  const location = useLocation()
+  if (loading) return <p className="muted" style={{ padding: 24 }}>Loading…</p>
+  if (!session) return <Navigate to="/login" replace state={{ from: location.pathname }} />
+  return <>{children}</>
 }
 
-/**
- * Wraps a page in an auth check. Redirects to /login when the CSRF token is
- * absent (meaning the user has not logged in or has logged out). The JWT itself
- * lives in an HTTP-only cookie and is never readable by JavaScript.
- * The Navbar is rendered inside protected routes so it appears on every
- * authenticated page without duplication in the route tree.
- */
-function Protected({ children }: ProtectedProps) {
-  if (!getToken()) {
-    return <Navigate to="/login" replace />
+function Home() {
+  const { session } = useAuth()
+  const org = session ? pickDefaultOrg(session.orgs) : undefined
+  if (!org) {
+    return (
+      <div className="auth-wrap">
+        <div className="card auth-card">You are not a member of any org yet. Ask an admin to add you.</div>
+      </div>
+    )
   }
+  return <Navigate to={`/o/${org.slug}/inbox`} replace />
+}
+
+export function AppRoutes() {
   return (
-    <>
-      <Navbar />
-      {children}
-    </>
+    <Routes>
+      <Route path="/login" element={<LoginPage />} />
+      <Route
+        path="/"
+        element={
+          <RequireAuth>
+            <Home />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/o/:org/dock"
+        element={
+          <RequireAuth>
+            <DockWindow />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/o/:org"
+        element={
+          <RequireAuth>
+            <OrgShell />
+          </RequireAuth>
+        }
+      >
+        <Route index element={<Navigate to="inbox" replace />} />
+        <Route path="inbox" element={<InboxPage />} />
+        <Route path="runs" element={<RunsPage />} />
+        <Route path="runs/:run" element={<RunPage />} />
+        <Route path="jobs" element={<JobsPage />} />
+        <Route path="jobs/new" element={<JobEditorPage />} />
+        <Route path="jobs/:id" element={<JobEditorPage />} />
+        <Route path="integrations" element={<IntegrationsPage />} />
+        <Route path="settings" element={<SettingsPage />} />
+        <Route path="settings/:tab" element={<SettingsPage />} />
+      </Route>
+      <Route path="*" element={<Navigate to="/" replace />} />
+    </Routes>
   )
 }
 
-// ── Root ──────────────────────────────────────────────────────────────────────
-
-function App() {
+export function App() {
   return (
-    <BrowserRouter>
-      <Routes>
-        <Route path="/login" element={<Login />} />
-
-        <Route
-          path="/"
-          element={
-            <Protected>
-              <Dashboard />
-            </Protected>
-          }
-        />
-
-        <Route
-          path="/metrics"
-          element={
-            <Protected>
-              <MetricsPage />
-            </Protected>
-          }
-        />
-
-        <Route
-          path="/integrations"
-          element={
-            <Protected>
-              <Integrations />
-            </Protected>
-          }
-        />
-
-        <Route
-          path="/settings"
-          element={
-            <Protected>
-              <Settings />
-            </Protected>
-          }
-        />
-
-        {/* Catch-all → redirect to dashboard */}
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
-    </BrowserRouter>
+    <ThemeProvider>
+      <AuthProvider>
+        <BrowserRouter>
+          <AppRoutes />
+        </BrowserRouter>
+      </AuthProvider>
+    </ThemeProvider>
   )
 }
-
-export default App

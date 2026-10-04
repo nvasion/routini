@@ -250,17 +250,17 @@ export async function runHttpTask(
       success: false,
       logs,
       statusCode,
-      error: `[task:${task.id}] Expected status ${expectedStatus}, got ${statusCode}`,
+      error: `Expected status ${expectedStatus}, got ${statusCode}`,
     }
   } catch (err) {
     if (err instanceof Error && err.name === 'AbortError') {
       const msg = `Request timed out after ${timeoutMs}ms`
       logs.push(msg)
-      return { success: false, logs, error: `[task:${task.id}] ${msg}` }
+      return { success: false, logs, error: `${msg}` }
     }
     const msg = err instanceof Error ? err.message : 'Unexpected HTTP error'
     logs.push(`Request failed: ${msg}`)
-    return { success: false, logs, error: `[task:${task.id}] ${msg}` }
+    return { success: false, logs, error: `${msg}` }
   } finally {
     clearTimeout(timer)
   }
