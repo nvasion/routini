@@ -66,6 +66,8 @@ export interface HttpRunnerOptions {
    * Pass `async () => true` to disable the check in unit tests.
    */
   ssrfCheck?: (hostname: string) => Promise<boolean>
+  /** Allow private and loopback targets (self-hosted installs only; see ssh.ts). */
+  allowPrivateHosts?: boolean
 }
 
 // ── URL validation ────────────────────────────────────────────────────────────
@@ -80,7 +82,7 @@ interface UrlInvalidResult {
 }
 type UrlValidation = UrlValidResult | UrlInvalidResult
 
-function validateHttpUrl(rawUrl: string): UrlValidation {
+function validateHttpUrl(rawUrl: string, allowPrivateHosts = false): UrlValidation {
   if (!rawUrl || typeof rawUrl !== 'string' || rawUrl.trim() === '') {
     return { valid: false, error: 'HTTP task config is missing required field: url' }
   }
@@ -103,7 +105,7 @@ function validateHttpUrl(rawUrl: string): UrlValidation {
     return { valid: false, error: 'url must not contain embedded credentials' }
   }
 
-  if (!isSsrfSafeHostname(parsed.hostname)) {
+  if (!allowPrivateHosts && !isSsrfSafeHostname(parsed.hostname)) {
     return {
       valid: false,
       error: `url hostname "${parsed.hostname}" is not allowed: private or loopback addresses are blocked`,
@@ -146,10 +148,10 @@ export async function runHttpTask(
   options: HttpRunnerOptions = {},
 ): Promise<HttpTaskResult> {
   const fetchImpl = options.fetchImpl ?? (fetch as FetchFn)
-  const ssrfCheck = options.ssrfCheck ?? resolvedIpIsSsrfSafe
+  const ssrfCheck = options.allowPrivateHosts ? async () => true : (options.ssrfCheck ?? resolvedIpIsSsrfSafe)
 
   // ── Validate URL ───────────────────────────────────────────────────────────
-  const urlCheck = validateHttpUrl(task.config['url'] ?? '')
+  const urlCheck = validateHttpUrl(task.config['url'] ?? '', options.allowPrivateHosts)
   if (!urlCheck.valid) {
     return { success: false, logs: [], error: urlCheck.error }
   }

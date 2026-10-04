@@ -99,6 +99,18 @@ export interface SshRunnerOptions {
    */
   ssrfCheck?: (hostname: string) => Promise<boolean>
   /**
+   * Allow private and loopback hosts. True for self-hosted installs, where the
+   * operator's servers live on their own network; false on the hosted service,
+   * where those addresses would reach Routini's infrastructure.
+   */
+  allowPrivateHosts?: boolean
+  /**
+   * Allow shell syntax (pipes, &&, $VAR, redirects) in the command. Commands
+   * are authored by org members for their own hosts, never assembled from
+   * untrusted input, so the engine enables this. Default false.
+   */
+  allowShellSyntax?: boolean
+  /**
    * Injectable credential resolver.  The default implementation checks the
    * encrypted credential store first and falls back to environment variables.
    * Pass a mock in unit tests to control the credential store without a DB.
@@ -236,13 +248,16 @@ interface SshConfigInvalidResult {
 }
 type SshConfigValidation = SshConfigValidResult | SshConfigInvalidResult
 
-function validateSshConfig(config: Record<string, string>): SshConfigValidation {
+function validateSshConfig(
+  config: Record<string, string>,
+  opts: { allowPrivateHosts?: boolean; allowShellSyntax?: boolean } = {},
+): SshConfigValidation {
   const host = config['host']?.trim()
   if (!host) {
     return { valid: false, error: 'SSH task config is missing required field: host' }
   }
 
-  if (!isSsrfSafeHostname(host)) {
+  if (!opts.allowPrivateHosts && !isSsrfSafeHostname(host)) {
     return {
       valid: false,
       error: `SSH host "${host}" is not allowed: private or loopback addresses are blocked`,
@@ -265,7 +280,7 @@ function validateSshConfig(config: Record<string, string>): SshConfigValidation 
     return { valid: false, error: 'SSH task config is missing required field: command' }
   }
 
-  const commandError = validateSshCommand(command)
+  const commandError = opts.allowShellSyntax ? null : validateSshCommand(command)
   if (commandError) {
     return { valid: false, error: commandError }
   }
@@ -287,10 +302,10 @@ export async function runSshTask(
   options: SshRunnerOptions = {},
 ): Promise<SshTaskResult> {
   const executor = options.executor ?? defaultExecutor
-  const ssrfCheck = options.ssrfCheck ?? resolvedIpIsSsrfSafe
+  const ssrfCheck = options.allowPrivateHosts ? async () => true : (options.ssrfCheck ?? resolvedIpIsSsrfSafe)
   const credentialProvider = options.credentialProvider ?? defaultCredentialProvider
 
-  const cfg = validateSshConfig(task.config)
+  const cfg = validateSshConfig(task.config, options)
   if (!cfg.valid) {
     return { success: false, logs: [], error: cfg.error }
   }

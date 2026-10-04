@@ -7,12 +7,29 @@ import type { Config } from '../config.js'
 import type { Db } from '../db/index.js'
 import type { SecretBox } from '../crypto/secrets.js'
 import type { Org, Role, User } from '../repos/identity.js'
+import { EventHub } from '../engine/hub.js'
+import { createEngine, type Engine } from '../engine/engine.js'
+import type { EngineOptions } from '../engine/types.js'
 
-/** Everything route factories need. Built once at boot (or per test). */
+/** Everything route factories and the engine need. Built once at boot (or per test). */
 export interface AppContext {
   config: Config
   db: Db
   box: SecretBox
+  hub: EventHub
+  engine: Engine
+  /** Test doubles for http/ssh/imap (shared by the engine and the host check). */
+  actions?: EngineOptions['actions']
+}
+
+export function createContext(
+  base: { config: Config; db: Db; box: SecretBox },
+  engineOpts: EngineOptions = {},
+): AppContext {
+  const ctx = { ...base, actions: engineOpts.actions } as AppContext
+  ctx.hub = new EventHub(base.db)
+  ctx.engine = createEngine(ctx, engineOpts)
+  return ctx
 }
 
 declare global {

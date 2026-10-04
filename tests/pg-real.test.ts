@@ -55,6 +55,61 @@ describe.skipIf(!url)('real Postgres (non-superuser owner)', () => {
     await again.close()
   })
 
+  it('two worker processes: cron fires once and the org concurrency cap holds', async () => {
+    // Two independent connection pools stand in for two processes.
+    const { createContext } = await import('../server/src/http/common')
+    const { loadConfig } = await import('../server/src/config')
+    const { Worker } = await import('../server/src/engine/worker')
+    const { schedulerTick } = await import('../server/src/engine/scheduler')
+    const { createJob } = await import('../server/src/repos/jobs')
+    const db2 = await openDb({ databaseUrl: url, dataDir: ':memory:' })
+    const config = loadConfig({ NODE_ENV: 'test' })
+    let running = 0
+    let peak = 0
+    const slow = {
+      async execute() {
+        running++
+        peak = Math.max(peak, running)
+        await new Promise((r) => setTimeout(r, 150))
+        running--
+        return { status: 'succeeded' as const }
+      },
+    }
+    const ctxA = createContext({ config, db, box }, { executors: { agent: slow } })
+    const ctxB = createContext({ config, db: db2, box }, { executors: { agent: slow } })
+    await db.query(`UPDATE orgs SET limits = '{"maxConcurrentRuns": 1}' WHERE id = $1`, [a])
+
+    const job = await db.org(a, (q) =>
+      createJob(q, a, null, {
+        name: 'cron',
+        description: '',
+        enabled: true,
+        trigger: { kind: 'cron', expr: '* * * * *', tz: 'UTC' },
+        steps: [{ id: 's', name: 's', kind: 'agent', when: 'on_success', retries: 0, config: { agent: 'claude', prompt: 'x' } }],
+      }),
+    )
+    const due = new Date(new Date(job.nextRunAt!).getTime() + 1000)
+    const fired = await Promise.all([schedulerTick(db, due), schedulerTick(db2, due)])
+    expect(fired.sort()).toEqual([0, 1])
+
+    // Two more runs, then drain with both workers at once: never more than one at a time.
+    const { createRun } = await import('../server/src/repos/runs')
+    await db.org(a, (q) => createRun(q, job, { kind: 'manual', userId: '00000000-0000-0000-0000-000000000000' }))
+    await db.org(a, (q) => createRun(q, job, { kind: 'manual', userId: '00000000-0000-0000-0000-000000000000' }))
+    const wA = new Worker(ctxA, ctxA.engine, { heartbeatMs: 20 })
+    const wB = new Worker(ctxB, ctxB.engine, { heartbeatMs: 20 })
+    await Promise.all([wA.drain(), wB.drain()])
+    for (let i = 0; i < 100; i++) {
+      const rows = await db.system((q) => q.query<{ status: string }>(`SELECT status FROM runs WHERE org_id = $1`, [a]))
+      if (rows.every((r) => r.status === 'succeeded')) break
+      await Promise.all([wA.drain(), wB.drain()])
+    }
+    const statuses = await db.system((q) => q.query<{ status: string }>(`SELECT status FROM runs WHERE org_id = $1`, [a]))
+    expect(statuses.map((s) => s.status)).toEqual(['succeeded', 'succeeded', 'succeeded'])
+    expect(peak).toBe(1)
+    await db2.close()
+  }, 60_000)
+
   it('delivers NOTIFY to listeners', async () => {
     const got: string[] = []
     const stop = await db.listen('routini_test_chan', (p) => got.push(p))

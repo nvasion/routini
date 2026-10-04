@@ -19,7 +19,7 @@ export interface CredentialMeta {
 export const MAX_SECRET_LEN = 64 * 1024
 export const CREDENTIAL_KEY_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/
 /** Key prefixes owned by other features; the generic credentials API may not write them. */
-export const RESERVED_PREFIXES = ['integration.', 'ai.'] as const
+export const RESERVED_PREFIXES = ['integration.', 'ai.', 'webhook.'] as const
 
 const aad = (orgId: string, key: string) => `${orgId}:${key}`
 const iso = (v: Date | string) => (v instanceof Date ? v.toISOString() : new Date(v).toISOString())

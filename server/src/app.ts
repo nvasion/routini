@@ -13,6 +13,10 @@ import { loadOrg } from './http/orgContext.js'
 import { orgCollectionRouter, orgRouter } from './routes/orgs.js'
 import { settingsRouter } from './routes/settings.js'
 import { integrationsRouter } from './routes/integrations.js'
+import { jobsRouter } from './routes/jobs.js'
+import { runsRouter } from './routes/runs.js'
+import { hostsRouter } from './routes/hosts.js'
+import { hooksRouter } from './routes/hooks.js'
 import type { ProviderTestContext } from './integrations/providers.js'
 
 export interface AppOptions {
@@ -24,6 +28,9 @@ export function createApp(ctx: AppContext, opts: AppOptions = {}): Express {
   const app = express()
   app.disable('x-powered-by')
   app.set('trust proxy', 1) // behind nginx / a load balancer: rate limits key on the client IP
+
+  // Webhooks verify signatures over the raw body, so they mount before the JSON parser.
+  app.use('/api/hooks', hooksRouter(ctx))
 
   // Credentials (cookies) require an explicit origin; '*' is not allowed.
   app.use(cors({ origin: ctx.config.clientUrl, credentials: true }))
@@ -52,6 +59,9 @@ export function createApp(ctx: AppContext, opts: AppOptions = {}): Express {
   org.use(orgRouter(ctx))
   org.use(settingsRouter(ctx))
   org.use(integrationsRouter(ctx, opts.providerCtx))
+  org.use(jobsRouter(ctx))
+  org.use(runsRouter(ctx))
+  org.use(hostsRouter(ctx))
   app.use('/api/orgs/:org', auth.requireAuth, auth.requireCsrf, org)
 
   app.get('/health', (_req, res) => {

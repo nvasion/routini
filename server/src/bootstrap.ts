@@ -1,20 +1,48 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// Boot-time setup: open the database, build the app context, seed the first
-// account. Shared by index.ts (API) and, from M2, worker.ts.
+// Boot-time setup shared by the API (index.ts) and the worker (worker.ts):
+// open the database, build the app context, seed the first account, and start
+// the background engine (scheduler + queue worker) when asked to.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import bcrypt from 'bcryptjs'
 import { loadConfig, type Config } from './config.js'
 import { openDb } from './db/index.js'
 import { createSecretBox } from './crypto/secrets.js'
-import type { AppContext } from './http/common.js'
-import { addIdentity, addMembership, countUsers, createOrg, createUser } from './repos/identity.js'
+import { createContext, type AppContext } from './http/common.js'
+import { addIdentity, addMembership, countUsers, createOrg, createUser, pruneRevokedTokens } from './repos/identity.js'
+import { runNotifier } from './engine/notify.js'
+import { Scheduler } from './engine/scheduler.js'
+import { Worker } from './engine/worker.js'
 
 export async function bootstrap(config: Config = loadConfig()): Promise<AppContext> {
   const db = await openDb({ databaseUrl: config.databaseUrl, dataDir: config.dataDir })
-  const ctx: AppContext = { config, db, box: createSecretBox(config.masterKey) }
+  const base = { config, db, box: createSecretBox(config.masterKey) }
+  const ctx = createContext(base, { onRunFinished: runNotifier(base) })
   await seedFirstAccount(ctx)
   return ctx
+}
+
+export interface Background {
+  stop(): Promise<void>
+}
+
+/** Starts the scheduler, the queue worker, and token housekeeping. */
+export async function startBackground(ctx: AppContext): Promise<Background> {
+  const worker = new Worker(ctx, ctx.engine, { concurrency: Number(process.env['ROUTINI_WORKER_CONCURRENCY'] ?? 4) })
+  const scheduler = new Scheduler(ctx.db)
+  await worker.start()
+  scheduler.start()
+  const prune = setInterval(() => {
+    pruneRevokedTokens(ctx.db).catch(() => {})
+  }, 60 * 60 * 1000)
+  console.log(`[engine] worker ${worker.id} and scheduler started`)
+  return {
+    async stop() {
+      clearInterval(prune)
+      await scheduler.stop()
+      await worker.stop()
+    },
+  }
 }
 
 /**

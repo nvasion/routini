@@ -130,6 +130,139 @@ CREATE TABLE org_settings (
 SELECT routini_tenant('org_settings');
 `,
   },
+  {
+    version: 2,
+    name: 'engine: hosts, jobs, runs, steps, events, approvals, queue',
+    sql: `
+-- Fleet inventory. SSH steps reference a host; its secret lives in credentials.
+CREATE TABLE hosts (
+  id             uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  org_id         uuid NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  name           text NOT NULL CHECK (name ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$'),
+  host_group     text NOT NULL DEFAULT '' CHECK (length(host_group) <= 60),
+  address        text NOT NULL CHECK (length(address) BETWEEN 1 AND 253),
+  port           integer NOT NULL DEFAULT 22 CHECK (port BETWEEN 1 AND 65535),
+  username       text NOT NULL CHECK (length(username) BETWEEN 1 AND 64),
+  auth           text NOT NULL DEFAULT 'key' CHECK (auth IN ('key', 'password')),
+  credential_key text,
+  tags           text[] NOT NULL DEFAULT '{}',
+  last_check     jsonb,
+  created_at     timestamptz NOT NULL DEFAULT now(),
+  updated_at     timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (org_id, name)
+);
+SELECT routini_tenant('hosts');
+
+CREATE TABLE jobs (
+  id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  org_id      uuid NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  name        text NOT NULL CHECK (length(name) BETWEEN 1 AND 120),
+  description text NOT NULL DEFAULT '',
+  trigger     jsonb NOT NULL,
+  steps       jsonb NOT NULL,
+  enabled     boolean NOT NULL DEFAULT true,
+  next_run_at timestamptz,
+  created_by  uuid REFERENCES users(id) ON DELETE SET NULL,
+  created_at  timestamptz NOT NULL DEFAULT now(),
+  updated_at  timestamptz NOT NULL DEFAULT now(),
+  archived_at timestamptz
+);
+CREATE INDEX jobs_org_idx ON jobs (org_id) WHERE archived_at IS NULL;
+CREATE INDEX jobs_due_idx ON jobs (next_run_at) WHERE enabled AND archived_at IS NULL AND next_run_at IS NOT NULL;
+SELECT routini_tenant('jobs');
+
+-- Per-org run numbers (#1, #2, …).
+CREATE TABLE run_counters (
+  org_id uuid PRIMARY KEY REFERENCES orgs(id) ON DELETE CASCADE,
+  value  integer NOT NULL
+);
+SELECT routini_tenant('run_counters');
+
+CREATE TABLE runs (
+  id               uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  org_id           uuid NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  job_id           uuid NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+  number           integer NOT NULL,
+  status           text NOT NULL CHECK (status IN ('queued', 'running', 'waiting', 'succeeded', 'failed', 'canceled')),
+  trigger          jsonb NOT NULL,
+  job_snapshot     jsonb NOT NULL,
+  cost_usd         numeric(12, 6) NOT NULL DEFAULT 0,
+  agent_seconds    integer NOT NULL DEFAULT 0,
+  error            text,
+  cancel_requested boolean NOT NULL DEFAULT false,
+  created_at       timestamptz NOT NULL DEFAULT now(),
+  started_at       timestamptz,
+  finished_at      timestamptz,
+  updated_at       timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (org_id, number)
+);
+CREATE INDEX runs_org_created_idx ON runs (org_id, number DESC);
+CREATE INDEX runs_org_status_idx ON runs (org_id, status);
+CREATE INDEX runs_job_idx ON runs (job_id, number DESC);
+SELECT routini_tenant('runs');
+
+CREATE TABLE run_steps (
+  run_id      uuid NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+  org_id      uuid NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  idx         integer NOT NULL,
+  step_id     text NOT NULL,
+  name        text NOT NULL,
+  kind        text NOT NULL,
+  status      text NOT NULL CHECK (status IN ('pending', 'running', 'waiting', 'succeeded', 'failed', 'skipped', 'canceled')),
+  attempt     integer NOT NULL DEFAULT 0,
+  output      jsonb,
+  error       text,
+  started_at  timestamptz,
+  finished_at timestamptz,
+  PRIMARY KEY (run_id, idx)
+);
+SELECT routini_tenant('run_steps');
+
+-- Append-only; the source of truth for timelines and SSE (id = Last-Event-ID).
+CREATE TABLE run_events (
+  id       bigserial PRIMARY KEY,
+  org_id   uuid NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  run_id   uuid NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+  step_idx integer,
+  ts       timestamptz NOT NULL DEFAULT now(),
+  type     text NOT NULL,
+  data     jsonb NOT NULL DEFAULT '{}'::jsonb
+);
+CREATE INDEX run_events_run_idx ON run_events (run_id, id);
+SELECT routini_tenant('run_events');
+
+CREATE TABLE approvals (
+  id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  org_id       uuid NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  run_id       uuid NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+  step_idx     integer NOT NULL,
+  status       text NOT NULL CHECK (status IN ('pending', 'approved', 'denied', 'canceled')),
+  message      text NOT NULL,
+  min_role     text NOT NULL DEFAULT 'member',
+  requested_at timestamptz NOT NULL DEFAULT now(),
+  decided_by   uuid REFERENCES users(id) ON DELETE SET NULL,
+  decided_at   timestamptz,
+  comment      text,
+  UNIQUE (run_id, step_idx)
+);
+CREATE INDEX approvals_pending_idx ON approvals (org_id) WHERE status = 'pending';
+SELECT routini_tenant('approvals');
+
+-- One row = "advance this run". Claimed with FOR UPDATE SKIP LOCKED under a lease.
+CREATE TABLE queue (
+  id           bigserial PRIMARY KEY,
+  org_id       uuid NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  run_id       uuid NOT NULL UNIQUE REFERENCES runs(id) ON DELETE CASCADE,
+  available_at timestamptz NOT NULL DEFAULT now(),
+  locked_by    text,
+  locked_until timestamptz,
+  attempts     integer NOT NULL DEFAULT 0,
+  created_at   timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX queue_ready_idx ON queue (available_at);
+SELECT routini_tenant('queue');
+`,
+  },
 ]
 
 /** Grants the app role access to everything a migration created. Runs after every migration. */

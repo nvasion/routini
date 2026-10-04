@@ -24,7 +24,10 @@ const MIN_EXACT_LEN = 6
 
 export function redact(text: string, knownSecrets: Iterable<string> = []): string {
   let out = text
-  const exact = [...knownSecrets].filter((s) => s.length >= MIN_EXACT_LEN).sort((a, b) => b.length - a.length)
+  // Output is usually logged line by line, so a multi-line secret (a PEM key)
+  // must also be redacted one line at a time.
+  const pieces = [...knownSecrets].flatMap((s) => (s.includes('\n') ? [s, ...s.split(/\r?\n/).map((l) => l.trim())] : [s]))
+  const exact = [...new Set(pieces)].filter((s) => s.length >= MIN_EXACT_LEN && !/^-----(BEGIN|END) /.test(s)).sort((a, b) => b.length - a.length)
   for (const s of exact) out = out.split(s).join('[REDACTED]')
   for (const [re, rep] of SECRET_PATTERNS) out = out.replace(re, rep)
   return out

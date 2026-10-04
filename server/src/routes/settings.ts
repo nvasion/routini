@@ -74,7 +74,7 @@ export function settingsRouter(ctx: AppContext): Router {
       throw badRequest((err as Error).message)
     }
     if (RESERVED_PREFIXES.some((p) => key.startsWith(p))) {
-      throw badRequest(`Keys starting with ${RESERVED_PREFIXES.join(' or ')} are managed by Integrations and Settings`)
+      throw badRequest(`Keys starting with ${RESERVED_PREFIXES.join(' or ')} are managed by Routini (integrations, settings and webhooks)`)
     }
     return key
   }

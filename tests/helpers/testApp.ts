@@ -8,7 +8,8 @@ import { createMigratedSnapshot } from '../../server/src/db/drivers'
 import { migrate } from '../../server/src/db/migrations'
 import { createSecretBox } from '../../server/src/crypto/secrets'
 import { createApp } from '../../server/src/app'
-import type { AppContext } from '../../server/src/http/common'
+import { createContext, type AppContext } from '../../server/src/http/common'
+import type { EngineOptions } from '../../server/src/engine/types'
 import type { ProviderTestContext } from '../../server/src/integrations/providers'
 
 export const TEST_MASTER_KEY = '00'.repeat(32)
@@ -42,13 +43,13 @@ export interface TestUser {
 }
 
 export async function makeTestApp(
-  opts: { config?: Partial<Config>; providerCtx?: ProviderTestContext; dataDir?: string } = {},
+  opts: { config?: Partial<Config>; providerCtx?: ProviderTestContext; dataDir?: string; engine?: EngineOptions } = {},
 ): Promise<TestApp> {
   const config: Config = { ...loadConfig({ NODE_ENV: 'test' }), signup: 'open', ...opts.config }
   const db = opts.dataDir
     ? await openDb({ dataDir: opts.dataDir })
     : await openDb({ dataDir: ':memory:', snapshot: await migratedSnapshot() })
-  const ctx: AppContext = { config, db, box: createSecretBox(TEST_MASTER_KEY) }
+  const ctx: AppContext = createContext({ config, db, box: createSecretBox(TEST_MASTER_KEY) }, { retryDelayMs: () => 0, ...opts.engine })
   const app = createApp(ctx, { providerCtx: opts.providerCtx })
   const request = supertest(app)
 
@@ -56,7 +57,10 @@ export async function makeTestApp(
     ctx,
     app,
     request: supertest.agent(app),
-    close: () => db.close(),
+    close: async () => {
+      await ctx.hub.stop()
+      await db.close()
+    },
     async signup(email, extra = {}) {
       const res = await request.post('/api/auth/signup').send({ email, password: 'password123', ...extra })
       if (res.status !== 201) throw new Error(`signup failed: ${res.status} ${JSON.stringify(res.body)}`)
