@@ -1,15 +1,21 @@
-// Server entry point — delegates all app setup to app.ts so that
-// tests can import the configured app without starting a real listener.
+// API server entry point.
 
-import { app } from './app.js'
+import { bootstrap } from './bootstrap.js'
+import { createApp } from './app.js'
 
-const PORT = process.env.PORT ?? 3001
+const ctx = await bootstrap()
+const app = createApp(ctx)
+const server = app.listen(ctx.config.port, () => {
+  const store = ctx.config.databaseUrl ? 'Postgres' : `embedded Postgres (${ctx.config.dataDir})`
+  console.log(`Routini API on http://localhost:${ctx.config.port} · ${store} · ${ctx.config.mode}`)
+})
 
-// Skip listen() in test environments so supertest can bind its own port.
-if (process.env.NODE_ENV !== 'test') {
-  app.listen(PORT, () => {
-    console.log(`Server running on http://localhost:${PORT}`)
+const shutdown = (signal: string) => {
+  console.log(`[server] ${signal}: shutting down`)
+  server.close(() => {
+    ctx.db.close().finally(() => process.exit(0))
   })
+  setTimeout(() => process.exit(1), 10_000).unref()
 }
-
-export { app }
+process.on('SIGINT', () => shutdown('SIGINT'))
+process.on('SIGTERM', () => shutdown('SIGTERM'))

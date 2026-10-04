@@ -5,7 +5,7 @@
  * response status matches an expected value.  Intended for "check that my
  * dashboard / health endpoint is responding" style daily tasks.
  *
- * Configuration (from DailyTask.config — non-secret only):
+ * Configuration (from ActionTask.config — non-secret only):
  *   url            – full URL to fetch (required)
  *   method         – HTTP method; default "GET"
  *   expectedStatus – expected HTTP status code as a string; default "200"
@@ -19,16 +19,16 @@
  *   – The hostname is resolved via DNS and the resulting IP is re-checked
  *     against private/loopback ranges (resolvedIpIsSsrfSafe) to mitigate
  *     basic DNS rebinding attacks.
- *   – Redirects to private addresses cannot be blocked with native fetch; the
- *     service sets redirect: 'follow' with a cap of 5 redirects via the
- *     fetchImpl abstraction so tests can verify redirect behaviour.
+ *   – Redirects are never followed (redirect: 'manual'): native fetch cannot
+ *     re-check a redirect target against the SSRF guard, so a 3xx is reported
+ *     as the response status instead.
  *   – No credentials are accepted in the URL (user:pass@host is rejected).
  *   – Response bodies are truncated to MAX_BODY_PREVIEW_CHARS to avoid
  *     excessive memory use.
  */
 
 import { resolvedIpIsSsrfSafe, isSsrfSafeHostname } from '../utils/network.js'
-import type { DailyTask } from '../types.js'
+import type { ActionTask } from './actionTypes.js'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -138,11 +138,11 @@ function parseHeaders(raw: string | undefined): Record<string, string> | null {
  * Performs the HTTP request configured in `task.config` and returns the
  * result as logs plus status/success metadata.
  *
- * @param task     The DailyTask record (must have actionType === 'http').
+ * @param task     The ActionTask record (must have actionType === 'http').
  * @param options  Optional overrides for testing.
  */
 export async function runHttpTask(
-  task: DailyTask,
+  task: ActionTask,
   options: HttpRunnerOptions = {},
 ): Promise<HttpTaskResult> {
   const fetchImpl = options.fetchImpl ?? (fetch as FetchFn)
@@ -208,10 +208,12 @@ export async function runHttpTask(
       method,
       signal: controller.signal,
       headers: {
-        'User-Agent': 'Routini-DailyTask/1.0',
+        'User-Agent': 'Routini-ActionTask/1.0',
         ...(extraHeaders ?? {}),
       },
-      redirect: 'follow',
+      // Never follow redirects: a public URL could bounce the request to an internal
+      // address after the SSRF guard has passed. 3xx is reported as the status.
+      redirect: 'manual',
     }
 
     if (body && ['POST', 'PUT', 'PATCH'].includes(method)) {

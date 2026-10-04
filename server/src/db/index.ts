@@ -1,460 +1,62 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// SQLite database module
+// Database bootstrap and tenancy facade
 //
-// Provides a singleton better-sqlite3 connection plus idempotent schema
-// creation and migrations.  Used by the auth routes, the credential store
-// service, and any module that needs durable persistence.
-//
-// Configuration:
-//   ROUTINI_DB_PATH – path to the database file.  Defaults to a file under
-//     the working directory in production/development.  Set to ":memory:"
-//     (the default in test environments) for an ephemeral in-process database.
-//
-// Design notes:
-//   – better-sqlite3 is used directly; there is no ORM.  All queries are
-//     parameterised to prevent SQL injection.
-//   – The connection is synchronous (better-sqlite3 is not async), which
-//     keeps the call sites simple and avoids callback/promise overhead for
-//     short-lived statements.
-//   – WAL mode is enabled for file-backed databases to improve concurrency
-//     and durability; it is a no-op for in-memory databases.
-//   – Table creation is idempotent (CREATE TABLE IF NOT EXISTS) so the module
-//     can be imported repeatedly without error.
-//   – A lightweight migration runner applies additive migrations guarded by
-//     a `schema_migrations` ledger so they run exactly once.
+// openDb() picks the driver (DATABASE_URL → node-postgres, otherwise embedded
+// PGlite), applies migrations as the owner, then returns a Db whose org() /
+// system() helpers set the row-level-security context per transaction.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import Database from 'better-sqlite3'
-import type { Database as BetterSqlite3Database } from 'better-sqlite3'
-import { mkdirSync } from 'node:fs'
-import { dirname, isAbsolute, resolve } from 'node:path'
+import { createPgDriver, createPgliteDriver, openPglite, withOwnerClient } from './drivers.js'
+import { migrate } from './migrations.js'
+import type { Db, Driver, Queryable } from './types.js'
 
-// ── Types ────────────────────────────────────────────────────────────────────
+export type { Db, Queryable } from './types.js'
 
-/** A user row as stored in the `users` table. */
-export interface UserRow {
-  id: string
-  email: string
-  password_hash: string
-  created_at: string
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+export interface OpenDbOptions {
+  databaseUrl?: string
+  /** PGlite data directory, or ':memory:'. Ignored when databaseUrl is set. */
+  dataDir: string
+  /** In-memory PGlite only: start from this dumped data directory (tests clone a migrated snapshot). */
+  snapshot?: Blob | File
 }
 
-/** A revoked-JWT row as stored in the `revoked_jwts` table. */
-export interface RevokedJwtRow {
-  jti: string
-  expires_at: string
-}
-
-/** A credential row as stored in the `credentials` table. */
-export interface CredentialRow {
-  /** Stable identifier derived from (user_id, key); null user_id → "system". */
-  id: string
-  user_id: string | null
-  key: string
-  /** AES-256-GCM ciphertext, base64-encoded. */
-  encrypted_value: string
-  /** Per-record nonce + auth tag, base64-encoded. */
-  iv: string
-  created_at: string
-  updated_at: string
-}
-
-/**
- * Non-secret metadata for one catalog integration, as stored in the
- * `integration_metadata` table. The credential values themselves live in the
- * encrypted `credentials` table (see server/src/routes/integrations.ts).
- */
-export interface IntegrationMetadataRow {
-  /** Catalog integration id, e.g. "github". */
-  id: string
-  /** ISO timestamp of first successful connect, or null when never connected. */
-  connected_at: string | null
-  /** ISO timestamp of the most recent connection test, or null when untested. */
-  last_test_at: string | null
-  /** 1 = last test passed, 0 = last test failed, null = never tested. */
-  last_test_ok: number | null
-  /** JSON-encoded array of allowed TaskType values. */
-  scope_task_types: string
-  /** JSON-encoded array of allowed agent ids. */
-  scope_agents: string
-  updated_at: string
-}
-
-// ── Database path resolution ──────────────────────────────────────────────────
-
-const MEMORY_PATH = ':memory:'
-
-/**
- * Resolve the database path from the environment.
- *
- * - In test environments (`NODE_ENV === 'test'`) the default is `:memory:`
- *   so every test process gets an isolated, ephemeral database that requires
- *   no filesystem cleanup.
- * - Otherwise the default is `./data/routini.db` relative to the process
- *   working directory.  Production deployments override this with
- *   `ROUTINI_DB_PATH` pointing at a persisted volume.
- *
- * The special value `:memory:` always selects an in-memory database.
- */
-function resolveDbPath(): string {
-  const envPath = process.env['ROUTINI_DB_PATH']
-  if (envPath && envPath.trim() !== '') {
-    return envPath.trim()
+export async function openDb(opts: OpenDbOptions): Promise<Db> {
+  if (opts.databaseUrl) {
+    await withOwnerClient(opts.databaseUrl, (q) => migrate(q))
+    return createDbFacade(createPgDriver(opts.databaseUrl))
   }
-  if (process.env['NODE_ENV'] === 'test') {
-    return MEMORY_PATH
-  }
-  return resolve('data/routini.db')
-}
-
-// ── Schema ────────────────────────────────────────────────────────────────────
-
-const SCHEMA_V1 = `
--- Application users.  "id" is a UUID string generated by the auth layer.
-CREATE TABLE IF NOT EXISTS users (
-  id            TEXT PRIMARY KEY,
-  email         TEXT NOT NULL UNIQUE,
-  password_hash TEXT NOT NULL,
-  created_at    TEXT NOT NULL
-);
-
--- Revoked JWT identifiers.  A row is inserted on logout so that the token
--- remains invalid even if it has not yet expired.  Expired entries are
--- pruned periodically by pruneRevokedJwts().
-CREATE TABLE IF NOT EXISTS revoked_jwts (
-  jti        TEXT PRIMARY KEY,
-  expires_at TEXT NOT NULL
-);
-
--- Revoked JWT identifiers written by the auth route's SQLite repository
--- (server/src/routes/auth.ts).  It records the revocation time (revoked_at)
--- rather than the token expiry, and is the table the live logout flow reads
--- and writes via createDbRepository().
-CREATE TABLE IF NOT EXISTS revoked_tokens (
-  jti        TEXT PRIMARY KEY,
-  revoked_at TEXT NOT NULL
-);
-
--- Encrypted credential store.  Secrets (SSH keys, SMTP/IMAP passwords, AI
--- API keys, …) are encrypted at rest with AES-256-GCM by the credentials
--- service; only the ciphertext and nonce are persisted here.
-CREATE TABLE IF NOT EXISTS credentials (
-  id              TEXT PRIMARY KEY,
-  user_id         TEXT,
-  key             TEXT NOT NULL,
-  encrypted_value TEXT NOT NULL,
-  iv              TEXT NOT NULL,
-  created_at      TEXT NOT NULL,
-  updated_at      TEXT NOT NULL,
-  UNIQUE (user_id, key)
-);
-`
-
-// Non-secret status/scoping metadata for catalog integrations (see
-// server/src/routes/integrations.ts). Secrets never live here — only in the
-// `credentials` table above, under keys of the form `integration_<id>_<field>`.
-const SCHEMA_V2 = `
-CREATE TABLE IF NOT EXISTS integration_metadata (
-  id                TEXT PRIMARY KEY,
-  connected_at      TEXT,
-  last_test_at      TEXT,
-  last_test_ok      INTEGER,
-  scope_task_types  TEXT NOT NULL DEFAULT '[]',
-  scope_agents      TEXT NOT NULL DEFAULT '[]',
-  updated_at        TEXT NOT NULL
-);
-`
-
-// ── Migrations ────────────────────────────────────────────────────────────────
-
-interface Migration {
-  version: number
-  description: string
-  sql: string
-}
-
-/**
- * Additive migrations.  Each entry must be safe to apply to a database that
- * already has the previous schema (idempotent SQL is preferred).  They run
- * exactly once, recorded in the `schema_migrations` ledger.
- */
-const MIGRATIONS: Migration[] = [
-  {
-    version: 1,
-    description: 'Initial schema: users, revoked_jwts, revoked_tokens, credentials',
-    sql: SCHEMA_V1,
-  },
-  {
-    version: 2,
-    description: 'Add integration_metadata table for the Integrations tab',
-    sql: SCHEMA_V2,
-  },
-]
-
-// ── Connection management ─────────────────────────────────────────────────────
-
-let dbInstance: BetterSqlite3Database | null = null
-
-/**
- * Open (or return the existing) database connection.
- *
- * For file-backed databases the parent directory is created if missing and
- * WAL mode is enabled for better durability and read concurrency.  The
- * foreign-key and recursive-triggers pragmas are turned on for correctness.
- */
-export function getDb(): BetterSqlite3Database {
-  if (dbInstance) {
-    return dbInstance
-  }
-
-  const dbPath = resolveDbPath()
-
-  // Ensure the parent directory exists for file-backed databases.
-  if (dbPath !== MEMORY_PATH) {
-    const dir = dirname(dbPath)
-    try {
-      // mkdirSync with recursive is idempotent; throws only on permission
-      // errors.  Guard against path traversal via absolute-path normalisation.
-      const resolvedDir = isAbsolute(dir) ? dir : resolve(dir)
-      mkdirSync(resolvedDir, { recursive: true })
-    } catch (err) {
-      // Surface the failure with context rather than silently degrading to
-      // an in-memory database, which would hide a real misconfiguration.
-      throw new Error(
-        `Unable to create database directory: ${(err as Error).message}`,
-      )
-    }
-  }
-
-  const db = new Database(dbPath)
-
-  // Recommended pragmas for better-sqlite3.  WAL is a no-op on :memory: but
-  // safe to set unconditionally.
-  db.pragma('journal_mode = WAL')
-  db.pragma('foreign_keys = ON')
-  db.pragma('recursive_triggers = ON')
-
-  // Apply schema + migrations.
-  migrate(db)
-
-  dbInstance = db
-  return db
-}
-
-/**
- * Run all pending migrations inside a transaction.  Migrations are tracked
- * in the `schema_migrations` ledger so each is applied at most once.
- */
-function migrate(db: BetterSqlite3Database): void {
-  // Ledger table must exist before we read from it.
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS schema_migrations (
-      version     INTEGER PRIMARY KEY,
-      description TEXT NOT NULL,
-      applied_at  TEXT NOT NULL
-    );
-  `)
-
-  const applied = new Set(
-    db
-      .prepare<unknown[], { version: number }>('SELECT version FROM schema_migrations')
-      .all()
-      .map((row) => row.version),
-  )
-
-  const apply = db.transaction((toApply: Migration[]) => {
-    const recordLedger = db.prepare(
-      'INSERT INTO schema_migrations (version, description, applied_at) VALUES (?, ?, ?)',
-    )
-    for (const m of toApply) {
-      db.exec(m.sql)
-      recordLedger.run(m.version, m.description, new Date().toISOString())
-    }
+  const lite = await openPglite(opts.dataDir, opts.snapshot)
+  await migrate({
+    query: async (sql, params) => (await lite.query(sql, params as unknown[])).rows as never[],
+    exec: async (sql) => {
+      await lite.exec(sql)
+    },
   })
+  return createDbFacade(await createPgliteDriver(lite))
+}
 
-  const pending = MIGRATIONS.filter((m) => !applied.has(m.version)).sort(
-    (a, b) => a.version - b.version,
-  )
+export function createDbFacade(driver: Driver): Db {
+  const scoped = <T>(orgId: string | null, system: boolean, fn: (q: Queryable) => Promise<T>) =>
+    driver.transaction(async (q) => {
+      await q.query(
+        `SELECT set_config('app.org_id', $1, true), set_config('app.system', $2, true)`,
+        [orgId ?? '', system ? 'on' : 'off'],
+      )
+      return fn(q)
+    })
 
-  if (pending.length > 0) {
-    apply(pending)
+  return {
+    embedded: driver.embedded,
+    query: (sql, params) => scoped(null, false, (q) => q.query(sql, params)),
+    tx: (fn) => scoped(null, false, fn),
+    org: (orgId, fn) => {
+      if (!UUID_RE.test(orgId)) return Promise.reject(new Error('db.org() requires an org UUID'))
+      return scoped(orgId, false, fn)
+    },
+    system: (fn) => scoped(null, true, fn),
+    listen: (channel, handler) => driver.listen(channel, handler),
+    close: () => driver.close(),
   }
-}
-
-/**
- * Close the database connection.  Intended for tests and graceful shutdown.
- * After calling this, getDb() opens a fresh connection on next use.
- */
-export function closeDb(): void {
-  if (dbInstance) {
-    dbInstance.close()
-    dbInstance = null
-  }
-}
-
-/**
- * Reset the singleton.  In test environments this is used to obtain a fresh
- * in-memory database between suites.  Outside test environments it throws to
- * prevent accidental data loss on a production database.
- */
-export function resetDb(): void {
-  if (process.env['NODE_ENV'] !== 'test') {
-    throw new Error('resetDb() may only be called in test environments')
-  }
-  closeDb()
-  // Re-open immediately so subsequent getDb() callers get a fresh instance
-  // with a clean schema.
-  getDb()
-}
-
-// ── Convenience accessors ─────────────────────────────────────────────────────
-
-// These thin helpers keep SQL in one place and centralise parameterisation,
-// making it easy for callers to avoid raw-SQL mistakes.
-
-/** Insert or replace a user row (used by the auth layer to seed users). */
-export function upsertUser(row: UserRow): void {
-  getDb()
-    .prepare(
-      `INSERT INTO users (id, email, password_hash, created_at)
-       VALUES (@id, @email, @password_hash, @created_at)
-       ON CONFLICT(id) DO UPDATE SET
-         email = @email,
-         password_hash = @password_hash`,
-    )
-    .run(row)
-}
-
-/** Look up a user by id.  Returns undefined when not found. */
-export function getUserById(id: string): UserRow | undefined {
-  return getDb()
-    .prepare('SELECT id, email, password_hash, created_at FROM users WHERE id = ?')
-    .get(id) as UserRow | undefined
-}
-
-/** Look up a user by email.  Returns undefined when not found. */
-export function getUserByEmail(email: string): UserRow | undefined {
-  return getDb()
-    .prepare('SELECT id, email, password_hash, created_at FROM users WHERE email = ?')
-    .get(email) as UserRow | undefined
-}
-
-/** Record a revoked JWT id.  Idempotent: duplicate jtis are ignored. */
-export function revokeJwt(jti: string, expiresAt: string): void {
-  getDb()
-    .prepare(
-      `INSERT INTO revoked_jwts (jti, expires_at) VALUES (?, ?)
-       ON CONFLICT(jti) DO NOTHING`,
-    )
-    .run(jti, expiresAt)
-}
-
-/** Return true when the given jti has been revoked. */
-export function isJwtRevoked(jti: string): boolean {
-  const row = getDb()
-    .prepare('SELECT 1 FROM revoked_jwts WHERE jti = ?')
-    .get(jti) as { 1?: number } | undefined
-  return row !== undefined
-}
-
-/** Delete revoked-JWT rows whose expiry has already passed. */
-export function pruneRevokedJwts(now: string = new Date().toISOString()): number {
-  const result = getDb()
-    .prepare('DELETE FROM revoked_jwts WHERE expires_at < ?')
-    .run(now)
-  return result.changes
-}
-
-/** Insert or replace a credential row, keyed by the natural (user_id, key). */
-export function upsertCredential(row: CredentialRow): void {
-  getDb()
-    .prepare(
-      `INSERT INTO credentials (id, user_id, key, encrypted_value, iv, created_at, updated_at)
-       VALUES (@id, @user_id, @key, @encrypted_value, @iv, @created_at, @updated_at)
-       ON CONFLICT(user_id, key) DO UPDATE SET
-         id = @id,
-         encrypted_value = @encrypted_value,
-         iv = @iv,
-         updated_at = @updated_at`,
-    )
-    .run(row)
-}
-
-/**
- * Compute a deterministic id for a credential from its natural key.  Used so
- * upserts and lookups share a stable identifier without callers having to
- * invent one.  `null` user_id maps to the "system" scope.
- */
-export function credentialId(userId: string | null, key: string): string {
-  const scope = userId ?? 'system'
-  return `${scope}:${key}`
-}
-
-/**
- * Look up a credential by (user_id, key).  Pass `null` for user_id to fetch a
- * system/global credential.
- */
-export function getCredential(
-  userId: string | null,
-  key: string,
-): CredentialRow | undefined {
-  return getDb()
-    .prepare(
-      `SELECT id, user_id, key, encrypted_value, iv, created_at, updated_at
-       FROM credentials
-       WHERE user_id IS ? AND key = ?`,
-    )
-    .get(userId, key) as CredentialRow | undefined
-}
-
-/** Delete a credential by (user_id, key).  Returns the number of rows removed. */
-export function deleteCredential(
-  userId: string | null,
-  key: string,
-): number {
-  const result = getDb()
-    .prepare('DELETE FROM credentials WHERE user_id IS ? AND key = ?')
-    .run(userId, key)
-  return result.changes
-}
-
-// ── Integration metadata accessors ──────────────────────────────────────────
-//
-// Non-secret status/scoping metadata for catalog integrations (see
-// server/src/routes/integrations.ts). Kept separate from the credentials
-// table so listing/status checks never touch encrypted secret material.
-
-/** Insert or replace an integration's metadata row, keyed by integration id. */
-export function upsertIntegrationMetadata(row: IntegrationMetadataRow): void {
-  getDb()
-    .prepare(
-      `INSERT INTO integration_metadata
-         (id, connected_at, last_test_at, last_test_ok, scope_task_types, scope_agents, updated_at)
-       VALUES (@id, @connected_at, @last_test_at, @last_test_ok, @scope_task_types, @scope_agents, @updated_at)
-       ON CONFLICT(id) DO UPDATE SET
-         connected_at = @connected_at,
-         last_test_at = @last_test_at,
-         last_test_ok = @last_test_ok,
-         scope_task_types = @scope_task_types,
-         scope_agents = @scope_agents,
-         updated_at = @updated_at`,
-    )
-    .run(row)
-}
-
-/** Look up an integration's metadata by id. Returns undefined when never connected. */
-export function getIntegrationMetadata(id: string): IntegrationMetadataRow | undefined {
-  return getDb()
-    .prepare(
-      `SELECT id, connected_at, last_test_at, last_test_ok, scope_task_types, scope_agents, updated_at
-       FROM integration_metadata
-       WHERE id = ?`,
-    )
-    .get(id) as IntegrationMetadataRow | undefined
-}
-
-/** Delete an integration's metadata row. Returns the number of rows removed. */
-export function deleteIntegrationMetadata(id: string): number {
-  const result = getDb().prepare('DELETE FROM integration_metadata WHERE id = ?').run(id)
-  return result.changes
 }

@@ -21,7 +21,7 @@ import {
   runProviderTest,
   hasProviderTest,
   type FetchFn,
-} from '../server/src/services/integrationProviders'
+} from '../server/src/integrations/providers'
 
 function jsonResponse(status: number, body: unknown): Response {
   return {
