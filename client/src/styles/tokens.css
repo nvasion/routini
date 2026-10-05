@@ -40,9 +40,6 @@
   --fail: #ff4d3d;
   --fail-line: #5e1e18;
   --off: #6e6a64;
-  --logo-bg: #ff2d1f;
-  --logo-ink: #0b0b0d;
-  --logo-line: #ff2d1f;
   --h-bg: #0b0b0d;
   --h-rule: #ff2d1f;
 }
@@ -78,9 +75,6 @@
   --fail: #f0716e;
   --fail-line: #6a3433;
   --off: #6b7480;
-  --logo-bg: #24303e;
-  --logo-ink: #6fb1e8;
-  --logo-line: #3a4757;
   --h-bg: #1c232c;
   --h-rule: #333b45;
 }
@@ -116,9 +110,6 @@
   --fail: #b8332a;
   --fail-line: #e6b0ab;
   --off: #8a929b;
-  --logo-bg: #24303e;
-  --logo-ink: #6fb1e8;
-  --logo-line: #3a4757;
   --h-bg: #24303e;
   --h-rule: #24303e;
 }

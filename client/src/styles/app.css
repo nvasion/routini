@@ -90,19 +90,19 @@ textarea {
   text-decoration: none;
   color: inherit;
 }
-.brand-mark {
-  width: 30px;
-  height: 30px;
-  border-radius: 6px;
-  background: var(--logo-bg);
-  border: 1px solid var(--logo-line);
-  color: var(--logo-ink);
-  display: flex;
+.mark {
+  display: block;
+  flex: none;
+  user-select: none;
+}
+.lockup {
+  display: inline-flex;
   align-items: center;
-  justify-content: center;
-  font-family: var(--font-sign);
-  font-weight: 700;
-  font-size: 18px;
+  gap: 10px;
+}
+.lockup-text {
+  display: flex;
+  flex-direction: column;
 }
 .brand-name {
   font-family: var(--font-sign);
@@ -804,6 +804,21 @@ table.table {
 }
 .auth-card {
   width: min(420px, 100%);
+}
+.auth-brand {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0 8px;
+  text-align: center;
+}
+.auth-tagline {
+  font-family: var(--font-sign);
+  font-weight: 600;
+  font-size: 16px;
+  color: var(--accent);
+  letter-spacing: 0.02em;
 }
 
 /* In the dock's column layout a flex-basis would become a height. */
