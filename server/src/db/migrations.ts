@@ -345,6 +345,131 @@ CREATE TABLE mcp_servers (
 SELECT routini_tenant('mcp_servers');
 `,
   },
+  {
+    version: 6,
+    name: 'fleet: runners, runner tasks, host events; SRE: incidents',
+    sql: `
+-- Hosts reach Routini over SSH (credential in the store) or through routini-runner.
+ALTER TABLE hosts ADD COLUMN transport text NOT NULL DEFAULT 'ssh' CHECK (transport IN ('ssh', 'runner'));
+ALTER TABLE hosts ALTER COLUMN username DROP NOT NULL;
+
+CREATE TABLE runners (
+  id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  org_id          uuid NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  host_id         uuid REFERENCES hosts(id) ON DELETE SET NULL,
+  name            text NOT NULL,
+  credential_hash text NOT NULL UNIQUE,
+  version         text,
+  hostname        text,
+  os              text,
+  arch            text,
+  capabilities    text[] NOT NULL DEFAULT '{}',
+  facts           jsonb,
+  instance        text,
+  connected_at    timestamptz,
+  last_seen_at    timestamptz,
+  disconnected_at timestamptz,
+  revoked_at      timestamptz,
+  created_by      uuid REFERENCES users(id) ON DELETE SET NULL,
+  created_at      timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX runners_org_idx ON runners (org_id);
+SELECT routini_tenant('runners');
+ALTER TABLE hosts ADD COLUMN runner_id uuid REFERENCES runners(id) ON DELETE SET NULL;
+
+CREATE TABLE runner_enrollments (
+  id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  org_id      uuid NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  token_hash  text NOT NULL UNIQUE,
+  name        text,
+  host_group  text NOT NULL DEFAULT '',
+  tags        text[] NOT NULL DEFAULT '{}',
+  expires_at  timestamptz NOT NULL,
+  used_at     timestamptz,
+  runner_id   uuid REFERENCES runners(id) ON DELETE SET NULL,
+  created_by  uuid REFERENCES users(id) ON DELETE SET NULL,
+  created_at  timestamptz NOT NULL DEFAULT now()
+);
+SELECT routini_tenant('runner_enrollments');
+
+-- Commands for a runner. The gateway instance holding the runner's connection claims them.
+CREATE TABLE runner_tasks (
+  id               uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  org_id           uuid NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  runner_id        uuid NOT NULL REFERENCES runners(id) ON DELETE CASCADE,
+  run_id           uuid REFERENCES runs(id) ON DELETE CASCADE,
+  step_idx         integer,
+  payload          jsonb NOT NULL,
+  status           text NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'sent', 'done', 'failed', 'canceled')),
+  cancel_requested boolean NOT NULL DEFAULT false,
+  result           jsonb,
+  claimed_by       text,
+  created_at       timestamptz NOT NULL DEFAULT now(),
+  updated_at       timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX runner_tasks_queued_idx ON runner_tasks (runner_id) WHERE status IN ('queued', 'sent');
+SELECT routini_tenant('runner_tasks');
+
+-- Audit trail per host: terminal sessions, runner connects and removals.
+CREATE TABLE host_events (
+  id       bigserial PRIMARY KEY,
+  org_id   uuid NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  host_id  uuid NOT NULL REFERENCES hosts(id) ON DELETE CASCADE,
+  ts       timestamptz NOT NULL DEFAULT now(),
+  type     text NOT NULL,
+  user_id  uuid REFERENCES users(id) ON DELETE SET NULL,
+  data     jsonb NOT NULL DEFAULT '{}'::jsonb
+);
+CREATE INDEX host_events_host_idx ON host_events (host_id, id);
+SELECT routini_tenant('host_events');
+
+-- Incidents: one open incident per alert fingerprint; alert-triggered runs link to it.
+CREATE TABLE incident_counters (
+  org_id uuid PRIMARY KEY REFERENCES orgs(id) ON DELETE CASCADE,
+  value  integer NOT NULL
+);
+SELECT routini_tenant('incident_counters');
+
+CREATE TABLE incidents (
+  id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  org_id        uuid NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  number        integer NOT NULL,
+  fingerprint   text NOT NULL,
+  title         text NOT NULL,
+  severity      text NOT NULL DEFAULT 'unknown',
+  status        text NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'resolved')),
+  source        text NOT NULL,
+  labels        jsonb NOT NULL DEFAULT '{}'::jsonb,
+  annotations   jsonb NOT NULL DEFAULT '{}'::jsonb,
+  host_id       uuid REFERENCES hosts(id) ON DELETE SET NULL,
+  alert_count   integer NOT NULL DEFAULT 1,
+  opened_at     timestamptz NOT NULL DEFAULT now(),
+  last_alert_at timestamptz NOT NULL DEFAULT now(),
+  resolved_at   timestamptz,
+  resolved_by   uuid REFERENCES users(id) ON DELETE SET NULL,
+  postmortem    jsonb,
+  UNIQUE (org_id, number)
+);
+CREATE UNIQUE INDEX incidents_open_fingerprint ON incidents (org_id, fingerprint) WHERE status = 'open';
+CREATE INDEX incidents_org_status_idx ON incidents (org_id, status, opened_at DESC);
+SELECT routini_tenant('incidents');
+
+CREATE TABLE incident_events (
+  id          bigserial PRIMARY KEY,
+  org_id      uuid NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  incident_id uuid NOT NULL REFERENCES incidents(id) ON DELETE CASCADE,
+  ts          timestamptz NOT NULL DEFAULT now(),
+  type        text NOT NULL,
+  user_id     uuid REFERENCES users(id) ON DELETE SET NULL,
+  data        jsonb NOT NULL DEFAULT '{}'::jsonb
+);
+CREATE INDEX incident_events_incident_idx ON incident_events (incident_id, id);
+SELECT routini_tenant('incident_events');
+
+ALTER TABLE runs ADD COLUMN incident_id uuid REFERENCES incidents(id) ON DELETE SET NULL;
+CREATE INDEX runs_incident_idx ON runs (incident_id) WHERE incident_id IS NOT NULL;
+`,
+  },
 ]
 
 /** Grants the app role access to everything a migration created. Runs after every migration. */

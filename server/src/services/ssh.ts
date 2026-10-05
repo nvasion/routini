@@ -49,6 +49,9 @@ export interface SshTaskResult {
   logs: string[]
   /** Human-readable failure reason — never includes credentials. */
   error?: string
+  /** Raw stdout and exit code (when the command ran). */
+  stdout?: string
+  exitCode?: number | null
 }
 
 /** Low-level SSH execution contract used by the real ssh2 adapter and tests. */
@@ -194,6 +197,87 @@ class Ssh2Executor implements SshExecutor {
 }
 
 const defaultExecutor = new Ssh2Executor()
+
+// ── Interactive shell (host terminals) ───────────────────────────────────────
+
+/** An interactive shell on an SSH host; same shape as a runner PTY session. */
+export interface SshShell {
+  onData(cb: (chunk: Buffer) => void): void
+  write(data: string): void
+  resize(cols: number, rows: number): void
+  close(): void
+  done: Promise<number | null>
+}
+
+export type SshShellOpener = (config: SshConnectConfig, size: { cols: number; rows: number }) => Promise<SshShell>
+
+/** Opens a login shell with a PTY. The connection closes when the shell exits. */
+export const openSsh2Shell: SshShellOpener = (config, size) =>
+  new Promise((resolve, reject) => {
+    const conn = new Client()
+    let settled = false
+    conn.on('ready', () => {
+      conn.shell({ term: 'xterm-256color', cols: size.cols, rows: size.rows }, (err, stream) => {
+        if (err) {
+          settled = true
+          conn.end()
+          return reject(new Error('The SSH server refused to open a shell'))
+        }
+        settled = true
+        const done = new Promise<number | null>((r) => {
+          let code: number | null = null
+          stream.on('exit', (c: number | null) => {
+            code = typeof c === 'number' ? c : null
+          })
+          stream.on('close', () => {
+            conn.end()
+            r(code)
+          })
+        })
+        resolve({
+          onData: (cb) => {
+            stream.on('data', (b: Buffer) => cb(b))
+            stream.stderr.on('data', (b: Buffer) => cb(b))
+          },
+          write: (d) => {
+            stream.write(d)
+          },
+          resize: (cols, rows) => {
+            stream.setWindow(rows, cols, 0, 0)
+          },
+          close: () => {
+            stream.end()
+            conn.end()
+          },
+          done,
+        })
+      })
+    })
+    conn.on('error', () => {
+      if (!settled) {
+        settled = true
+        reject(new Error('SSH connection failed'))
+      }
+    })
+    conn.connect({
+      host: config.host,
+      port: config.port,
+      username: config.username,
+      readyTimeout: config.readyTimeout,
+      ...(config.privateKey ? { privateKey: config.privateKey, ...(config.passphrase ? { passphrase: config.passphrase } : {}) } : { password: config.password }),
+    })
+  })
+
+/** Same SSRF rules as SSH steps: private targets only when the server allows them. */
+export async function sshTargetAllowed(host: string, allowPrivateHosts: boolean, ssrfCheck = resolvedIpIsSsrfSafe): Promise<boolean> {
+  if (allowPrivateHosts) return true
+  if (!isSsrfSafeHostname(host)) return false
+  try {
+    return await ssrfCheck(host)
+  } catch {
+    return false
+  }
+}
 
 // ── Command validation ────────────────────────────────────────────────────────
 
@@ -403,12 +487,14 @@ export async function runSshTask(
     logs.push(`Command exited with code ${exitCode ?? 'unknown'}`)
 
     if (exitCode === 0) {
-      return { success: true, logs }
+      return { success: true, logs, stdout: result.stdout, exitCode }
     }
 
     return {
       success: false,
       logs,
+      stdout: result.stdout,
+      exitCode,
       error: `[task:${task.id}] SSH command failed with exit code ${exitCode ?? 'unknown'}`,
     }
   } catch (err) {

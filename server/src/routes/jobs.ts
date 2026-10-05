@@ -38,8 +38,12 @@ function parseOr400(raw: unknown, current?: JobSpec): JobSpec {
 /** References a spec makes to other org resources must exist in this org. */
 async function checkReferences(q: Queryable, orgId: string, spec: JobSpec): Promise<void> {
   for (const [i, s] of spec.steps.entries()) {
-    if (s.kind === 'action' && s.config.type === 'ssh' && !(await getHost(q, orgId, s.config.hostId))) {
-      throw badRequest(`steps[${i}].config.hostId does not match a host in this org`)
+    if (s.kind === 'action' && s.config.type === 'ssh') {
+      if (s.config.host === 'alert') {
+        if (spec.trigger.kind !== 'alert') throw badRequest(`steps[${i}].config.host "alert" needs an alert trigger`)
+      } else if (!s.config.hostId || !(await getHost(q, orgId, s.config.hostId))) {
+        throw badRequest(`steps[${i}].config.hostId does not match a host in this org`)
+      }
     }
     if (s.kind === 'agent' && s.config.environmentId && !(await getEnvironment(q, orgId, s.config.environmentId))) {
       throw badRequest(`steps[${i}].config.environmentId does not match an environment in this org`)

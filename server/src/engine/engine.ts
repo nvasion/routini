@@ -36,6 +36,8 @@ import { actionExecutor, approvalExecutor, unavailableAgentExecutor } from './ex
 import type { Step } from './spec.js'
 import { evaluatePolicy, stepFacts, type Decision } from './policy.js'
 import { getPolicy } from '../repos/policy.js'
+import { prepareStep } from './prepare.js'
+import { addIncidentEvent } from '../repos/incidents.js'
 import type { EngineOptions, StepContext, StepExecutor, StepResult } from './types.js'
 
 export type AdvanceOutcome = 'finished' | 'waiting' | 'retry' | 'canceled' | 'missing'
@@ -74,6 +76,9 @@ export function createEngine(app: AppContext, opts: EngineOptions = {}): Engine 
       }
       await setRunStatus(q, run, status, error ? { error: error.slice(0, MAX_ERROR_LEN) } : {})
       await dequeueRun(q, run.id)
+      if (run.trigger.kind === 'alert') {
+        await addIncidentEvent(q, run.orgId, run.trigger.incidentId, 'run.finished', null, { runId: run.id, number: run.number, status })
+      }
     })
     if (opts.onRunFinished) {
       const final = await db.system((q) => getRunSystem(q, run.id))
@@ -205,11 +210,19 @@ export function createEngine(app: AppContext, opts: EngineOptions = {}): Engine 
         return 'finished'
       }
 
-      const spec = run.jobSnapshot.steps[next.idx]!
-      if (!shouldRun(spec.when, lastOutcome(steps, next.idx))) {
+      const rawSpec = run.jobSnapshot.steps[next.idx]!
+      if (!shouldRun(rawSpec.when, lastOutcome(steps, next.idx))) {
         await db.org(run.orgId, (q) => updateStep(q, run, next.idx, { status: 'skipped' }))
         continue
       }
+
+      // Templates, the alert's host, alert context for agents.
+      const prepared = await prepareStep(app, run, rawSpec, steps)
+      if ('error' in prepared) {
+        await db.org(run.orgId, (q) => updateStep(q, run, next.idx, { status: 'failed', error: prepared.error }))
+        continue
+      }
+      const spec = prepared.step
 
       // Org policy, unless a person already approved this step under policy.
       if (spec.kind !== 'approval' && !next.policyCleared) {

@@ -31,6 +31,8 @@ export interface Config {
   /** Raw CREDENTIALS_MASTER_KEY (hex or base64 of 32 bytes); undefined → ephemeral (non-production only). */
   masterKey?: string
   clientUrl: string
+  /** Where runners and monitoring tools reach this server (ROUTINI_PUBLIC_URL; default CLIENT_URL). */
+  publicUrl: string
   signup: SignupPolicy
   /** Run the scheduler and queue worker inside the API process. Required with embedded Postgres. */
   inlineWorker: boolean
@@ -102,6 +104,7 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): Config {
     cookieSecret: nonEmpty('COOKIE_SECRET'),
     masterKey,
     clientUrl: nonEmpty('CLIENT_URL') ?? 'http://localhost:5173',
+    publicUrl: (nonEmpty('ROUTINI_PUBLIC_URL') ?? nonEmpty('CLIENT_URL') ?? 'http://localhost:5173').replace(/\/+$/, ''),
     signup,
     inlineWorker,
     seed,

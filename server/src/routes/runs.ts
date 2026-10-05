@@ -41,6 +41,7 @@ import {
 } from '../repos/runs.js'
 import type { Queryable } from '../db/index.js'
 import { runSummary } from './jobs.js'
+import { listIncidents } from '../repos/incidents.js'
 
 const RUN_STATUSES: RunStatus[] = ['queued', 'running', 'waiting', 'succeeded', 'failed', 'canceled']
 
@@ -234,6 +235,7 @@ export function runsRouter(ctx: AppContext): Router {
         failures: (await listRecentFailures(q, org.id)).map(runSummary),
         live: (await listRuns(q, org.id, { status: ['queued', 'running', 'waiting'], limit: 50 })).map(runSummary),
         upcoming: await listUpcoming(q, org.id),
+        incidents: await listIncidents(q, org.id, { status: 'open', limit: 20 }),
       }))
       res.json(out)
     }),

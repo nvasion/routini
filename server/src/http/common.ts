@@ -13,6 +13,7 @@ import type { EngineOptions } from '../engine/types.js'
 import { createEnvManager, type EnvManager } from '../engine/environments.js'
 import { DockerEnvRuntime, type EnvRuntime } from '../services/envRuntime.js'
 import { BrokerClient, brokerConfigFromEnv } from '../egress/client.js'
+import { RunnerGateway, type GatewayOptions } from '../runner/gateway.js'
 
 function brokerFromEnv(): BrokerClient | null {
   const cfg = brokerConfigFromEnv()
@@ -29,6 +30,8 @@ export interface AppContext {
   envs: EnvManager
   /** Credential broker (egress proxy); null when not configured. */
   broker: BrokerClient | null
+  /** routini-runner connections (only accepting connections in the API process, once attached). */
+  runners: RunnerGateway
   /** Test doubles for http/ssh/imap (shared by the engine and the host check). */
   actions?: EngineOptions['actions']
 }
@@ -36,13 +39,14 @@ export interface AppContext {
 export function createContext(
   base: { config: Config; db: Db; box: SecretBox },
   engineOpts: EngineOptions = {},
-  extra: { envRuntime?: EnvRuntime; broker?: BrokerClient | null } = {},
+  extra: { envRuntime?: EnvRuntime; broker?: BrokerClient | null; gateway?: GatewayOptions } = {},
 ): AppContext {
   const ctx = { ...base, actions: engineOpts.actions } as AppContext
   ctx.hub = new EventHub(base.db)
   ctx.broker = extra.broker === undefined ? brokerFromEnv() : extra.broker
   ctx.envs = createEnvManager({ db: base.db, box: base.box, runtime: extra.envRuntime ?? new DockerEnvRuntime(), broker: ctx.broker, mode: base.config.mode })
   ctx.engine = createEngine(ctx, engineOpts)
+  ctx.runners = new RunnerGateway(ctx, extra.gateway)
   return ctx
 }
 

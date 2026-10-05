@@ -18,12 +18,23 @@ export type Trigger =
   | { kind: 'manual' }
   | { kind: 'cron'; expr: string; tz: string }
   | { kind: 'webhook' }
+  | { kind: 'alert'; match: AlertMatch }
+
+/** Which alerts start an alert-triggered job. Every given condition must hold. */
+export interface AlertMatch {
+  /** Alert names (exact, or a prefix ending in "*"). */
+  alertnames?: string[]
+  severities?: string[]
+  /** Label values (exact, or a prefix ending in "*"). */
+  labels?: Record<string, string>
+}
 
 export type When = 'on_success' | 'on_failure' | 'always'
 
 export type ActionConfig =
   | { type: 'http'; url: string; method?: string; headers?: Record<string, string>; body?: string; expectStatus?: number; timeoutMs?: number }
-  | { type: 'ssh'; hostId: string; command: string }
+  /** A command on a host, over SSH or routini-runner. `host: 'alert'` targets the incident's host. */
+  | { type: 'ssh'; hostId?: string; host?: 'alert'; command: string; /** Set by templating at run time, never by job authors. */ env?: Record<string, string> }
   | { type: 'imap'; host: string; port?: number; username: string; credentialKey: string; mailbox?: string; search?: string; tls?: boolean }
   | {
       type: 'factory'
@@ -123,6 +134,8 @@ export function parseTrigger(raw: unknown): Trigger {
       return { kind: 'manual' }
     case 'webhook':
       return { kind: 'webhook' }
+    case 'alert':
+      return { kind: 'alert', match: parseAlertMatch(raw['match']) }
     case 'cron': {
       const expr = str(raw['expr'], 'trigger.expr', 100)!.trim()
       const tz = raw['tz'] === undefined ? 'UTC' : str(raw['tz'], 'trigger.tz', 64)!
@@ -130,8 +143,35 @@ export function parseTrigger(raw: unknown): Trigger {
       return { kind: 'cron', expr, tz }
     }
     default:
-      return fail('trigger.kind must be one of: manual, cron, webhook')
+      return fail('trigger.kind must be one of: manual, cron, webhook, alert')
   }
+}
+
+function parseAlertMatch(raw: unknown): AlertMatch {
+  if (raw === undefined) return {}
+  if (!isObj(raw)) return fail('trigger.match must be an object')
+  const list = (v: unknown, path: string): string[] | undefined => {
+    if (v === undefined) return undefined
+    if (!Array.isArray(v) || v.length > 20 || !v.every((x) => typeof x === 'string' && x.trim() && x.length <= 200)) return fail(`${path} must be a list of up to 20 strings`)
+    return [...new Set((v as string[]).map((x) => x.trim()))]
+  }
+  const m: AlertMatch = {}
+  const names = list(raw['alertnames'], 'trigger.match.alertnames')
+  if (names?.length) m.alertnames = names
+  const sev = list(raw['severities'], 'trigger.match.severities')
+  if (sev?.length) m.severities = sev.map((s) => s.toLowerCase())
+  if (raw['labels'] !== undefined) {
+    if (!isObj(raw['labels'])) fail('trigger.match.labels must be an object of strings')
+    const entries = Object.entries(raw['labels'] as Record<string, unknown>)
+    if (entries.length > 20) fail('trigger.match.labels: at most 20 labels')
+    const labels: Record<string, string> = {}
+    for (const [k, v] of entries) {
+      if (!/^[A-Za-z_][A-Za-z0-9_]{0,99}$/.test(k) || typeof v !== 'string' || v.length > 200) fail('trigger.match.labels must map label names to strings')
+      labels[k] = v as string
+    }
+    if (entries.length) m.labels = labels
+  }
+  return m
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -161,9 +201,15 @@ function parseAction(c: Record<string, unknown>, p: string): ActionConfig {
       }
     }
     case 'ssh': {
+      const command = str(c['command'], `${p}.command`, 8000)!
+      if (c['host'] !== undefined) {
+        if (c['host'] !== 'alert') fail(`${p}.host must be "alert" (the incident's host)`)
+        if (c['hostId'] !== undefined) fail(`${p}: use either hostId or host, not both`)
+        return { type: 'ssh', host: 'alert', command }
+      }
       const hostId = str(c['hostId'], `${p}.hostId`, 36)!
       if (!UUID_RE.test(hostId)) fail(`${p}.hostId must be a host id`)
-      return { type: 'ssh', hostId, command: str(c['command'], `${p}.command`, 8000)! }
+      return { type: 'ssh', hostId, command }
     }
     case 'imap':
       return {
