@@ -17,6 +17,25 @@ fail() {
 }
 
 [ -n "${ROUTINI_PROMPT:-}" ] || fail "ROUTINI_PROMPT is empty"
+
+# Credential broker: trust Routini's CA. The egress proxy intercepts only the
+# hosts it holds credentials for; everything else is tunnelled untouched, so
+# the system CAs stay in the bundle.
+if [ -n "${ROUTINI_CA_PEM:-}" ]; then
+  rdir="${HOME:-/tmp}/.routini"
+  mkdir -p "$rdir"
+  printf '%s\n' "$ROUTINI_CA_PEM" > "$rdir/ca.pem"
+  { cat /etc/ssl/certs/ca-certificates.crt 2>/dev/null; cat "$rdir/ca.pem"; } > "$rdir/bundle.pem"
+  export NODE_EXTRA_CA_CERTS="$rdir/ca.pem" SSL_CERT_FILE="$rdir/bundle.pem" GIT_SSL_CAINFO="$rdir/bundle.pem" \
+    REQUESTS_CA_BUNDLE="$rdir/bundle.pem" CURL_CA_BUNDLE="$rdir/bundle.pem"
+fi
+
+# MCP servers connected for this agent (Claude Code --mcp-config).
+mcp_args=()
+if [ -n "${ROUTINI_MCP_CONFIG:-}" ]; then
+  printf '%s' "$ROUTINI_MCP_CONFIG" > "${HOME:-/tmp}/.routini-mcp.json"
+  mcp_args=(--mcp-config "${HOME:-/tmp}/.routini-mcp.json")
+fi
 mkdir -p /workspace && cd /workspace || fail "cannot enter /workspace"
 
 if [ -n "${REPO_URL:-}" ] || [ -n "${ROUTINI_REPO_DIR:-}" ]; then
@@ -53,6 +72,7 @@ fi
 args=(-p "$ROUTINI_PROMPT" --output-format stream-json --verbose --dangerously-skip-permissions)
 [ -n "${ROUTINI_SYSTEM_PROMPT:-}" ] && args+=(--append-system-prompt "$ROUTINI_SYSTEM_PROMPT")
 [ -n "${ROUTINI_MODEL:-}" ] && args+=(--model "$ROUTINI_MODEL")
+args+=("${mcp_args[@]}")
 claude "${args[@]}"
 code=$?
 [ "$code" -eq 0 ] || fail "agent exited with code $code" "$code"

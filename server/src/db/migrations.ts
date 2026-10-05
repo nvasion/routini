@@ -302,6 +302,49 @@ CREATE INDEX environment_events_env_idx ON environment_events (environment_id, i
 SELECT routini_tenant('environment_events');
 `,
   },
+  {
+    version: 4,
+    name: 'policy: org rules, policy approvals, egress settings',
+    sql: `
+CREATE TABLE org_policies (
+  org_id     uuid PRIMARY KEY REFERENCES orgs(id) ON DELETE CASCADE,
+  rules      jsonb NOT NULL DEFAULT '[]'::jsonb,
+  egress     jsonb NOT NULL DEFAULT '{}'::jsonb,
+  updated_by uuid REFERENCES users(id) ON DELETE SET NULL,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+SELECT routini_tenant('org_policies');
+
+-- 'step' approvals come from approval steps; 'policy' approvals gate another step.
+ALTER TABLE approvals ADD COLUMN source text NOT NULL DEFAULT 'step' CHECK (source IN ('step', 'policy'));
+ALTER TABLE approvals ADD COLUMN rule text;
+-- Set once a policy approval for the step is granted, so the step runs without re-gating.
+ALTER TABLE run_steps ADD COLUMN policy_cleared boolean NOT NULL DEFAULT false;
+`,
+  },
+  {
+    version: 5,
+    name: 'broker sessions for environments; MCP servers',
+    sql: `
+-- An environment's own egress session token (only usable from inside the org's sandbox network).
+ALTER TABLE environments ADD COLUMN egress_token text;
+
+-- Remote MCP servers agents may use. Auth headers are secrets: credentials "mcp.<id>.<header>".
+CREATE TABLE mcp_servers (
+  id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  org_id      uuid NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  name        text NOT NULL CHECK (name ~ '^[a-z0-9][a-z0-9_-]{0,39}$'),
+  url         text NOT NULL,
+  header_names text[] NOT NULL DEFAULT '{}',
+  agents      text[] NOT NULL DEFAULT '{claude,omnimancer,opencode}',
+  last_test   jsonb,
+  created_at  timestamptz NOT NULL DEFAULT now(),
+  updated_at  timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (org_id, name)
+);
+SELECT routini_tenant('mcp_servers');
+`,
+  },
 ]
 
 /** Grants the app role access to everything a migration created. Runs after every migration. */

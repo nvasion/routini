@@ -16,6 +16,7 @@ import { getOrgById } from '../repos/identity.js'
 import { getSecret } from '../repos/credentials.js'
 import {
   addRunUsage,
+  createApproval,
   appendEvent,
   decideApproval,
   dequeueRun,
@@ -33,6 +34,8 @@ import {
 import { redact, redactDeep } from '../utils/redact.js'
 import { actionExecutor, approvalExecutor, unavailableAgentExecutor } from './executors.js'
 import type { Step } from './spec.js'
+import { evaluatePolicy, stepFacts, type Decision } from './policy.js'
+import { getPolicy } from '../repos/policy.js'
 import type { EngineOptions, StepContext, StepExecutor, StepResult } from './types.js'
 
 export type AdvanceOutcome = 'finished' | 'waiting' | 'retry' | 'canceled' | 'missing'
@@ -76,6 +79,14 @@ export function createEngine(app: AppContext, opts: EngineOptions = {}): Engine 
       const final = await db.system((q) => getRunSystem(q, run.id))
       if (final) await opts.onRunFinished(final).catch((err) => console.error('[engine] onRunFinished failed:', (err as Error).message))
     }
+  }
+
+  /** Facts about a step for policy, then the org's decision. */
+  async function policyDecision(run: Run, step: Step): Promise<Decision> {
+    return db.org(run.orgId, async (q) => {
+      const policy = await getPolicy(q, run.orgId, app.config.mode)
+      return evaluatePolicy(policy.rules, await stepFacts(q, run.orgId, step))
+    })
   }
 
   function shouldRun(when: Step['when'], last: 'succeeded' | 'failed'): boolean {
@@ -198,6 +209,29 @@ export function createEngine(app: AppContext, opts: EngineOptions = {}): Engine 
       if (!shouldRun(spec.when, lastOutcome(steps, next.idx))) {
         await db.org(run.orgId, (q) => updateStep(q, run, next.idx, { status: 'skipped' }))
         continue
+      }
+
+      // Org policy, unless a person already approved this step under policy.
+      if (spec.kind !== 'approval' && !next.policyCleared) {
+        const decision = await policyDecision(run, spec)
+        if (decision.effect === 'deny') {
+          const rule = decision.rule!
+          await db.org(run.orgId, (q) => updateStep(q, run, next.idx, { status: 'failed', error: `Blocked by policy "${rule.name}": ${rule.reason ?? 'not allowed'}` }))
+          continue
+        }
+        if (decision.effect === 'require_approval') {
+          const rule = decision.rule!
+          await db.org(run.orgId, async (q) => {
+            await createApproval(q, run, next.idx, `Policy "${rule.name}" requires approval before "${spec.name}" runs`, rule.minRole ?? 'member', {
+              source: 'policy',
+              rule: rule.name,
+            })
+            await updateStep(q, run, next.idx, { status: 'waiting' })
+            await setRunStatus(q, run, 'waiting')
+            await dequeueRun(q, run.id)
+          })
+          return 'waiting'
+        }
       }
 
       await db.org(run.orgId, (q) => updateStep(q, run, next.idx, { status: 'running', bumpAttempt: true, error: null }))

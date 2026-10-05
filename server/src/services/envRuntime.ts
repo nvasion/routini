@@ -24,6 +24,9 @@ export interface EnvContainerSpec {
   labels: Record<string, string>
   cpus: number
   memoryMb: number
+  /** Docker network (the org sandbox network under the credential broker). */
+  network?: string
+  env?: Record<string, string>
 }
 
 export interface ExecResult {
@@ -100,8 +103,10 @@ export class DockerEnvRuntime implements EnvRuntime {
       Cmd: [],
       WorkingDir: WORKSPACE,
       Labels: spec.labels,
+      Env: Object.entries(spec.env ?? {}).map(([k, v]) => `${k}=${v}`),
       Tty: false,
       HostConfig: {
+        ...(spec.network ? { NetworkMode: spec.network } : {}),
         Memory: spec.memoryMb * 1024 * 1024,
         NanoCpus: Math.round(spec.cpus * 1e9),
         CapDrop: ['ALL'],

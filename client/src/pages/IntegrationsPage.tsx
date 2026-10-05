@@ -5,6 +5,7 @@ import { relativeTime } from '../lib/format'
 import { useApi } from '../lib/hooks'
 import type { AgentId, Integration } from '../lib/types'
 import { useOrg } from '../shell/OrgContext'
+import { McpServers } from './McpServers'
 
 const AGENTS: Array<[AgentId, string]> = [
   ['claude', 'Claude Code'],
@@ -45,10 +46,11 @@ export function IntegrationsPage() {
             <span className="muted" style={{ fontSize: 13 }}>
               {i.description}
             </span>
-            {i.status !== 'not_connected' && <span className="meta">agents: {i.scopes.agents.join(', ') || 'none'}</span>}
+            {i.status !== 'not_connected' && !i.serverOnly && <span className="meta">agents: {i.scopes.agents.join(', ') || 'none'}</span>}
           </button>
         ))}
       </div>
+      <McpServers />
       {open && <IntegrationModal integration={open} onClose={() => setOpen(null)} onChange={replace} canEdit={org.can('admin')} />}
     </>
   )
@@ -112,17 +114,21 @@ function IntegrationModal({ integration: i, onClose, onChange, canEdit }: { inte
               )}
             </Field>
           ))}
-          <div className="field">
-            <span className="field-label">Agents that may use it</span>
-            <div className="inline">
-              {AGENTS.map(([id, label]) => (
-                <label key={id} className="inline" style={{ gap: 6 }}>
-                  <input type="checkbox" checked={agents.includes(id)} onChange={(e) => setAgents((a) => (e.target.checked ? [...a, id] : a.filter((x) => x !== id)))} />
-                  {label}
-                </label>
-              ))}
+          {i.serverOnly ? (
+            <span className="hint">Used by Routini itself (Factory steps in jobs); never handed to agents.</span>
+          ) : (
+            <div className="field">
+              <span className="field-label">Agents that may use it</span>
+              <div className="inline">
+                {AGENTS.map(([id, label]) => (
+                  <label key={id} className="inline" style={{ gap: 6 }}>
+                    <input type="checkbox" checked={agents.includes(id)} onChange={(e) => setAgents((a) => (e.target.checked ? [...a, id] : a.filter((x) => x !== id)))} />
+                    {label}
+                  </label>
+                ))}
+              </div>
             </div>
-          </div>
+          )}
           {canEdit && (
             <div className="inline">
               <button type="submit" className="btn primary">

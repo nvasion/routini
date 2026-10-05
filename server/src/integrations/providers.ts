@@ -39,6 +39,8 @@ export interface ProviderTestContext {
   fetchImpl?: FetchFn
   /** Overrides the DNS-based SSRF guard (Jira only); defaults to resolvedIpIsSsrfSafe. */
   ssrfCheck?: (hostname: string) => Promise<boolean>
+  /** Self-hosted installs may reach private addresses (e.g. an internal Factory). */
+  allowPrivateHosts?: boolean
   /** Overrides the per-request timeout (ms); defaults to 10s. Exposed for tests. */
   timeoutMs?: number
 }
@@ -346,7 +348,39 @@ type ProviderTestFn = (
   ctx: ProviderTestContext,
 ) => Promise<ProviderTestResult>
 
+// ── Factory ─────────────────────────────────────────────────────────────────────
+
+async function testFactory(creds: Record<string, string>, ctx: ProviderTestContext): Promise<ProviderTestResult> {
+  const fetchImpl = ctx.fetchImpl ?? (fetch as FetchFn)
+  const ssrfCheck = ctx.ssrfCheck ?? resolvedIpIsSsrfSafe
+  let parsed: URL
+  try {
+    parsed = new URL(creds['baseUrl'] || 'https://factory-nexus.ai')
+  } catch {
+    return { ok: false, message: 'Factory URL is not a valid URL' }
+  }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return { ok: false, message: 'Factory URL must use http or https' }
+  if (parsed.username || parsed.password) return { ok: false, message: 'Factory URL must not contain embedded credentials' }
+  if (!ctx.allowPrivateHosts) {
+    if (!isSsrfSafeHostname(parsed.hostname)) return { ok: false, message: 'Factory URL host is not allowed (private/loopback address)' }
+    try {
+      if (!(await ssrfCheck(parsed.hostname))) return { ok: false, message: 'Factory URL host is not allowed (private/loopback address)' }
+    } catch {
+      return { ok: false, message: 'Factory URL could not be resolved' }
+    }
+  }
+  try {
+    const { status, body } = await fetchJson(fetchImpl, new URL('/api/auth/me', parsed).toString(), { method: 'GET', headers: { Authorization: `Bearer ${creds['apiToken']}`, Accept: 'application/json' } }, ctx.timeoutMs)
+    if (!isSuccessStatus(status)) return { ok: false, message: `Factory returned status ${status}` }
+    const who = isRecord(body) && typeof body['email'] === 'string' ? ` as ${body['email']}` : ''
+    return { ok: true, message: `Factory API key is valid${who}` }
+  } catch (err) {
+    return networkFailureResult('Factory', err)
+  }
+}
+
 const PROVIDER_TESTS: Readonly<Record<string, ProviderTestFn>> = {
+  factory: testFactory,
   github: testGithub,
   slack: testSlack,
   jira: testJira,

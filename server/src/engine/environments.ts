@@ -22,7 +22,12 @@ import {
   setEnvironmentState,
   touchEnvironment,
   type Environment,
+  setEnvironmentEgressToken,
 } from '../repos/environments.js'
+import { getPolicy } from '../repos/policy.js'
+import { INTEGRATIONS } from '../integrations/catalog.js'
+import type { BrokerClient } from '../egress/client.js'
+import { PLACEHOLDER, type CredentialBinding } from '../egress/types.js'
 import { getIntegrationCredentials } from '../repos/integrations.js'
 import { effectiveLimits, getOrgById } from '../repos/identity.js'
 import type { EnvRuntime } from '../services/envRuntime.js'
@@ -61,8 +66,44 @@ export interface EnvManager {
   idle(): Promise<void>
 }
 
-export function createEnvManager(deps: { db: Db; box: SecretBox; runtime: EnvRuntime }): EnvManager {
+/** Writes Routini's CA into the user's trust bundle and login profile (credential broker). */
+const CA_SETUP = [
+  'd="$HOME/.routini"; mkdir -p "$d"',
+  'printf \'%s\\n\' "$ROUTINI_CA_PEM" > "$d/ca.pem"',
+  '{ cat /etc/ssl/certs/ca-certificates.crt 2>/dev/null; cat "$d/ca.pem"; } > "$d/bundle.pem"',
+  'line="export NODE_EXTRA_CA_CERTS=$d/ca.pem SSL_CERT_FILE=$d/bundle.pem GIT_SSL_CAINFO=$d/bundle.pem REQUESTS_CA_BUNDLE=$d/bundle.pem CURL_CA_BUNDLE=$d/bundle.pem"',
+  'for f in "$HOME/.profile" "$HOME/.bashrc"; do grep -qs "routini/bundle.pem" "$f" || echo "$line" >> "$f"; done',
+].join('\n')
+
+const ENV_SESSION_HOURS = 24
+
+export function createEnvManager(deps: { db: Db; box: SecretBox; runtime: EnvRuntime; broker?: BrokerClient | null; mode?: 'selfhost' | 'hosted' }): EnvManager {
   const { db, box, runtime } = deps
+  const broker = deps.broker ?? null
+
+  /** (Re)registers an environment's own egress session: org allow-list, its repo, GitHub for clone/push. */
+  async function openEnvSession(env: Environment, token: string): Promise<void> {
+    if (!broker) return
+    const { hosts, bindings } = await db.org(env.orgId, async (q) => {
+      const policy = await getPolicy(q, env.orgId, deps.mode ?? 'selfhost')
+      const creds = await getIntegrationCredentials(q, box, env.orgId, 'github')
+      const gh = INTEGRATIONS.find((d) => d.id === 'github')!
+      const bindings: CredentialBinding[] = creds['token']
+        ? (gh.broker ?? []).filter((r) => r.host).map((r) => ({ host: r.host!, header: r.header, format: r.format, secret: creds['token']! }))
+        : []
+      const hosts = new Set([...policy.egress.allowedHosts, ...bindings.map((b) => b.host)])
+      if (env.repo) hosts.add(new URL(env.repo.url).hostname)
+      return { hosts: [...hosts], bindings }
+    })
+    await broker.open({
+      token,
+      orgId: env.orgId,
+      label: `env:${env.id}`,
+      allowedHosts: hosts,
+      bindings,
+      expiresAt: new Date(Date.now() + ENV_SESSION_HOURS * 3600_000).toISOString(),
+    })
+  }
   const pending = new Set<Promise<unknown>>()
   const track = <T>(p: Promise<T>) => {
     pending.add(p)
@@ -89,6 +130,16 @@ export function createEnvManager(deps: { db: Db; box: SecretBox; runtime: EnvRun
     try {
       await runtime.ensureVolume(env.volume, labels(env))
       if (env.containerId) await runtime.removeContainer(env.containerId)
+      // Under the broker: the org's sandbox network, its own egress session, and Routini's CA.
+      let network: string | undefined
+      let brokerEnv: Record<string, string> = {}
+      if (broker) {
+        const token = env.egressToken ?? broker.newToken()
+        network = await broker.network(env.orgId)
+        await openEnvSession(env, token)
+        await db.org(env.orgId, (q) => setEnvironmentEgressToken(q, env.orgId, env.id, token))
+        brokerEnv = await broker.containerEnv(token)
+      }
       const containerId = await runtime.startContainer({
         name: `routini-env-${env.id.slice(0, 8)}-${Date.now().toString(36)}`,
         image: env.image,
@@ -96,25 +147,33 @@ export function createEnvManager(deps: { db: Db; box: SecretBox; runtime: EnvRun
         labels: labels(env),
         cpus: env.cpus,
         memoryMb: env.memoryMb,
+        network,
+        env: brokerEnv,
       })
       await db.org(env.orgId, (q) => setEnvironmentState(q, env.orgId, env.id, { status: 'starting', detail: 'container started', containerId }))
+      if (broker) {
+        const r = await runtime.exec(containerId, ['bash', '-c', CA_SETUP], { timeoutMs: 30_000 })
+        if (r.exitCode !== 0) throw new Error('Could not install the egress CA in the environment')
+      }
 
       if (cloneRepo && env.repo) {
         const creds = await db.org(env.orgId, (q) => getIntegrationCredentials(q, box, env.orgId, 'github'))
         const output: string[] = []
         const secrets = creds['token'] ? [creds['token']] : []
-        // The token is passed only to this one process; nothing is written to disk.
+        // Without the broker the token goes only to this one process (nothing on disk);
+        // with it, the process gets a placeholder and the proxy adds the token.
+        const token = broker ? (creds['token'] ? PLACEHOLDER : undefined) : creds['token']
         const r = await runtime.exec(
           containerId,
           [
             'bash',
-            '-c',
+            broker ? '-lc' : '-c',
             'if [ -d "$DIR/.git" ]; then exit 0; fi; ' +
               'git -c credential.helper=\'!f() { echo username=x-access-token; echo "password=${GITHUB_TOKEN}"; }; f\' ' +
               'clone --quiet --branch "$BRANCH" "$REPO_URL" "$DIR"',
           ],
           {
-            env: { REPO_URL: env.repo.url, BRANCH: env.repo.branch, DIR: `/workspace/${env.repo.dir}`, ...(creds['token'] ? { GITHUB_TOKEN: creds['token'] } : {}) },
+            env: { REPO_URL: env.repo.url, BRANCH: env.repo.branch, DIR: `/workspace/${env.repo.dir}`, ...(token ? { GITHUB_TOKEN: token } : {}) },
             timeoutMs: PROVISION_TIMEOUT_MS,
             onLine: (l) => output.push(redact(l, secrets)),
           },
@@ -167,6 +226,7 @@ export function createEnvManager(deps: { db: Db; box: SecretBox; runtime: EnvRun
       if (env.status === 'deleting') throw new EnvError(409, 'Environment is being deleted')
       await db.org(orgId, (q) => setEnvironmentState(q, orgId, id, { status: 'stopping', detail: null }))
       if (env.containerId) await runtime.removeContainer(env.containerId)
+      if (broker && env.egressToken) await broker.close(env.egressToken)
       await db.org(orgId, async (q) => {
         await setEnvironmentState(q, orgId, id, { status: 'stopped', detail: reason === 'stopped' ? null : reason, containerId: null })
         await addEnvironmentEvent(q, orgId, id, 'stopped', userId, reason === 'stopped' ? {} : { reason })
@@ -180,6 +240,7 @@ export function createEnvManager(deps: { db: Db; box: SecretBox; runtime: EnvRun
         await setEnvironmentState(q, orgId, id, { status: 'deleting' })
         await addEnvironmentEvent(q, orgId, id, 'deleting', userId)
       })
+      if (broker && env.egressToken) await broker.close(env.egressToken)
       if (env.containerId) await runtime.removeContainer(env.containerId)
       await runtime.removeVolume(env.volume)
       await db.org(orgId, (q) => q.query('DELETE FROM environments WHERE org_id = $1 AND id = $2', [orgId, id]))
@@ -230,6 +291,9 @@ export function createEnvManager(deps: { db: Db; box: SecretBox; runtime: EnvRun
             if (idleMs > env.idleMinutes * 60_000) {
               await manager.stop(env.orgId, env.id, null, `idle for ${env.idleMinutes} minutes`)
               changed++
+            } else if (broker && env.egressToken) {
+              // Keep the environment's egress session alive (and pick up allow-list changes).
+              await openEnvSession(env, env.egressToken)
             }
           }
         } catch (err) {

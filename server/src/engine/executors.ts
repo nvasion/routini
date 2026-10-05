@@ -9,6 +9,7 @@ import { runImapTask } from '../services/imap.js'
 import { getHost } from '../repos/hosts.js'
 import { createApproval } from '../repos/runs.js'
 import type { ActionConfig, ApprovalConfig } from './spec.js'
+import { runFactoryAction } from './factory.js'
 import type { EngineOptions, StepContext, StepExecutor, StepResult } from './types.js'
 
 interface ExecutorResult {
@@ -62,6 +63,9 @@ export function actionExecutor(opts: EngineOptions['actions'] = {}): StepExecuto
           )
           return finish(ctx, r, { hostId: host.id })
         }
+
+        case 'factory':
+          return runFactoryAction(ctx, cfg, { fetchImpl: opts.factoryFetch, pollMs: opts.factoryPollMs })
 
         case 'imap': {
           const password = await ctx.secret(cfg.credentialKey)

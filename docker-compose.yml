@@ -5,8 +5,9 @@
 #   docker compose up --build -d
 #   open http://localhost     # the first account you create owns the server
 #
-# Services: Postgres, the API, a worker (scheduler + queue + agent containers)
-# and nginx serving the console. Scale workers with `--scale worker=N`.
+# Services: Postgres, the API, a worker (scheduler + queue + agent containers),
+# nginx serving the console and, with the `broker` profile, the egress proxy
+# (credential broker). Scale workers with `--scale worker=N`.
 
 services:
   postgres:
@@ -48,9 +49,39 @@ services:
       # The API provisions environments and serves their terminals, so it
       # needs Docker too (same host as the worker's agent containers).
       DOCKER_HOST: "${DOCKER_HOST:-unix:///var/run/docker.sock}"
+      # Credential broker (enabled when ROUTINI_EGRESS_SECRET is set and the
+      # `broker` profile is on; required in hosted mode for agent steps).
+      ROUTINI_EGRESS_CONTROL_URL: "${ROUTINI_EGRESS_CONTROL_URL:-http://egress:3129}"
+      ROUTINI_EGRESS_SECRET: "${ROUTINI_EGRESS_SECRET:-}"
+      ROUTINI_EGRESS_CONTAINER: routini-egress
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     group_add: ["${DOCKER_GID:-999}"]
+
+  # Credential broker: the only way out for sandboxed agent and environment
+  # containers. Enforces the org egress allow-list and injects credentials
+  # for bound hosts, so containers only ever hold placeholders.
+  # Enable with COMPOSE_PROFILES=broker and ROUTINI_EGRESS_SECRET in .env.
+  egress:
+    build: { context: ./server }
+    profiles: ["broker"]
+    # Fixed name: the broker attaches this container to each org sandbox network.
+    container_name: routini-egress
+    restart: unless-stopped
+    command: ["node", "dist/egress.js"]
+    expose: ["3128", "3129"]
+    environment:
+      ROUTINI_EGRESS_SECRET: "${ROUTINI_EGRESS_SECRET:-}"
+      # Persist the CA so long-lived environments keep trusting it.
+      ROUTINI_EGRESS_CA_DIR: /app/data/ca
+    volumes:
+      # Mounted at /app/data (owned by the node user in the image).
+      - egress_ca:/app/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3129/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
 
   worker:
     build: { context: ./server }
@@ -82,3 +113,4 @@ services:
 
 volumes:
   pg_data:
+  egress_ca:

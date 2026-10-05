@@ -50,6 +50,8 @@ export interface RunStep {
   error: string | null
   startedAt: string | null
   finishedAt: string | null
+  /** A policy approval for this step was granted; run it without re-gating. */
+  policyCleared: boolean
 }
 
 export interface RunEvent {
@@ -72,6 +74,9 @@ export interface Approval {
   decidedBy: string | null
   decidedAt: string | null
   comment: string | null
+  /** "step": an approval step; "policy": a policy rule gating another step. */
+  source: "step" | "policy"
+  rule: string | null
 }
 
 const iso = (v: Date | string | null) => (v ? new Date(v).toISOString() : null)
@@ -127,8 +132,9 @@ interface StepRow {
   error: string | null
   started_at: Date | null
   finished_at: Date | null
+  policy_cleared: boolean
 }
-const STEP_COLS = 'idx, step_id, name, kind, status, attempt, output, error, started_at, finished_at'
+const STEP_COLS = 'idx, step_id, name, kind, status, attempt, output, error, started_at, finished_at, policy_cleared'
 const toStep = (r: StepRow): RunStep => ({
   idx: r.idx,
   stepId: r.step_id,
@@ -140,6 +146,7 @@ const toStep = (r: StepRow): RunStep => ({
   error: r.error,
   startedAt: iso(r.started_at),
   finishedAt: iso(r.finished_at),
+  policyCleared: r.policy_cleared,
 })
 
 interface ApprovalRow {
@@ -153,8 +160,10 @@ interface ApprovalRow {
   decided_by: string | null
   decided_at: Date | null
   comment: string | null
+  source: "step" | "policy"
+  rule: string | null
 }
-const APPROVAL_COLS = 'id, run_id, step_idx, status, message, min_role, requested_at, decided_by, decided_at, comment'
+const APPROVAL_COLS = 'id, run_id, step_idx, status, message, min_role, requested_at, decided_by, decided_at, comment, source, rule'
 const toApproval = (r: ApprovalRow): Approval => ({
   id: r.id,
   runId: r.run_id,
@@ -166,6 +175,8 @@ const toApproval = (r: ApprovalRow): Approval => ({
   decidedBy: r.decided_by,
   decidedAt: iso(r.decided_at),
   comment: r.comment,
+  source: r.source,
+  rule: r.rule,
 })
 
 // ── Events ───────────────────────────────────────────────────────────────────
@@ -346,10 +357,11 @@ export async function updateStep(
   q: Queryable,
   run: Pick<Run, 'id' | 'orgId'>,
   idx: number,
-  patch: { status: StepStatus; output?: unknown; error?: string | null; bumpAttempt?: boolean },
+  patch: { status: StepStatus; output?: unknown; error?: string | null; bumpAttempt?: boolean; policyCleared?: boolean },
 ): Promise<void> {
   await q.query(
     `UPDATE run_steps SET status = $4,
+       policy_cleared = coalesce($10, policy_cleared),
        output = CASE WHEN $5::boolean THEN $6::jsonb ELSE output END,
        error = CASE WHEN $7::boolean THEN $8 ELSE error END,
        attempt = attempt + CASE WHEN $9 THEN 1 ELSE 0 END,
@@ -367,6 +379,7 @@ export async function updateStep(
       patch.error !== undefined,
       patch.error ?? null,
       patch.bumpAttempt ?? false,
+      patch.policyCleared ?? null,
     ],
   )
   await appendEvent(
@@ -387,15 +400,17 @@ export async function createApproval(
   stepIdx: number,
   message: string,
   minRole: Role,
+  opts: { source?: "step" | "policy"; rule?: string } = {},
 ): Promise<Approval> {
+  const source = opts.source ?? "step"
   const [row] = await q.query<ApprovalRow>(
-    `INSERT INTO approvals (org_id, run_id, step_idx, status, message, min_role) VALUES ($1, $2, $3, 'pending', $4, $5)
+    `INSERT INTO approvals (org_id, run_id, step_idx, status, message, min_role, source, rule) VALUES ($1, $2, $3, 'pending', $4, $5, $6, $7)
      ON CONFLICT (run_id, step_idx) DO UPDATE SET status = 'pending', message = excluded.message, min_role = excluded.min_role,
-       requested_at = now(), decided_by = NULL, decided_at = NULL, comment = NULL
+       source = excluded.source, rule = excluded.rule, requested_at = now(), decided_by = NULL, decided_at = NULL, comment = NULL
      RETURNING ${APPROVAL_COLS}`,
-    [run.orgId, run.id, stepIdx, message, minRole],
+    [run.orgId, run.id, stepIdx, message, minRole, source, opts.rule ?? null],
   )
-  await appendEvent(q, run.orgId, run.id, 'approval.requested', { message, minRole }, stepIdx)
+  await appendEvent(q, run.orgId, run.id, 'approval.requested', { message, minRole, source, ...(opts.rule ? { rule: opts.rule } : {}) }, stepIdx)
   return toApproval(row!)
 }
 
@@ -437,4 +452,10 @@ export async function listPendingApprovals(
     [orgId],
   )
   return rows.map((r) => ({ ...toApproval(r), runNumber: r.number, jobName: r.job_name, stepName: r.step_name }))
+}
+
+/** Every approval of a run (approval steps and policy gates), in step order. */
+export async function listApprovalsForRun(q: Queryable, orgId: string, runId: string): Promise<Approval[]> {
+  const rows = await q.query<ApprovalRow>(`SELECT ${APPROVAL_COLS} FROM approvals WHERE org_id = $1 AND run_id = $2 ORDER BY step_idx`, [orgId, runId])
+  return rows.map(toApproval)
 }

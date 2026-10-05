@@ -30,7 +30,7 @@ describe('integrations', () => {
   it('lists the catalog, all not connected, with field metadata but no values', async () => {
     const res = await u.get(base())
     expect(res.status).toBe(200)
-    expect(res.body.integrations.map((i: { id: string }) => i.id)).toEqual(['github', 'slack', 'jira', 'notion', 'linear', 'monday', 'hubspot'])
+    expect(res.body.integrations.map((i: { id: string }) => i.id)).toEqual(['github', 'slack', 'jira', 'notion', 'linear', 'monday', 'hubspot', 'factory'])
     expect(res.body.integrations.every((i: { status: string }) => i.status === 'not_connected')).toBe(true)
     expect(github(res.body)['fields']).toEqual([{ key: 'token', label: 'Personal access token', secret: true }])
   })

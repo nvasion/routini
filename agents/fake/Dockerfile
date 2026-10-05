@@ -3,7 +3,7 @@
 # without a model or an API key.
 # Build from the agents/ directory:  docker build -f fake/Dockerfile -t routini/agent-fake:test .
 FROM alpine:3.20
-RUN apk add --no-cache bash git jq coreutils \
+RUN apk add --no-cache bash git jq coreutils curl ca-certificates \
  && adduser -D -u 1000 agent \
  && mkdir -p /workspace && chown agent:agent /workspace
 COPY entrypoint.sh /usr/local/bin/routini-entrypoint

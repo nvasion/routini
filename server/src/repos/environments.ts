@@ -23,6 +23,8 @@ export interface Environment {
   createdBy: string | null
   createdAt: string
   updatedAt: string
+  /** Egress session token while running under the credential broker (never sent to clients). */
+  egressToken: string | null
 }
 
 interface Row {
@@ -42,10 +44,11 @@ interface Row {
   created_by: string | null
   created_at: Date
   updated_at: Date
+  egress_token: string | null
 }
 
 const COLS =
-  'id, org_id, name, image, repo, status, status_detail, container_id, volume, cpus, memory_mb, idle_minutes, last_active_at, created_by, created_at, updated_at'
+  'id, org_id, name, image, repo, status, status_detail, container_id, volume, cpus, memory_mb, idle_minutes, last_active_at, created_by, created_at, updated_at, egress_token'
 const iso = (v: Date) => new Date(v).toISOString()
 const toEnv = (r: Row): Environment => ({
   id: r.id,
@@ -64,6 +67,7 @@ const toEnv = (r: Row): Environment => ({
   createdBy: r.created_by,
   createdAt: iso(r.created_at),
   updatedAt: iso(r.updated_at),
+  egressToken: r.egress_token,
 })
 
 export async function insertEnvironment(
@@ -163,4 +167,8 @@ export async function listEnvironmentEvents(q: Queryable, orgId: string, envId: 
     [orgId, envId, limit],
   )
   return rows.map((r) => ({ id: Number(r.id), ts: iso(r.ts), type: r.type, userId: r.user_id, data: r.data }))
+}
+
+export async function setEnvironmentEgressToken(q: Queryable, orgId: string, id: string, token: string | null): Promise<void> {
+  await q.query('UPDATE environments SET egress_token = $3 WHERE org_id = $1 AND id = $2', [orgId, id, token])
 }

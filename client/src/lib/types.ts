@@ -46,6 +46,7 @@ export type ActionConfig =
   | { type: 'http'; url: string; method?: string; headers?: Record<string, string>; body?: string; expectStatus?: number; timeoutMs?: number }
   | { type: 'ssh'; hostId: string; command: string }
   | { type: 'imap'; host: string; port?: number; username: string; credentialKey: string; mailbox?: string; search?: string; tls?: boolean }
+  | { type: 'factory'; operation: 'orchestrate' | 'prd'; projectId?: string; prdId?: string; request?: string; runtime?: 'claude-code' | 'omnimancer'; provider?: string; model?: string; createPr?: boolean }
 
 export interface AgentConfig {
   agent: AgentId
@@ -127,6 +128,9 @@ export interface Approval {
   decidedBy: string | null
   decidedAt: string | null
   comment: string | null
+  /** "policy": raised by a policy rule in front of another step. */
+  source?: 'step' | 'policy'
+  rule?: string | null
 }
 
 export interface RunDetail {
@@ -187,6 +191,8 @@ export interface Integration {
   lastTestOk: boolean | null
   lastTestMessage: string | null
   scopes: { agents: AgentId[] }
+  /** Used by Routini itself (e.g. Factory steps), never handed to agents. */
+  serverOnly?: boolean
 }
 
 export type AIEndpoint = 'anthropic' | 'openrouter' | 'digitalocean' | 'aws-bedrock' | 'openai' | 'google' | 'azure' | 'gateway'
@@ -231,4 +237,50 @@ export interface EnvEvent {
   type: string
   userId: string | null
   data: Record<string, unknown>
+}
+
+// ── Policy, egress and MCP (Phase 2) ─────────────────────────────────────────
+
+export type PolicyEffect = 'allow' | 'require_approval' | 'deny'
+
+export interface PolicyMatch {
+  kinds?: Array<'action' | 'agent'>
+  actionTypes?: Array<'http' | 'ssh' | 'imap' | 'factory'>
+  hostTags?: string[]
+  hostGroups?: string[]
+  agentOutputs?: Array<'pr' | 'branch' | 'none'>
+  inEnvironment?: boolean
+  repoHosts?: string[]
+}
+
+export interface PolicyRule {
+  id: string
+  name: string
+  match: PolicyMatch
+  effect: PolicyEffect
+  minRole?: 'member' | 'admin' | 'owner'
+  reason?: string
+}
+
+export interface OrgPolicy {
+  rules: PolicyRule[]
+  egress: { allowedHosts: string[] }
+  updatedAt: string | null
+  isDefault: boolean
+}
+
+export interface PolicyDecision {
+  stepId: string
+  effect: PolicyEffect
+  rule: { id: string; name: string; minRole?: string; reason?: string } | null
+}
+
+export interface McpServer {
+  id: string
+  name: string
+  url: string
+  headerNames: string[]
+  agents: AgentId[]
+  lastTest: { ok: boolean; at: string; message: string } | null
+  createdAt: string
 }

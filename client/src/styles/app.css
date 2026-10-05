@@ -810,3 +810,11 @@ table.table {
 .dock-body .searchbox {
   flex: 0 0 auto;
 }
+
+/* ── Policy ─────────────────────────────────────────────────────────────── */
+.broker-card {
+  border-left: 3px solid var(--off);
+}
+.broker-card.on {
+  border-left-color: var(--ok);
+}
