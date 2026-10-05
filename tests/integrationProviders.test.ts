@@ -166,10 +166,12 @@ describe('Jira', () => {
     expect(result.message).toMatch(/not a valid url/i)
   })
 
-  it('rejects a non-http(s) scheme', async () => {
-    const result = await runProviderTest('jira', { ...creds, siteUrl: 'ftp://acme.atlassian.net' }, { ssrfCheck: safeSsrf })
-    expect(result.ok).toBe(false)
-    expect(result.message).toMatch(/http or https/i)
+  it('rejects a non-https scheme', async () => {
+    for (const siteUrl of ['ftp://acme.atlassian.net', 'http://acme.atlassian.net']) {
+      const result = await runProviderTest('jira', { ...creds, siteUrl }, { ssrfCheck: safeSsrf })
+      expect(result.ok).toBe(false)
+      expect(result.message).toMatch(/must use https/i)
+    }
   })
 
   it('rejects a site URL with embedded credentials', async () => {
@@ -184,7 +186,7 @@ describe('Jira', () => {
 
   it('rejects a loopback/private hostname before making any request', async () => {
     const fetchImpl = mockFetch(200, {})
-    const result = await runProviderTest('jira', { ...creds, siteUrl: 'http://localhost:8080' }, { fetchImpl, ssrfCheck: safeSsrf })
+    const result = await runProviderTest('jira', { ...creds, siteUrl: 'https://localhost:8080' }, { fetchImpl, ssrfCheck: safeSsrf })
     expect(result.ok).toBe(false)
     expect(result.message).toMatch(/not allowed/i)
     expect(fetchImpl).not.toHaveBeenCalled()
