@@ -18,6 +18,7 @@ import { runsRouter } from './routes/runs.js'
 import { hostsRouter } from './routes/hosts.js'
 import { hooksRouter } from './routes/hooks.js'
 import { environmentsRouter } from './routes/environments.js'
+import { policyRouter } from './routes/policy.js'
 import type { ProviderTestContext } from './integrations/providers.js'
 
 export interface AppOptions {
@@ -66,6 +67,7 @@ export function createApp(ctx: AppContext, opts: AppOptions = {}): Express {
   org.use(runsRouter(ctx))
   org.use(hostsRouter(ctx))
   org.use(environmentsRouter(ctx))
+  org.use(policyRouter(ctx))
   app.use('/api/orgs/:org', auth.requireAuth, auth.requireCsrf, org)
 
   app.get('/health', (_req, res) => {

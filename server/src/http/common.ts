@@ -12,6 +12,12 @@ import { createEngine, type Engine } from '../engine/engine.js'
 import type { EngineOptions } from '../engine/types.js'
 import { createEnvManager, type EnvManager } from '../engine/environments.js'
 import { DockerEnvRuntime, type EnvRuntime } from '../services/envRuntime.js'
+import { BrokerClient, brokerConfigFromEnv } from '../egress/client.js'
+
+function brokerFromEnv(): BrokerClient | null {
+  const cfg = brokerConfigFromEnv()
+  return cfg ? new BrokerClient(cfg) : null
+}
 
 /** Everything route factories and the engine need. Built once at boot (or per test). */
 export interface AppContext {
@@ -21,6 +27,8 @@ export interface AppContext {
   hub: EventHub
   engine: Engine
   envs: EnvManager
+  /** Credential broker (egress proxy); null when not configured. */
+  broker: BrokerClient | null
   /** Test doubles for http/ssh/imap (shared by the engine and the host check). */
   actions?: EngineOptions['actions']
 }
@@ -28,10 +36,11 @@ export interface AppContext {
 export function createContext(
   base: { config: Config; db: Db; box: SecretBox },
   engineOpts: EngineOptions = {},
-  extra: { envRuntime?: EnvRuntime } = {},
+  extra: { envRuntime?: EnvRuntime; broker?: BrokerClient | null } = {},
 ): AppContext {
   const ctx = { ...base, actions: engineOpts.actions } as AppContext
   ctx.hub = new EventHub(base.db)
+  ctx.broker = extra.broker === undefined ? brokerFromEnv() : extra.broker
   ctx.envs = createEnvManager({ db: base.db, box: base.box, runtime: extra.envRuntime ?? new DockerEnvRuntime() })
   ctx.engine = createEngine(ctx, engineOpts)
   return ctx

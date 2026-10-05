@@ -26,6 +26,7 @@ import {
   getApproval,
   getRun,
   getRunByNumber,
+  listApprovalsForRun,
   listEvents,
   listPendingApprovals,
   listRecentFailures,
@@ -77,11 +78,7 @@ export function runsRouter(ctx: AppContext): Router {
       const out = await db.org(org.id, async (q) => {
         const run = await runOr404(q, org.id, String(req.params['run']))
         const steps = await listSteps(q, org.id, run.id)
-        const approvals = []
-        for (const s of steps.filter((x) => x.kind === 'approval')) {
-          const a = await getApproval(q, org.id, run.id, s.idx)
-          if (a) approvals.push(a)
-        }
+        const approvals = await listApprovalsForRun(q, org.id, run.id)
         return { run: { ...runSummary(run), jobSnapshot: run.jobSnapshot, trigger: run.trigger, cancelRequested: run.cancelRequested }, steps, approvals }
       })
       res.json(out)
@@ -206,7 +203,16 @@ export function runsRouter(ctx: AppContext): Router {
           if (!decided) throw new HttpError(409, 'Approval was decided concurrently')
           const by = user.displayName || user.email
           await appendEvent(q, org.id, run.id, 'approval.decided', { decision: decided.status, by, comment }, idx)
-          if (decision === 'approve') {
+          if (approval.source === 'policy') {
+            // A policy gate in front of a real step: approving lets that step run (once).
+            if (decision === 'approve') await updateStep(q, run, idx, { status: 'pending', policyCleared: true })
+            else {
+              await updateStep(q, run, idx, {
+                status: 'failed',
+                error: `Denied by ${by} under policy "${approval.rule ?? 'org policy'}"${comment ? `: ${comment}` : ''}`,
+              })
+            }
+          } else if (decision === 'approve') {
             await updateStep(q, run, idx, { status: 'succeeded', output: { approvedBy: by, comment } })
           } else {
             await updateStep(q, run, idx, { status: 'failed', output: { deniedBy: by, comment }, error: `Denied by ${by}${comment ? `: ${comment}` : ''}` })
