@@ -10,6 +10,8 @@ import { createSecretBox } from '../../server/src/crypto/secrets'
 import { createApp } from '../../server/src/app'
 import { createContext, type AppContext } from '../../server/src/http/common'
 import type { EngineOptions } from '../../server/src/engine/types'
+import type { EnvRuntime } from '../../server/src/services/envRuntime'
+import { FakeEnvRuntime } from './fakeEnvRuntime'
 import type { ProviderTestContext } from '../../server/src/integrations/providers'
 
 export const TEST_MASTER_KEY = '00'.repeat(32)
@@ -43,13 +45,17 @@ export interface TestUser {
 }
 
 export async function makeTestApp(
-  opts: { config?: Partial<Config>; providerCtx?: ProviderTestContext; dataDir?: string; engine?: EngineOptions } = {},
+  opts: { config?: Partial<Config>; providerCtx?: ProviderTestContext; dataDir?: string; engine?: EngineOptions; envRuntime?: EnvRuntime } = {},
 ): Promise<TestApp> {
   const config: Config = { ...loadConfig({ NODE_ENV: 'test' }), signup: 'open', ...opts.config }
   const db = opts.dataDir
     ? await openDb({ dataDir: opts.dataDir })
     : await openDb({ dataDir: ':memory:', snapshot: await migratedSnapshot() })
-  const ctx: AppContext = createContext({ config, db, box: createSecretBox(TEST_MASTER_KEY) }, { retryDelayMs: () => 0, ...opts.engine })
+  const ctx: AppContext = createContext(
+    { config, db, box: createSecretBox(TEST_MASTER_KEY) },
+    { retryDelayMs: () => 0, ...opts.engine },
+    { envRuntime: opts.envRuntime ?? new FakeEnvRuntime() },
+  )
   const app = createApp(ctx, { providerCtx: opts.providerCtx })
   const request = supertest(app)
 
@@ -58,6 +64,7 @@ export async function makeTestApp(
     app,
     request: supertest.agent(app),
     close: async () => {
+      await ctx.envs.idle()
       await ctx.hub.stop()
       await db.close()
     },

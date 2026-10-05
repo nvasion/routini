@@ -17,6 +17,7 @@ import { jobsRouter } from './routes/jobs.js'
 import { runsRouter } from './routes/runs.js'
 import { hostsRouter } from './routes/hosts.js'
 import { hooksRouter } from './routes/hooks.js'
+import { environmentsRouter } from './routes/environments.js'
 import type { ProviderTestContext } from './integrations/providers.js'
 
 export interface AppOptions {
@@ -50,6 +51,8 @@ export function createApp(ctx: AppContext, opts: AppOptions = {}): Express {
   )
 
   const auth = createAuth(ctx)
+  // The terminal WebSocket (http/terminal.ts) authenticates upgrades with the same session logic.
+  app.locals['auth'] = auth
   app.use('/api/auth', auth.router)
 
   // Every org route: authenticated, CSRF-checked for mutations, membership-resolved.
@@ -62,6 +65,7 @@ export function createApp(ctx: AppContext, opts: AppOptions = {}): Express {
   org.use(jobsRouter(ctx))
   org.use(runsRouter(ctx))
   org.use(hostsRouter(ctx))
+  org.use(environmentsRouter(ctx))
   app.use('/api/orgs/:org', auth.requireAuth, auth.requireCsrf, org)
 
   app.get('/health', (_req, res) => {

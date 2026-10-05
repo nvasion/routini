@@ -77,6 +77,7 @@ function General() {
   const o = org.org
   const [name, setName] = useState(o?.name ?? '')
   const [maxRuns, setMaxRuns] = useState(String(o?.limits.maxConcurrentRuns ?? ''))
+  const [maxEnvs, setMaxEnvs] = useState(String(o?.limits.maxRunningEnvironments ?? ''))
   const [minutes, setMinutes] = useState(o?.limits.agentMinutesPerDay?.toString() ?? '')
   const [budget, setBudget] = useState(o?.limits.dailyBudgetUsd?.toString() ?? '')
   const { busy, run, feedback } = useAction()
@@ -84,6 +85,7 @@ function General() {
     if (!o) return
     setName(o.name)
     setMaxRuns(String(o.limits.maxConcurrentRuns))
+    setMaxEnvs(String(o.limits.maxRunningEnvironments))
     setMinutes(o.limits.agentMinutesPerDay?.toString() ?? '')
     setBudget(o.limits.dailyBudgetUsd?.toString() ?? '')
   }, [o])
@@ -96,7 +98,7 @@ function General() {
       onSubmit={(e) => {
         e.preventDefault()
         void run(async () => {
-          await api(org.api(), { method: 'PUT', body: { name, limits: { maxConcurrentRuns: Number(maxRuns), agentMinutesPerDay: num(minutes), dailyBudgetUsd: num(budget) } } })
+          await api(org.api(), { method: 'PUT', body: { name, limits: { maxConcurrentRuns: Number(maxRuns), maxRunningEnvironments: Number(maxEnvs), agentMinutesPerDay: num(minutes), dailyBudgetUsd: num(budget) } } })
           await org.reload()
         }, 'Saved.')
       }}
@@ -108,6 +110,7 @@ function General() {
         </p>
         <div className="row">
           <Field label="Concurrent runs">{(id) => <input id={id} className="input" inputMode="numeric" value={maxRuns} onChange={(e) => setMaxRuns(e.target.value)} />}</Field>
+          <Field label="Running environments">{(id) => <input id={id} className="input" inputMode="numeric" value={maxEnvs} onChange={(e) => setMaxEnvs(e.target.value)} />}</Field>
           <Field label="Agent minutes per day" hint="Blank = no limit (if the plan allows).">
             {(id) => <input id={id} className="input" inputMode="numeric" value={minutes} onChange={(e) => setMinutes(e.target.value)} />}
           </Field>

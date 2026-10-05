@@ -8,7 +8,7 @@ import { initials } from '../lib/format'
 import { useApi, useEventStream } from '../lib/hooks'
 import { THEMES, useTheme } from '../lib/theme'
 import type { Host, Inbox, Job } from '../lib/types'
-import { Dock, DockProvider, useDock } from './Dock'
+import { Dock, DOCK_TABS, DockProvider, useDock, type DockTab } from './Dock'
 import { OrgProvider, useOrg } from './OrgContext'
 
 export function OrgShell() {
@@ -47,7 +47,7 @@ function DockFromQuery() {
   const dock = useDock()
   const tab = new URLSearchParams(window.location.search).get('tab')
   useEffect(() => {
-    if (tab === 'live' || tab === 'servers') dock.show(tab)
+    if (tab && (DOCK_TABS as readonly string[]).includes(tab)) dock.show(tab as DockTab)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab])
   return <Dock standalone />
@@ -231,6 +231,7 @@ function LeftNav() {
       {item('/inbox', 'inbox', 'Inbox', needs > 0 ? <span className="count" aria-label={`${needs} need attention`}>{needs}</span> : null)}
       {item('/runs', 'runs', 'Runs', running > 0 ? <span className="dot running pulse" style={{ marginLeft: 'auto' }} aria-label={`${running} running`} /> : null)}
       {item('/jobs', 'jobs', 'Jobs')}
+      {item('/environments', 'box', 'Environments')}
       {item('/integrations', 'plug', 'Integrations')}
       {item('/settings', 'settings', 'Settings')}
       <div className="nav-label" style={{ paddingTop: 18 }}>
@@ -239,6 +240,10 @@ function LeftNav() {
       <button type="button" className="nav-item" onClick={() => dock.show('servers')}>
         <Icon name="server" />
         <span>Servers</span>
+      </button>
+      <button type="button" className="nav-item" onClick={() => dock.show('terminal')}>
+        <Icon name="terminal" />
+        <span>Terminal</span>
       </button>
       <button type="button" className="nav-item" onClick={() => dock.show('live')}>
         <Icon name="live" />

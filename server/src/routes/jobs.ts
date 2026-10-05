@@ -20,6 +20,7 @@ import { parseJobSpec, SpecError, type JobSpec } from '../engine/spec.js'
 import { archiveJob, createJob, getJob, listJobs, updateJob, type Job } from '../repos/jobs.js'
 import { createRun, type Run } from '../repos/runs.js'
 import { getHost } from '../repos/hosts.js'
+import { getEnvironment } from '../repos/environments.js'
 import { deleteSecret, hasSecret, putSecret } from '../repos/credentials.js'
 import type { Queryable } from '../db/index.js'
 
@@ -39,6 +40,9 @@ async function checkReferences(q: Queryable, orgId: string, spec: JobSpec): Prom
   for (const [i, s] of spec.steps.entries()) {
     if (s.kind === 'action' && s.config.type === 'ssh' && !(await getHost(q, orgId, s.config.hostId))) {
       throw badRequest(`steps[${i}].config.hostId does not match a host in this org`)
+    }
+    if (s.kind === 'agent' && s.config.environmentId && !(await getEnvironment(q, orgId, s.config.environmentId))) {
+      throw badRequest(`steps[${i}].config.environmentId does not match an environment in this org`)
     }
   }
 }

@@ -116,7 +116,7 @@ describe('run page', () => {
   it('hides approve for a viewer and cancels for a member', async () => {
     mockFetch(
       baseRoutes({
-        'GET /api/orgs/acme': () => ({ org: { id: 'o1', slug: 'acme', name: 'Acme', plan: 'free', role: 'viewer', createdAt: '', limits: { maxConcurrentRuns: 2, agentMinutesPerDay: null, dailyBudgetUsd: null } } }),
+        'GET /api/orgs/acme': () => ({ org: { id: 'o1', slug: 'acme', name: 'Acme', plan: 'free', role: 'viewer', createdAt: '', limits: { maxConcurrentRuns: 2, maxRunningEnvironments: 1, agentMinutesPerDay: null, dailyBudgetUsd: null } } }),
         'GET /api/orgs/acme/runs/7': () => DETAIL,
       }),
     )

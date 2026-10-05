@@ -26,6 +26,8 @@ export interface UserWithHash extends User {
 
 export interface OrgLimits {
   maxConcurrentRuns: number
+  /** Environments that may be running at once. */
+  maxRunningEnvironments: number
   /** Minutes of agent-container time per UTC day; null = unlimited. */
   agentMinutesPerDay: number | null
   /** Model spend per UTC day in USD; null = no cap (bring-your-own keys). */
@@ -48,8 +50,8 @@ export interface OrgMembership {
 
 /** Plan defaults. Per-org overrides in orgs.limits may only tighten these. */
 export const PLAN_LIMITS: Record<string, OrgLimits> = {
-  free: { maxConcurrentRuns: 2, agentMinutesPerDay: 120, dailyBudgetUsd: null },
-  selfhost: { maxConcurrentRuns: 10, agentMinutesPerDay: null, dailyBudgetUsd: null },
+  free: { maxConcurrentRuns: 2, maxRunningEnvironments: 1, agentMinutesPerDay: 120, dailyBudgetUsd: null },
+  selfhost: { maxConcurrentRuns: 10, maxRunningEnvironments: 10, agentMinutesPerDay: null, dailyBudgetUsd: null },
 }
 
 interface UserRow {
@@ -84,6 +86,7 @@ export function effectiveLimits(plan: string, overrides: Partial<OrgLimits> | nu
   }
   return {
     maxConcurrentRuns: tighten(base.maxConcurrentRuns, o.maxConcurrentRuns) ?? base.maxConcurrentRuns,
+    maxRunningEnvironments: tighten(base.maxRunningEnvironments, o.maxRunningEnvironments) ?? base.maxRunningEnvironments,
     agentMinutesPerDay: tighten(base.agentMinutesPerDay, o.agentMinutesPerDay),
     dailyBudgetUsd: tighten(base.dailyBudgetUsd, o.dailyBudgetUsd),
   }

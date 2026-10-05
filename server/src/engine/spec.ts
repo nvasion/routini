@@ -33,6 +33,8 @@ export interface AgentConfig {
   output?: 'pr' | 'branch' | 'none'
   check?: { command: string }
   model?: string
+  /** Run inside this persistent environment (and its repository) instead of a fresh container. */
+  environmentId?: string
   resources?: { cpus?: number; memoryMb?: number }
 }
 
@@ -181,9 +183,15 @@ function parseAgent(c: Record<string, unknown>, p: string): AgentConfig {
     if (!check.valid) fail(`${p}.repo.url: ${check.error}`)
     cfg.repo = { url, baseBranch: branch }
   }
+  if (c['environmentId'] !== undefined) {
+    const envId = str(c['environmentId'], `${p}.environmentId`, 36)!
+    if (!UUID_RE.test(envId)) fail(`${p}.environmentId must be an environment id`)
+    if (cfg.repo) fail(`${p}: use either environmentId (its repository) or repo, not both`)
+    cfg.environmentId = envId
+  }
   if (c['output'] !== undefined) {
     if (!['pr', 'branch', 'none'].includes(c['output'] as string)) fail(`${p}.output must be one of: pr, branch, none`)
-    if (c['output'] !== 'none' && !cfg.repo) fail(`${p}.output "${String(c['output'])}" needs ${p}.repo`)
+    if (c['output'] !== 'none' && !cfg.repo && !cfg.environmentId) fail(`${p}.output "${String(c['output'])}" needs ${p}.repo or ${p}.environmentId`)
     cfg.output = c['output'] as AgentConfig['output']
   } else if (cfg.repo) {
     cfg.output = 'pr'

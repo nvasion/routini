@@ -34,6 +34,8 @@ export interface StepForm {
   output: 'pr' | 'branch' | 'none'
   checkCommand: string
   model: string
+  /** Run in this environment (its repository) instead of a fresh container. */
+  environmentId: string
   // approval
   message: string
   minRole: 'member' | 'admin' | 'owner'
@@ -82,6 +84,7 @@ export function emptyStep(kind: StepKind, index: number): StepForm {
     output: 'pr',
     checkCommand: '',
     model: '',
+    environmentId: '',
     message: '',
     minRole: 'member',
   }
@@ -125,7 +128,7 @@ function fromStep(s: Step, i: number): StepForm {
     }
   } else if (s.kind === 'agent') {
     const c = s.config
-    Object.assign(f, { agent: c.agent, prompt: c.prompt, repoUrl: c.repo?.url ?? '', baseBranch: c.repo?.baseBranch ?? 'main', output: c.output ?? (c.repo ? 'pr' : 'none'), checkCommand: c.check?.command ?? '', model: c.model ?? '' })
+    Object.assign(f, { agent: c.agent, prompt: c.prompt, repoUrl: c.repo?.url ?? '', baseBranch: c.repo?.baseBranch ?? 'main', output: c.output ?? (c.repo || c.environmentId ? 'pr' : 'none'), checkCommand: c.check?.command ?? '', model: c.model ?? '', environmentId: c.environmentId ?? '' })
   } else {
     Object.assign(f, { message: s.config.message, minRole: s.config.minRole ?? 'member' })
   }
@@ -179,7 +182,11 @@ export function toPayload(form: JobForm): PayloadResult {
     } else if (s.kind === 'agent') {
       if (!s.prompt.trim()) errors.push(`${label}: tell the agent what to do.`)
       const cfg: Record<string, unknown> = { agent: s.agent, prompt: s.prompt }
-      if (s.repoUrl.trim()) {
+      if (s.environmentId) {
+        // The environment brings its own repository.
+        cfg['environmentId'] = s.environmentId
+        cfg['output'] = s.output
+      } else if (s.repoUrl.trim()) {
         cfg['repo'] = { url: s.repoUrl.trim(), baseBranch: s.baseBranch.trim() || 'main' }
         cfg['output'] = s.output
       }

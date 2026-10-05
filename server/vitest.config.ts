@@ -22,5 +22,7 @@ export default defineConfig({
   resolve: {
     // Fall back to server-local node_modules for server-side packages (e.g. express)
     moduleDirectories: ['node_modules', 'server/node_modules'],
+    // Test files live outside server/, so bare imports of server-only packages need a pointer.
+    alias: { ws: path.resolve(__dirname, 'node_modules/ws/wrapper.mjs') },
   },
 })

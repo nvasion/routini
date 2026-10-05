@@ -169,7 +169,7 @@ function stepSummary(spec: Step | undefined): string {
     if (c.type === 'ssh') return `ssh: ${c.command}`
     return `imap: ${c.username}@${c.host}`
   }
-  if (spec.kind === 'agent') return `${spec.config.agent}${spec.config.repo ? ` · ${spec.config.repo.url}@${spec.config.repo.baseBranch}` : ''}`
+  if (spec.kind === 'agent') return `${spec.config.agent}${spec.config.environmentId ? ' · in an environment' : spec.config.repo ? ` · ${spec.config.repo.url}@${spec.config.repo.baseBranch}` : ''}`
   return spec.config.message
 }
 

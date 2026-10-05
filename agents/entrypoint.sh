@@ -19,7 +19,7 @@ fail() {
 [ -n "${ROUTINI_PROMPT:-}" ] || fail "ROUTINI_PROMPT is empty"
 mkdir -p /workspace && cd /workspace || fail "cannot enter /workspace"
 
-if [ -n "${REPO_URL:-}" ]; then
+if [ -n "${REPO_URL:-}" ] || [ -n "${ROUTINI_REPO_DIR:-}" ]; then
   if [ -n "${GITHUB_TOKEN:-}" ]; then
     # Token comes from the environment at use time; it is never written to disk.
     git config --global credential.https://github.com.helper \
@@ -28,6 +28,21 @@ if [ -n "${REPO_URL:-}" ]; then
   git config --global user.name "Routini"
   git config --global user.email "routini@users.noreply.tynhub.com"
   git config --global advice.detachedHead false
+fi
+
+if [ -n "${ROUTINI_REPO_DIR:-}" ]; then
+  # Inside a persistent environment: work in a fresh git worktree so the
+  # person's own checkout is never touched; the result stays for inspection.
+  [ -d "$ROUTINI_REPO_DIR/.git" ] || fail "no git repository at $ROUTINI_REPO_DIR"
+  cd "$ROUTINI_REPO_DIR" || fail "cannot enter $ROUTINI_REPO_DIR"
+  git fetch --quiet origin "${BASE_BRANCH:-main}" 2>&1 | sed 's/^/[git] /'
+  [ "${PIPESTATUS[0]}" -eq 0 ] || fail "git fetch of ${BASE_BRANCH:-main} failed"
+  wt="/workspace/.routini/$(printf '%s' "${WORK_BRANCH:-routini/work}" | tr '/' '-')"
+  rm -rf "$wt"
+  git worktree prune
+  git worktree add --quiet -B "${WORK_BRANCH:-routini/work}" "$wt" "origin/${BASE_BRANCH:-main}" || fail "cannot create worktree $wt"
+  cd "$wt" || fail "cannot enter $wt"
+elif [ -n "${REPO_URL:-}" ]; then
   git clone --quiet --depth 50 --branch "${BASE_BRANCH:-main}" "$REPO_URL" repo 2>&1 | sed 's/^/[git] /' \
     || fail "git clone of ${BASE_BRANCH:-main} failed"
   [ -d repo/.git ] || fail "git clone of ${BASE_BRANCH:-main} failed"

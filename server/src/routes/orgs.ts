@@ -108,6 +108,7 @@ export function orgRouter(ctx: AppContext): Router {
           ;(out as Record<string, unknown>)[k] = v
         }
         posInt('maxConcurrentRuns', false)
+        posInt('maxRunningEnvironments', false)
         posInt('agentMinutesPerDay', true)
         posInt('dailyBudgetUsd', true)
         // Stored overrides can only tighten plan limits (see effectiveLimits).

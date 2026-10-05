@@ -45,6 +45,12 @@ services:
       SMTP_USER: "${SMTP_USER:-}"
       SMTP_PASS: "${SMTP_PASS:-}"
       SMTP_FROM: "${SMTP_FROM:-noreply@routini.dev}"
+      # The API provisions environments and serves their terminals, so it
+      # needs Docker too (same host as the worker's agent containers).
+      DOCKER_HOST: "${DOCKER_HOST:-unix:///var/run/docker.sock}"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    group_add: ["${DOCKER_GID:-999}"]
 
   worker:
     build: { context: ./server }
