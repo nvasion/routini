@@ -182,8 +182,9 @@ async function testJira(
     return { ok: false, message: 'Jira site URL is not a valid URL' }
   }
 
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    return { ok: false, message: 'Jira site URL must use http or https' }
+  // https only: the API token travels in a basic-auth header.
+  if (parsed.protocol !== 'https:') {
+    return { ok: false, message: 'Jira site URL must use https' }
   }
   if (parsed.username || parsed.password) {
     return { ok: false, message: 'Jira site URL must not contain embedded credentials' }
