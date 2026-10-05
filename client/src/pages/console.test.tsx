@@ -131,9 +131,9 @@ describe('run page', () => {
 
 describe('dock and theme', () => {
   const HOSTS = [
-    { id: 'h1', name: 'prod-web-01', group: 'prod', address: '10.0.0.11', port: 22, username: 'deploy', auth: 'key', credentialKey: 'ssh.prod', tags: ['web'], lastCheck: { ok: true, at: '2026-10-04T11:00:00Z', diskUsedPct: 40, memUsedPct: 50 } },
-    { id: 'h2', name: 'prod-web-02', group: 'prod', address: '10.0.0.12', port: 22, username: 'deploy', auth: 'key', credentialKey: 'ssh.prod', tags: ['web'], lastCheck: null },
-    { id: 'h3', name: 'homelab-01', group: 'self-hosted', address: '192.168.1.40', port: 22, username: 'me', auth: 'password', credentialKey: 'pw', tags: [], lastCheck: null },
+    { id: 'h1', name: 'prod-web-01', group: 'prod', address: '10.0.0.11', port: 22, username: 'deploy', auth: 'key', credentialKey: 'ssh.prod', tags: ['web'], lastCheck: { ok: true, at: '2026-10-04T11:00:00Z', diskUsedPct: 40, memUsedPct: 50 }, transport: 'ssh', runner: null },
+    { id: 'h2', name: 'prod-web-02', group: 'prod', address: '10.0.0.12', port: 22, username: 'deploy', auth: 'key', credentialKey: 'ssh.prod', tags: ['web'], lastCheck: null, transport: 'ssh', runner: null },
+    { id: 'h3', name: 'homelab-01', group: 'self-hosted', address: '192.168.1.40', port: 22, username: 'me', auth: 'password', credentialKey: 'pw', tags: [], lastCheck: null, transport: 'ssh', runner: null },
   ]
 
   it('lists hosts by group and runs a health check', async () => {

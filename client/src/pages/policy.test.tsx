@@ -35,7 +35,7 @@ describe('policy settings', () => {
     renderAt('/o/acme/settings/policy')
     const main = await screen.findByRole('main')
     expect(await within(main).findByText('Credential broker off')).toBeTruthy()
-    expect((within(main).getByLabelText('SSH host tags') as HTMLInputElement).value).toBe('prod')
+    expect((within(main).getByLabelText('Host tags') as HTMLInputElement).value).toBe('prod')
 
     fireEvent.click(within(main).getByRole('button', { name: 'Rule' }))
     const names = within(main).getAllByLabelText('Rule name')

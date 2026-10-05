@@ -66,6 +66,7 @@ export async function makeTestApp(
     request: supertest.agent(app),
     close: async () => {
       await ctx.envs.idle()
+      await ctx.runners.stop()
       await ctx.hub.stop()
       await db.close()
     },

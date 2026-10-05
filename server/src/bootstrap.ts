@@ -15,6 +15,7 @@ import { Scheduler } from './engine/scheduler.js'
 import { Worker } from './engine/worker.js'
 import { agentExecutor, defaultAgentImages, killStepContainers } from './engine/agent.js'
 import { DockerService } from './services/docker.js'
+import { cancelStepRunnerTasks } from './repos/runners.js'
 
 export async function bootstrap(config: Config = loadConfig()): Promise<AppContext> {
   const db = await openDb({ databaseUrl: config.databaseUrl, dataDir: config.dataDir })
@@ -26,6 +27,8 @@ export async function bootstrap(config: Config = loadConfig()): Promise<AppConte
     onStepLost: async (run, idx) => {
       const killed = await killStepContainers(docker, run.id, idx)
       if (killed) console.log(`[engine] removed ${killed} orphaned container(s) of run ${run.id} step ${idx}`)
+      // Commands it left running on runners: ask the runners to stop them.
+      await base.db.org(run.orgId, (q) => cancelStepRunnerTasks(q, run.orgId, run.id, idx))
     },
     onRunFinished: runNotifier(base),
   })

@@ -12,9 +12,10 @@ TynHub at routini.tynhub.com.
 
 ```
 Trigger ─▶ Job ─▶ Run ─▶ Steps
-manual        trigger    action    http · ssh · imap · factory
+manual        trigger    action    http · command (runner or ssh) · imap · factory
 cron (tz)     + steps    agent     a coding agent in a container → PR
 webhook                  approval  waits for a person
+alert
 ```
 
 - A **job** is a trigger plus an ordered list of steps. Each step has a `when`
@@ -50,12 +51,25 @@ webhook                  approval  waits for a person
   stored like any other secret and brokered the same way.
 - **Factory** is an integration: a `factory` action starts an orchestration or a
   PRD execution on Factory and waits for it, recording the pull request.
+- **Fleet:** servers connect with [routini-runner](https://github.com/nvasion/routini-runner)
+  (Apache-2.0), a small agent that only dials out: no inbound ports and no SSH
+  keys stored in Routini. Enroll one with a one-time install command; it reports
+  health every minute and runs command steps and terminals as its own user.
+  SSH hosts keep working, and commands and terminals behave the same on both.
+  Terminal sessions on hosts are admin-only and audited.
+- **The SRE loop:** monitoring tools (Alertmanager, Grafana, any webhook) post
+  alerts to `/api/alerts/:org`. A firing alert opens an **incident** (repeats are
+  deduplicated) and starts every job with a matching **alert trigger**. Steps can
+  use `{{alert.labels.instance}}`, `{{steps.diag.stdout}}` and friends, and a
+  command step can target **the alert's host**. Template values reach shells as
+  variables, never as command text, so hostile labels stay inert. When the
+  alert resolves, Routini drafts a **postmortem** from what actually happened.
 
 ## The console
 
 Inbox (what needs you, what's live, what's next) · Runs · live run timeline ·
-Jobs and the job editor · Environments · Integrations and MCP servers · Settings
-(including Policy). The right-hand **dock** shows
+Incidents and postmortems · Jobs and the job editor · Fleet · Environments ·
+Integrations and MCP servers · Settings (including Policy and Alerts). The right-hand **dock** shows
 your servers with health checks, and a live view of any run; it collapses or
 pops out into its own window. Three themes: **Routini** (default), **TynHub
 dark** and **TynHub light**.
@@ -120,6 +134,7 @@ stored secrets cannot be decrypted.
 | `ROUTINI_AGENT_IMAGE_CLAUDE` | `routini/agent-claude:latest` | Agent image (also `_OMNIMANCER`, `_OPENCODE`). |
 | `ROUTINI_WORKER_CONCURRENCY` | `4` | Runs per worker process. |
 | `ROUTINI_ENV_IMAGES` | agent images | Hosted mode: images environments may use (comma separated). Self-host allows any image. |
+| `ROUTINI_PUBLIC_URL` | `CLIENT_URL` | Where runners and monitoring tools reach this server (install commands and the alert endpoint use it). |
 | `ROUTINI_EGRESS_CONTROL_URL`, `ROUTINI_EGRESS_SECRET` | — | Credential broker: the egress proxy's control API and its shared secret. Both set = broker on. |
 | `ROUTINI_EGRESS_PROXY_HOST`, `ROUTINI_EGRESS_PROXY_PORT` | `routini-egress`, `3128` | The proxy as sandboxed containers see it (a network alias). |
 | `ROUTINI_EGRESS_CONTAINER` | `routini-egress` | Proxy container, attached to each org's sandbox network. |
@@ -160,12 +175,19 @@ Under `/api/orgs/:org`:
 | Jobs | `GET/POST /jobs`, `GET/PUT/DELETE /jobs/:id`, `POST /jobs/:id/run` |
 | Runs | `GET /runs`, `GET /runs/:run`, `GET /runs/:run/events`, `GET /runs/:run/stream` (SSE, resumes from `Last-Event-ID`), `POST /runs/:run/cancel`, `POST /runs/:run/rerun`, `POST /runs/:run/steps/:idx/approve` and `…/deny` |
 | Inbox | `GET /inbox`, `GET /stream` (SSE of run changes) |
-| Hosts | `GET/POST /hosts`, `GET/PUT/DELETE /hosts/:id`, `POST /hosts/:id/check` |
+| Hosts | `GET/POST /hosts`, `GET/PUT/DELETE /hosts/:id`, `POST /hosts/:id/check`, `GET /hosts/:id/events`; WebSocket `/hosts/:id/terminal` (admin) |
+| Runners | `POST /runners/enrollments` (admin), `GET /runners`, `DELETE /runners/:id` (admin) |
+| Incidents | `GET /incidents`, `GET /incidents/:number`, `POST /incidents/:number/resolve`, `…/notes`, `…/postmortem/generate`, `PUT …/postmortem`; `GET /alerts/settings`, `POST /alerts/token` (admin) |
 | Environments | `GET/POST /environments`, `GET/PUT/DELETE /environments/:id`, `POST /environments/:id/start`, `…/stop`, `…/exec`; WebSocket `…/terminal` |
 | Integrations | `GET /integrations`, `PUT/DELETE /integrations/:id`, `POST /integrations/:id/test` |
 | Settings | `GET/PUT /settings`, `GET /credentials`, `PUT/DELETE /credentials/:key` |
 | Policy | `GET/PUT /policy` (rules + egress allow-list), `POST /policy/evaluate` (dry run for steps) |
 | MCP servers | `GET/POST /mcp-servers`, `PUT/DELETE /mcp-servers/:id`, `POST /mcp-servers/:id/test` |
+
+Alerts: `POST /api/alerts/:org` with `Authorization: Bearer <org alert token>`
+(Alertmanager and Grafana webhooks, or generic JSON). Runners: `POST
+/api/runner/enroll` (one-time token) and the WebSocket `/api/runner/connect`; the
+wire protocol is [PROTOCOL.md](https://github.com/nvasion/routini-runner/blob/main/PROTOCOL.md).
 
 Webhook triggers: `POST /api/hooks/:org/:jobId` with
 `Authorization: Bearer <secret>` (works with Alertmanager) or
@@ -179,13 +201,14 @@ server/src/
   config.ts  bootstrap.ts  index.ts (API)  worker.ts (worker)  app.ts
   db/        Postgres + PGlite drivers, migrations, tenancy (org/system transactions)
   repos/     data access: identity, credentials, integrations, settings, jobs, runs, hosts,
-             environments, policy, mcp
+             environments, policy, mcp, runners, incidents
   engine/    spec, engine (run state machine), worker (queue), scheduler, executors,
              agent (+ agentStream parser), hub (SSE fan-out), notify,
-             environments, policy, factory
+             environments, policy, factory, alerts, template, prepare, postmortem
+  runner/    runner gateway (routini-runner connections) and worker-side command execution
   egress/    credential broker: egress proxy (egress.ts), CA, broker client
   routes/    org-scoped HTTP APIs, hooks
-  http/      auth, org context, SSE, errors
+  http/      auth, org context, SSE, errors, environment and host terminals
   services/  http / ssh / imap / email executors, Docker
 client/src/  lib (api, auth, theme, hooks), shell (top bar, nav, dock), pages, styles
 agents/      agent image contract, Claude Code image, fake replay image
@@ -195,7 +218,7 @@ tests/       server tests (Vitest); client tests live next to their code
 ```bash
 make test           # server (embedded Postgres) + client
 make test-pg        # needs ROUTINI_TEST_PG_URL: real Postgres, non-superuser owner
-make test-docker    # needs Docker: agents, environments and the credential broker, for real
+make test-docker    # needs Docker: agents, environments, the credential broker and routini-runner, for real
 ```
 
 ## License

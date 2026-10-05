@@ -10,6 +10,7 @@ import type { Queryable } from '../db/index.js'
 import type { Job } from './jobs.js'
 import type { Step } from '../engine/spec.js'
 import type { Role } from './identity.js'
+import type { NormalizedAlert } from '../engine/alerts.js'
 
 export type RunStatus = 'queued' | 'running' | 'waiting' | 'succeeded' | 'failed' | 'canceled'
 export type StepStatus = 'pending' | 'running' | 'waiting' | 'succeeded' | 'failed' | 'skipped' | 'canceled'
@@ -20,6 +21,7 @@ export type RunTrigger =
   | { kind: 'cron'; scheduledFor: string }
   | { kind: 'webhook'; payload?: unknown }
   | { kind: 'retry'; previousRunId: string }
+  | { kind: 'alert'; incidentId: string; incidentNumber: number; alert: NormalizedAlert; hostId: string | null }
 
 export interface Run {
   id: string

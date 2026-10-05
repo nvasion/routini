@@ -216,6 +216,7 @@ function LeftNav() {
   useEventStream(org.api('/stream'), () => void inbox.reload(), ['run'])
   const needs = (inbox.data?.approvals.length ?? 0) + (inbox.data?.failures.length ?? 0)
   const running = (inbox.data?.live ?? []).filter((r) => r.status === 'running').length
+  const openIncidents = inbox.data?.incidents?.length ?? 0
 
   const item = (to: string, icon: IconName, label: string, extra?: ReactNode) => (
     <NavLink to={org.path(to)} className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}>
@@ -230,7 +231,9 @@ function LeftNav() {
       <div className="nav-label">Work</div>
       {item('/inbox', 'inbox', 'Inbox', needs > 0 ? <span className="count" aria-label={`${needs} need attention`}>{needs}</span> : null)}
       {item('/runs', 'runs', 'Runs', running > 0 ? <span className="dot running pulse" style={{ marginLeft: 'auto' }} aria-label={`${running} running`} /> : null)}
+      {item('/incidents', 'alert', 'Incidents', openIncidents > 0 ? <span className="count" aria-label={`${openIncidents} open incidents`}>{openIncidents}</span> : null)}
       {item('/jobs', 'jobs', 'Jobs')}
+      {item('/fleet', 'server', 'Fleet')}
       {item('/environments', 'box', 'Environments')}
       {item('/integrations', 'plug', 'Integrations')}
       {item('/settings', 'settings', 'Settings')}

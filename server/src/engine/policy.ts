@@ -148,7 +148,7 @@ export async function stepFacts(q: Queryable, orgId: string, step: Step): Promis
   if (step.kind === 'approval') return { kind: 'approval' }
   if (step.kind === 'action') {
     const facts: StepFacts = { kind: 'action', actionType: step.config.type as ActionType }
-    if (step.config.type === 'ssh') {
+    if (step.config.type === 'ssh' && step.config.hostId) {
       const host = await getHost(q, orgId, step.config.hostId)
       if (host) facts.host = { tags: host.tags, group: host.group }
     }

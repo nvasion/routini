@@ -26,6 +26,7 @@ const PATHS = {
   refresh: 'M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7',
   trash: 'M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3',
   external: 'M14 4h6v6M20 4l-9 9M18 14v6H4V6h6',
+  alert: 'M12 3l10 18H2zM12 10v4M12 17h.01',
 } as const
 export type IconName = keyof typeof PATHS
 
@@ -82,7 +83,7 @@ export function Empty({ children }: { children: ReactNode }) {
 
 // ── Modal ────────────────────────────────────────────────────────────────────
 
-export function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
+export function Modal({ title, onClose, children, wide = false }: { title: string; onClose: () => void; children: ReactNode; wide?: boolean }) {
   const ref = useRef<HTMLDivElement>(null)
   useEffect(() => {
     const prev = document.activeElement as HTMLElement | null
@@ -98,7 +99,7 @@ export function Modal({ title, onClose, children }: { title: string; onClose: ()
   }, [onClose])
   return (
     <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="modal" role="dialog" aria-modal="true" aria-label={title} ref={ref}>
+      <div className={`modal${wide ? ' wide' : ''}`} role="dialog" aria-modal="true" aria-label={title} ref={ref}>
         <div className="modal-head">
           <h2>{title}</h2>
           <button type="button" className="btn icon" aria-label="Close" onClick={onClose}>

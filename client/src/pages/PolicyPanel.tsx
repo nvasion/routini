@@ -262,7 +262,7 @@ function RuleCard(props: { rule: RuleForm; index: number; count: number; onChang
             label="Action types"
             options={[
               ['http', 'HTTP'],
-              ['ssh', 'SSH'],
+              ['ssh', 'Commands on hosts'],
               ['imap', 'IMAP'],
               ['factory', 'Factory'],
             ]}
@@ -270,10 +270,10 @@ function RuleCard(props: { rule: RuleForm; index: number; count: number; onChang
             onChange={(v) => setMatch({ actionTypes: v })}
           />
           <div className="row">
-            <Field label="SSH host tags" hint="Any of these, e.g. prod">
+            <Field label="Host tags" hint="Any of these, e.g. prod">
               {(id) => <input id={id} className="input mono" value={r.lists.hostTags} onChange={(e) => setList('hostTags', e.target.value)} />}
             </Field>
-            <Field label="SSH host groups">{(id) => <input id={id} className="input mono" value={r.lists.hostGroups} onChange={(e) => setList('hostGroups', e.target.value)} />}</Field>
+            <Field label="Host groups">{(id) => <input id={id} className="input mono" value={r.lists.hostGroups} onChange={(e) => setList('hostGroups', e.target.value)} />}</Field>
           </div>
         </>
       )}

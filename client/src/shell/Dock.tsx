@@ -12,6 +12,7 @@ import { useApi, useEventStream } from '../lib/hooks'
 import type { Host, HostCheck, Inbox, RunEvent } from '../lib/types'
 import { useOrg } from './OrgContext'
 import { EnvsPanel, TerminalPanel } from './EnvPanels'
+import { hostState } from '../pages/FleetPage'
 
 export const DOCK_TABS = ['servers', 'envs', 'terminal', 'live'] as const
 export type DockTab = (typeof DOCK_TABS)[number]
@@ -129,21 +130,6 @@ export function Dock({ standalone = false }: { standalone?: boolean }) {
 
 // ── Servers ──────────────────────────────────────────────────────────────────
 
-function hostStatus(c: HostCheck | null): 'ok' | 'warn' | 'fail' | 'off' {
-  if (!c) return 'off'
-  if (!c.ok) return 'fail'
-  if ((c.diskUsedPct ?? 0) >= 85 || (c.memUsedPct ?? 0) >= 90) return 'warn'
-  return 'ok'
-}
-
-function hostNote(c: HostCheck | null): string {
-  if (!c) return 'not checked'
-  if (!c.ok) return 'unreachable'
-  if ((c.diskUsedPct ?? 0) >= 85) return `disk ${c.diskUsedPct}%`
-  if ((c.memUsedPct ?? 0) >= 90) return `mem ${c.memUsedPct}%`
-  return 'healthy'
-}
-
 export function ServersPanel() {
   const org = useOrg()
   const { data, error, setData } = useApi<{ hosts: Host[] }>(org.api('/hosts'))
@@ -181,7 +167,7 @@ export function ServersPanel() {
     return (
       <Empty>
         No servers yet.{' '}
-        {org.can('admin') ? <Link to={org.path('/settings/hosts')}>Add your first host</Link> : 'Ask an admin to add hosts.'}
+        {org.can('admin') ? <Link to={org.path('/fleet')}>Add your first server</Link> : 'Ask an admin to add servers.'}
       </Empty>
     )
   }
@@ -207,12 +193,12 @@ export function ServersPanel() {
               aria-pressed={selected?.id === h.id}
               onClick={() => setSelectedId(h.id)}
             >
-              <StatusDot status={hostStatus(h.lastCheck)} />
+              <StatusDot status={hostState(h).status} />
               <span className="mono" style={{ flex: 1, fontSize: 12 }}>
                 {h.name}
               </span>
               <span className="muted" style={{ fontSize: 12 }}>
-                {hostNote(h.lastCheck)}
+                {hostState(h).label}
               </span>
             </button>
           ))}
@@ -221,7 +207,7 @@ export function ServersPanel() {
       {selected && (
         <div className="card" style={{ padding: '12px 14px' }}>
           <div className="inline">
-            <StatusDot status={hostStatus(selected.lastCheck)} />
+            <StatusDot status={hostState(selected).status} />
             <span className="mono" style={{ flex: 1, fontWeight: 500 }}>
               {selected.name}
             </span>
@@ -229,7 +215,7 @@ export function ServersPanel() {
           </div>
           <div className="meta" style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0,1fr))', gap: '4px 12px' }}>
             <span>
-              {selected.username}@{selected.address}:{selected.port}
+              {selected.transport === 'runner' ? `runner · ${selected.runner?.hostname ?? selected.address}` : `${selected.username}@${selected.address}:${selected.port}`}
             </span>
             <span>{selected.lastCheck?.kernel ?? '—'}</span>
             <span>{selected.lastCheck?.uptime ?? '—'}</span>
@@ -244,14 +230,14 @@ export function ServersPanel() {
           {selected.lastCheck && !selected.lastCheck.ok && <div className="meta" style={{ color: 'var(--fail)' }}>{selected.lastCheck.error}</div>}
           <ErrorBanner error={checkError} />
           <div className="inline">
-            {org.can('member') && (
+            {org.can('member') && selected.transport === 'ssh' && (
               <button type="button" className="btn small primary" disabled={checking} onClick={() => check(selected)}>
                 {checking ? 'Checking…' : 'Check now'}
               </button>
             )}
             {org.can('admin') && (
-              <Link className="btn small" to={org.path('/settings/hosts')}>
-                Manage hosts
+              <Link className="btn small" to={org.path('/fleet')}>
+                Open in Fleet
               </Link>
             )}
           </div>

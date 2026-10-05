@@ -7,7 +7,7 @@ import { api } from '../lib/api'
 import { useApi } from '../lib/hooks'
 import type { Environment, Host, Job, PolicyDecision, StepKind } from '../lib/types'
 import { useOrg } from '../shell/OrgContext'
-import { emptyJob, emptyStep, fromJob, toPayload, type JobForm, type StepForm } from './jobForm'
+import { ALERT_HOST, emptyJob, emptyStep, fromJob, toPayload, type JobForm, type StepForm } from './jobForm'
 
 export function JobEditorPage() {
   const org = useOrg()
@@ -123,12 +123,47 @@ export function JobEditorPage() {
         <div className="card">
           <h3>Trigger</h3>
           <div className="segmented" role="group" aria-label="Trigger" style={{ alignSelf: 'flex-start' }}>
-            {(['manual', 'cron', 'webhook'] as const).map((k) => (
+            {(['manual', 'cron', 'webhook', 'alert'] as const).map((k) => (
               <button key={k} type="button" aria-pressed={form.triggerKind === k} onClick={() => set({ triggerKind: k })}>
-                {k === 'manual' ? 'Manual' : k === 'cron' ? 'Schedule' : 'Webhook'}
+                {k === 'manual' ? 'Manual' : k === 'cron' ? 'Schedule' : k === 'webhook' ? 'Webhook' : 'Alert'}
               </button>
             ))}
           </div>
+          {form.triggerKind === 'alert' && (
+            <>
+              <p className="muted" style={{ margin: 0 }}>
+                Runs once when an incident opens for a matching alert (repeats of an open incident don&apos;t start new runs). Blank fields match any alert. Alerts come in through{' '}
+                <Link to={org.path('/settings/alerts')}>Settings → Alerts</Link>.
+              </p>
+              <div className="row">
+                <Field label="Alert names" hint='Comma separated; "Disk*" matches a prefix.'>
+                  {(fid) => <input id={fid} className="input mono" value={form.alertNames} placeholder="DiskFull, HighLoad*" onChange={(e) => set({ alertNames: e.target.value })} />}
+                </Field>
+                <div className="field">
+                  <span className="field-label">Severities</span>
+                  <div className="inline" role="group" aria-label="Severities">
+                    {['critical', 'warning', 'info'].map((sv) => (
+                      <label key={sv} className="inline" style={{ gap: 6 }}>
+                        <input
+                          type="checkbox"
+                          checked={form.alertSeverities.includes(sv)}
+                          onChange={(e) => set({ alertSeverities: e.target.checked ? [...form.alertSeverities, sv] : form.alertSeverities.filter((x) => x !== sv) })}
+                        />
+                        {sv}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              </div>
+              <Field label="Labels" hint="One name=value per line; values ending in * match a prefix.">
+                {(fid) => <textarea id={fid} className="textarea mono" rows={2} value={form.alertLabels} placeholder="team=web" onChange={(e) => set({ alertLabels: e.target.value })} />}
+              </Field>
+              <span className="hint">
+                In steps, use <span className="mono">{'{{alert.labels.instance}}'}</span>, <span className="mono">{'{{alert.annotations.summary}}'}</span>,{' '}
+                <span className="mono">{'{{incident.number}}'}</span> or an earlier step&apos;s <span className="mono">{'{{steps.<id>.stdout}}'}</span>. In commands, values are passed safely as variables: don&apos;t put quotes around them.
+              </span>
+            </>
+          )}
           {form.triggerKind === 'cron' && (
             <div className="row">
               <Field label="Cron expression" hint="minute hour day month weekday — e.g. 0 */6 * * * is every 6 hours">
@@ -165,6 +200,7 @@ export function JobEditorPage() {
               index={i}
               step={s}
               hosts={hosts.data?.hosts ?? []}
+              alertTrigger={form.triggerKind === 'alert'}
               environments={environments.data?.environments ?? []}
               decision={decisions.get(s.id.trim() || `step-${i + 1}`)}
               count={form.steps.length}
@@ -228,6 +264,8 @@ function StepEditor(props: {
   index: number
   step: StepForm
   hosts: Host[]
+  /** The job is alert-triggered, so command steps may target the alert's host. */
+  alertTrigger: boolean
   environments: Environment[]
   decision?: PolicyDecision
   count: number
@@ -275,7 +313,7 @@ function StepEditor(props: {
           <div className="segmented" role="group" aria-label="Action type" style={{ alignSelf: 'flex-start' }}>
             {(['http', 'ssh', 'imap', 'factory'] as const).map((t) => (
               <button key={t} type="button" aria-pressed={s.actionType === t} onClick={() => set({ actionType: t })}>
-                {t === 'factory' ? 'Factory' : t.toUpperCase()}
+                {t === 'factory' ? 'Factory' : t === 'ssh' ? 'Command' : t.toUpperCase()}
               </button>
             ))}
           </div>
@@ -302,19 +340,20 @@ function StepEditor(props: {
           )}
           {s.actionType === 'ssh' && (
             <div className="row">
-              <Field label="Host" hint={props.hosts.length === 0 ? 'Add hosts in Settings → Hosts.' : undefined}>
+              <Field label="Host" hint={props.hosts.length === 0 && !props.alertTrigger ? 'Add servers in Fleet.' : s.hostId === ALERT_HOST ? 'The fleet host named by the alert (instance, host or hostname label).' : undefined}>
                 {(id) => (
                   <select id={id} className="select" value={s.hostId} onChange={(e) => set({ hostId: e.target.value })}>
                     <option value="">Choose a host…</option>
+                    {(props.alertTrigger || s.hostId === ALERT_HOST) && <option value={ALERT_HOST}>The alert&apos;s host</option>}
                     {props.hosts.map((h) => (
                       <option key={h.id} value={h.id}>
-                        {h.name} ({h.address})
+                        {h.name} ({h.transport === 'runner' ? 'runner' : h.address})
                       </option>
                     ))}
                   </select>
                 )}
               </Field>
-              <Field label="Command" hint="Runs in a shell on the host; pipes and && work.">
+              <Field label="Command" hint="Runs in a shell on the host (over SSH or the runner); pipes and && work.">
                 {(id) => <input id={id} className="input mono" value={s.command} placeholder="df -h / | tail -1" onChange={(e) => set({ command: e.target.value })} />}
               </Field>
             </div>

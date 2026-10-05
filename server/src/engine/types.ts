@@ -7,7 +7,7 @@ import type { Org } from '../repos/identity.js'
 import type { Run } from '../repos/runs.js'
 import type { Step } from './spec.js'
 import type { HttpRunnerOptions } from '../services/http.js'
-import type { SshExecutor } from '../services/ssh.js'
+import type { SshExecutor, SshShellOpener } from '../services/ssh.js'
 import type { ImapExecutor } from '../services/imap.js'
 import type { FactoryFetch } from './factory.js'
 
@@ -50,6 +50,11 @@ export interface EngineOptions {
     imapExecutor?: ImapExecutor
     factoryFetch?: FactoryFetch
     factoryPollMs?: number
+    /** Runner commands: how long to wait for an offline runner, and the result poll interval. */
+    runnerOfflineGraceMs?: number
+    runnerPollMs?: number
+    /** Opens SSH shells for host terminals (tests). */
+    sshShell?: SshShellOpener
   }
   /** Delay before a failed step is retried (ms). Default: 5s × attempt. */
   retryDelayMs?: (attempt: number) => number

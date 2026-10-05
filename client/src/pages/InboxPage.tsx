@@ -30,7 +30,7 @@ export function InboxPage() {
   }
 
   const d = inbox.data
-  const needCount = (d?.approvals.length ?? 0) + (d?.failures.length ?? 0)
+  const needCount = (d?.approvals.length ?? 0) + (d?.failures.length ?? 0) + (d?.incidents?.length ?? 0)
   return (
     <>
       <div className="page-head">
@@ -48,6 +48,28 @@ export function InboxPage() {
           Needs you
         </h2>
         {d && needCount === 0 && <div className="list"><Empty>Nothing needs you right now.</Empty></div>}
+        {d?.incidents?.map((i) => (
+          <article key={i.id} className="card">
+            <div className="inline meta">
+              <span className="badge fail">
+                <StatusDot status="fail" />
+                INCIDENT #{i.number}
+              </span>
+              <span className={`badge sev ${i.severity}`}>{i.severity}</span>
+              <span>
+                opened {relativeTime(i.openedAt)}
+                {i.hostName ? ` · ${i.hostName}` : ''}
+                {i.alertCount > 1 ? ` · ${i.alertCount} alerts` : ''}
+              </span>
+            </div>
+            <h3>{i.title}</h3>
+            <div className="inline">
+              <Link className="btn" to={org.path(`/incidents/${i.number}`)}>
+                Open incident
+              </Link>
+            </div>
+          </article>
+        ))}
         {d?.approvals.map((a) => (
           <article key={a.id} className="card">
             <div className="inline meta">

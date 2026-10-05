@@ -20,6 +20,8 @@ import { hooksRouter } from './routes/hooks.js'
 import { environmentsRouter } from './routes/environments.js'
 import { policyRouter } from './routes/policy.js'
 import { mcpRouter, type McpFetch } from './routes/mcp.js'
+import { runnerEnrollRouter, runnersRouter } from './routes/runners.js'
+import { alertIntakeRouter, incidentsRouter } from './routes/incidents.js'
 import type { ProviderTestContext } from './integrations/providers.js'
 
 export interface AppOptions {
@@ -41,6 +43,10 @@ export function createApp(ctx: AppContext, opts: AppOptions = {}): Express {
   app.use(cors({ origin: ctx.config.clientUrl, credentials: true }))
   app.use(express.json({ limit: '1mb' }))
   app.use(cookieParser(ctx.config.cookieSecret))
+
+  // Unauthenticated by session: runners enroll with a one-time token; monitoring tools post alerts with the org's alert token.
+  app.use('/api/runner', runnerEnrollRouter(ctx))
+  app.use('/api/alerts', alertIntakeRouter(ctx))
 
   app.use(
     '/api',
@@ -72,6 +78,8 @@ export function createApp(ctx: AppContext, opts: AppOptions = {}): Express {
   org.use(environmentsRouter(ctx))
   org.use(policyRouter(ctx))
   org.use(mcpRouter(ctx, opts.mcpFetch))
+  org.use(runnersRouter(ctx))
+  org.use(incidentsRouter(ctx))
   app.use('/api/orgs/:org', auth.requireAuth, auth.requireCsrf, org)
 
   app.get('/health', (_req, res) => {
