@@ -45,6 +45,8 @@ export interface StepForm {
   model: string
   /** Run in this environment (its repository) instead of a fresh container. */
   environmentId: string
+  /** Give the agent Routini's MCP tools (fleet commands, runs, incidents). */
+  routini: boolean
   // approval
   message: string
   minRole: 'member' | 'admin' | 'owner'
@@ -109,6 +111,7 @@ export function emptyStep(kind: StepKind, index: number): StepForm {
     checkCommand: '',
     model: '',
     environmentId: '',
+    routini: false,
     message: '',
     minRole: 'member',
   }
@@ -171,7 +174,7 @@ function fromStep(s: Step, i: number): StepForm {
     }
   } else if (s.kind === 'agent') {
     const c = s.config
-    Object.assign(f, { agent: c.agent, prompt: c.prompt, repoUrl: c.repo?.url ?? '', baseBranch: c.repo?.baseBranch ?? 'main', output: c.output ?? (c.repo || c.environmentId ? 'pr' : 'none'), checkCommand: c.check?.command ?? '', model: c.model ?? '', environmentId: c.environmentId ?? '' })
+    Object.assign(f, { agent: c.agent, prompt: c.prompt, repoUrl: c.repo?.url ?? '', baseBranch: c.repo?.baseBranch ?? 'main', output: c.output ?? (c.repo || c.environmentId ? 'pr' : 'none'), checkCommand: c.check?.command ?? '', model: c.model ?? '', environmentId: c.environmentId ?? '', routini: c.routini === true })
   } else {
     Object.assign(f, { message: s.config.message, minRole: s.config.minRole ?? 'member' })
   }
@@ -249,6 +252,7 @@ export function toPayload(form: JobForm): PayloadResult {
       }
       if (s.checkCommand.trim()) cfg['check'] = { command: s.checkCommand.trim() }
       if (s.model.trim()) cfg['model'] = s.model.trim()
+      if (s.routini) cfg['routini'] = true
       base['config'] = cfg
     } else {
       if (!s.message.trim()) errors.push(`${label}: say what is being approved.`)

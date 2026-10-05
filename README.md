@@ -64,6 +64,18 @@ alert
   command step can target **the alert's host**. Template values reach shells as
   variables, never as command text, so hostile labels stay inert. When the
   alert resolves, Routini drafts a **postmortem** from what actually happened.
+- **Routini as an MCP server:** connect Claude Code (or any MCP client) to
+  `/mcp` with an API token from Settings → API tokens:
+  `claude mcp add --transport http routini https://routini.example.com/mcp --header "Authorization: Bearer rtk_…"`.
+  Tools: runs, jobs, the fleet, incidents and approvals (read), `run_job`,
+  `run_command` on fleet servers, `cancel_run`, incident notes and resolving.
+  Commands are ordinary runs under org policy; there is deliberately no approve
+  tool. Agent steps can opt in to the same tools (`routini: true`) through a
+  token that lives only for the step.
+- **Sign in with TynHub** (any OIDC provider): "Continue with TynHub" on the
+  login page. Owners can link an org to a TynHub org so its members join on
+  sign-in. A new sign-in never attaches itself to an existing account by email;
+  password users link TynHub from their account menu.
 
 ## The console
 
@@ -135,6 +147,9 @@ stored secrets cannot be decrypted.
 | `ROUTINI_WORKER_CONCURRENCY` | `4` | Runs per worker process. |
 | `ROUTINI_ENV_IMAGES` | agent images | Hosted mode: images environments may use (comma separated). Self-host allows any image. |
 | `ROUTINI_PUBLIC_URL` | `CLIENT_URL` | Where runners and monitoring tools reach this server (install commands and the alert endpoint use it). |
+| `ROUTINI_AGENT_API_URL` | the public URL | Where agent containers reach this server for Routini's MCP tools. |
+| `ROUTINI_OIDC_ISSUER`, `ROUTINI_OIDC_CLIENT_ID`, `ROUTINI_OIDC_CLIENT_SECRET` | — | Sign in with TynHub (or any OIDC provider). Redirect URI: `<public URL>/api/auth/oidc/callback`. |
+| `ROUTINI_OIDC_NAME`, `ROUTINI_OIDC_SCOPES` | `TynHub`, `openid profile email orgs` | Button label; requested scopes (filtered to what the provider supports). |
 | `ROUTINI_EGRESS_CONTROL_URL`, `ROUTINI_EGRESS_SECRET` | — | Credential broker: the egress proxy's control API and its shared secret. Both set = broker on. |
 | `ROUTINI_EGRESS_PROXY_HOST`, `ROUTINI_EGRESS_PROXY_PORT` | `routini-egress`, `3128` | The proxy as sandboxed containers see it (a network alias). |
 | `ROUTINI_EGRESS_CONTAINER` | `routini-egress` | Proxy container, attached to each org's sandbox network. |
@@ -178,11 +193,16 @@ Under `/api/orgs/:org`:
 | Hosts | `GET/POST /hosts`, `GET/PUT/DELETE /hosts/:id`, `POST /hosts/:id/check`, `GET /hosts/:id/events`; WebSocket `/hosts/:id/terminal` (admin) |
 | Runners | `POST /runners/enrollments` (admin), `GET /runners`, `DELETE /runners/:id` (admin) |
 | Incidents | `GET /incidents`, `GET /incidents/:number`, `POST /incidents/:number/resolve`, `…/notes`, `…/postmortem/generate`, `PUT …/postmortem`; `GET /alerts/settings`, `POST /alerts/token` (admin) |
+| Tokens | `GET/POST /tokens`, `DELETE /tokens/:id`; `PUT /tynhub` (owner: link a TynHub org) |
 | Environments | `GET/POST /environments`, `GET/PUT/DELETE /environments/:id`, `POST /environments/:id/start`, `…/stop`, `…/exec`; WebSocket `…/terminal` |
 | Integrations | `GET /integrations`, `PUT/DELETE /integrations/:id`, `POST /integrations/:id/test` |
 | Settings | `GET/PUT /settings`, `GET /credentials`, `PUT/DELETE /credentials/:key` |
 | Policy | `GET/PUT /policy` (rules + egress allow-list), `POST /policy/evaluate` (dry run for steps) |
 | MCP servers | `GET/POST /mcp-servers`, `PUT/DELETE /mcp-servers/:id`, `POST /mcp-servers/:id/test` |
+
+MCP: `POST /mcp` (Streamable HTTP, stateless) with `Authorization: Bearer rtk_…`.
+Sign-in: `GET /api/auth/providers`, `GET /api/auth/oidc/start`, `GET /api/auth/oidc/callback`.
+API tokens also work as Bearer tokens on `/api/orgs/:org/*` for their org.
 
 Alerts: `POST /api/alerts/:org` with `Authorization: Bearer <org alert token>`
 (Alertmanager and Grafana webhooks, or generic JSON). Runners: `POST
@@ -206,6 +226,7 @@ server/src/
              agent (+ agentStream parser), hub (SSE fan-out), notify,
              environments, policy, factory, alerts, template, prepare, postmortem
   runner/    runner gateway (routini-runner connections) and worker-side command execution
+  mcp/       Routini as an MCP server (tools over the same repos and policy)
   egress/    credential broker: egress proxy (egress.ts), CA, broker client
   routes/    org-scoped HTTP APIs, hooks
   http/      auth, org context, SSE, errors, environment and host terminals

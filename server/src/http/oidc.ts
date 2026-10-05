@@ -54,6 +54,17 @@ export function parseOrgsClaim(raw: unknown): Array<{ slug: string; role: unknow
     .map((o) => ({ slug: o.slug.toLowerCase(), role: o.role }))
 }
 
+/**
+ * The configured scopes the provider supports. Strict providers (Dex, Google)
+ * reject unknown scopes such as TynHub's `orgs`; providers that don't publish
+ * `scopes_supported` get the configured list as is.
+ */
+export function requestedScopes(configured: string, supported: string[] | undefined): string {
+  const wanted = configured.split(/\s+/).filter(Boolean)
+  if (!supported?.length) return wanted.join(' ')
+  return wanted.filter((s) => s === 'openid' || supported.includes(s)).join(' ')
+}
+
 /** Only same-origin console paths are allowed as `next` (no open redirects). */
 export function safeNext(raw: unknown): string {
   const s = typeof raw === 'string' ? raw : ''
@@ -157,7 +168,7 @@ export function oidcRouter(ctx: AppContext, auth: Auth): Router {
       res.cookie(STATE_COOKIE, cookie, { httpOnly: true, sameSite: 'lax', secure, maxAge: STATE_TTL_SEC * 1000, path: '/api/auth/oidc' })
       const url = oidc.buildAuthorizationUrl(config, {
         redirect_uri: redirectUri,
-        scope: cfg!.scopes,
+        scope: requestedScopes(cfg!.scopes, config.serverMetadata().scopes_supported),
         code_challenge: await oidc.calculatePKCECodeChallenge(verifier),
         code_challenge_method: 'S256',
         state,

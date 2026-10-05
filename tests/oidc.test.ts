@@ -5,7 +5,7 @@ import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest'
 import { makeTestApp, type TestApp } from './helpers/testApp'
 import { FakeIssuer, type FakeIdentity } from './helpers/fakeIssuer'
 import type { Config } from '../server/src/config'
-import { safeNext } from '../server/src/http/oidc'
+import { requestedScopes, safeNext } from '../server/src/http/oidc'
 
 let issuer: FakeIssuer
 let t: TestApp
@@ -156,6 +156,12 @@ describe('sign in with TynHub', () => {
     expect((await t.request.get('/api/auth/providers')).body).toEqual({ oidc: null })
     const start = await t.request.get('/api/auth/oidc/start')
     expect(decodeURIComponent(start.headers['location'] as string)).toContain('not configured')
+  })
+
+  it('requests only the scopes the provider supports (strict providers reject TynHub orgs)', () => {
+    expect(requestedScopes('openid profile email orgs', ['openid', 'profile', 'email', 'groups'])).toBe('openid profile email')
+    expect(requestedScopes('openid profile email orgs', ['openid', 'email', 'orgs'])).toBe('openid email orgs')
+    expect(requestedScopes('openid profile email orgs', undefined)).toBe('openid profile email orgs')
   })
 
   it('only allows same-origin console paths after sign-in', () => {
