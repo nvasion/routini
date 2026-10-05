@@ -1,33 +1,44 @@
-// The right-side dock: Servers (host inventory + health) and Live (follow a
-// run's events as they happen). Collapsible to an icon rail; pops out into its
-// own window at /o/:org/dock.
+// The right-side dock: Servers (host inventory + health), Envs (persistent
+// workspaces), Terminal (a shell in an environment) and Live (follow a run's
+// events as they happen). Collapsible to an icon rail; pops out into its own
+// window at /o/:org/dock.
 
 import { createContext, useContext, useMemo, useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
-import { Empty, ErrorBanner, Icon, Meter, StatusDot } from '../components/ui'
+import { Empty, ErrorBanner, Icon, Meter, StatusDot, type IconName } from '../components/ui'
 import { api } from '../lib/api'
 import { relativeTime } from '../lib/format'
 import { useApi, useEventStream } from '../lib/hooks'
 import type { Host, HostCheck, Inbox, RunEvent } from '../lib/types'
 import { useOrg } from './OrgContext'
+import { EnvsPanel, TerminalPanel } from './EnvPanels'
 
-export type DockTab = 'servers' | 'live'
+export const DOCK_TABS = ['servers', 'envs', 'terminal', 'live'] as const
+export type DockTab = (typeof DOCK_TABS)[number]
+const TAB_INFO: Record<DockTab, { label: string; icon: IconName; open: string }> = {
+  servers: { label: 'Servers', icon: 'server', open: 'Open servers' },
+  envs: { label: 'Envs', icon: 'box', open: 'Open environments' },
+  terminal: { label: 'Terminal', icon: 'terminal', open: 'Open terminal' },
+  live: { label: 'Live', icon: 'live', open: 'Open live run' },
+}
 
 interface DockState {
   open: boolean
   tab: DockTab
   runRef: string | null
-  show(tab: DockTab, runRef?: string): void
+  envId: string | null
+  /** Opens a tab. `ref` is a run number for Live, an environment id for Terminal. */
+  show(tab: DockTab, ref?: string): void
   close(): void
 }
 
-const DockCtx = createContext<DockState>({ open: false, tab: 'servers', runRef: null, show: () => {}, close: () => {} })
+const DockCtx = createContext<DockState>({ open: false, tab: 'servers', runRef: null, envId: null, show: () => {}, close: () => {} })
 
 const KEY = 'routini.dock'
 function readDock(): { open: boolean; tab: DockTab } {
   try {
     const v = JSON.parse(localStorage.getItem(KEY) ?? 'null') as { open?: boolean; tab?: DockTab } | null
-    if (v && (v.tab === 'servers' || v.tab === 'live')) return { open: v.open !== false, tab: v.tab }
+    if (v?.tab && (DOCK_TABS as readonly string[]).includes(v.tab)) return { open: v.open !== false, tab: v.tab }
   } catch {
     // ignore
   }
@@ -37,6 +48,7 @@ function readDock(): { open: boolean; tab: DockTab } {
 export function DockProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState(readDock)
   const [runRef, setRunRef] = useState<string | null>(null)
+  const [envId, setEnvId] = useState<string | null>(null)
   const persist = (s: { open: boolean; tab: DockTab }) => {
     setState(s)
     try {
@@ -48,8 +60,10 @@ export function DockProvider({ children }: { children: ReactNode }) {
   const value: DockState = {
     ...state,
     runRef,
+    envId,
     show: (tab, ref) => {
-      if (ref) setRunRef(ref)
+      if (ref && tab === 'live') setRunRef(ref)
+      if (ref && tab === 'terminal') setEnvId(ref)
       persist({ open: true, tab })
     },
     close: () => persist({ ...state, open: false }),
@@ -67,28 +81,23 @@ export function Dock({ standalone = false }: { standalone?: boolean }) {
     return (
       <aside className="dock closed" aria-label="Dock">
         <div className="dock-rail">
-          <button type="button" className="btn icon" aria-label="Open servers" onClick={() => dock.show('servers')}>
-            <Icon name="server" />
-          </button>
-          <button type="button" className="btn icon" aria-label="Open live run" onClick={() => dock.show('live')}>
-            <Icon name="live" />
-          </button>
+          {DOCK_TABS.map((id) => (
+            <button key={id} type="button" className="btn icon" aria-label={TAB_INFO[id].open} onClick={() => dock.show(id)}>
+              <Icon name={TAB_INFO[id].icon} />
+            </button>
+          ))}
         </div>
       </aside>
     )
   }
 
-  const tabs: Array<[DockTab, string]> = [
-    ['servers', 'Servers'],
-    ['live', 'Live'],
-  ]
   return (
     <aside className="dock" aria-label="Dock" style={standalone ? { minHeight: '100vh', flex: 1 } : undefined}>
       <div className="dock-head">
         <div className="dock-tabs" role="tablist" aria-label="Dock panels">
-          {tabs.map(([id, label]) => (
+          {DOCK_TABS.map((id) => (
             <button key={id} type="button" role="tab" className="tab" aria-selected={dock.tab === id} onClick={() => dock.show(id)}>
-              {label}
+              {TAB_INFO[id].label}
             </button>
           ))}
         </div>
@@ -98,7 +107,7 @@ export function Dock({ standalone = false }: { standalone?: boolean }) {
               type="button"
               className="btn icon"
               aria-label="Pop out dock into its own window"
-              onClick={() => window.open(org.path(`/dock?tab=${dock.tab}`), 'routini-dock', 'width=440,height=860')}
+              onClick={() => window.open(org.path(`/dock?tab=${dock.tab}`), 'routini-dock', 'width=520,height=860')}
             >
               <Icon name="external" size={16} />
             </button>
@@ -108,7 +117,12 @@ export function Dock({ standalone = false }: { standalone?: boolean }) {
           </>
         )}
       </div>
-      <div className="dock-body">{dock.tab === 'servers' ? <ServersPanel /> : <LivePanel />}</div>
+      <div className="dock-body">
+        {dock.tab === 'servers' && <ServersPanel />}
+        {dock.tab === 'envs' && <EnvsPanel />}
+        {dock.tab === 'terminal' && <TerminalPanel />}
+        {dock.tab === 'live' && <LivePanel />}
+      </div>
     </aside>
   )
 }

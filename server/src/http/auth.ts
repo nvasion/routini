@@ -17,6 +17,7 @@ import bcrypt from 'bcryptjs'
 import jwt from 'jsonwebtoken'
 import rateLimit from 'express-rate-limit'
 import { randomBytes, randomUUID } from 'node:crypto'
+import type { IncomingHttpHeaders } from 'node:http'
 import { ah, badRequest, currentUser, HttpError, type AppContext } from './common.js'
 import {
   addIdentity,
@@ -46,10 +47,18 @@ interface TokenPayload {
   exp?: number
 }
 
+export interface Session {
+  user: ReturnType<typeof publicUser>
+  /** True when the credential came from the browser cookie (CSRF and Origin checks apply). */
+  viaCookie: boolean
+  csrf: string
+}
+
 export interface Auth {
   router: Router
   requireAuth: (req: Request, res: Response, next: NextFunction) => void
   requireCsrf: (req: Request, res: Response, next: NextFunction) => void
+  authenticate: (headers: IncomingHttpHeaders) => Promise<Session | null>
 }
 
 export function publicMemberships(ms: OrgMembership[]) {
@@ -171,25 +180,31 @@ export function createAuth(ctx: AppContext): Auth {
     }),
   )
 
+  /** Resolves the session from a cookie or Bearer token. Used by HTTP routes and WebSocket upgrades. */
+  async function authenticate(headers: IncomingHttpHeaders): Promise<Session | null> {
+    const cookieToken = parseCookie(headers.cookie)[COOKIE_NAME]
+    const auth = headers.authorization
+    const bearerToken = auth?.startsWith('Bearer ') ? auth.slice(7) : undefined
+    const token = cookieToken ?? bearerToken
+    if (!token) return null
+    const payload = await verify(token)
+    const user = payload ? await findUserById(db, payload.sub) : null
+    if (!payload || !user) return null
+    return { user: publicUser(user), viaCookie: Boolean(cookieToken), csrf: payload.csrf }
+  }
+
   function requireAuth(req: Request, res: Response, next: NextFunction): void {
     void (async () => {
-      const cookieToken: string | undefined = req.cookies?.[COOKIE_NAME]
-      const bearerToken = bearer(req)
-      const token = cookieToken ?? bearerToken
-      if (!token) {
-        res.status(401).json({ error: 'Authentication required' })
+      const session = await authenticate(req.headers)
+      if (!session) {
+        if (req.cookies?.[COOKIE_NAME]) res.clearCookie(COOKIE_NAME, cookieOpts)
+        const hasCredential = req.cookies?.[COOKIE_NAME] || bearer(req)
+        res.status(401).json({ error: hasCredential ? 'Invalid or expired session' : 'Authentication required' })
         return
       }
-      const payload = await verify(token)
-      const user = payload ? await findUserById(db, payload.sub) : null
-      if (!payload || !user) {
-        if (cookieToken) res.clearCookie(COOKIE_NAME, cookieOpts)
-        res.status(401).json({ error: 'Invalid or expired session' })
-        return
-      }
-      req.user = publicUser(user)
+      req.user = session.user
       // CSRF applies only when the browser attached the credential automatically.
-      req.csrfToken = cookieToken ? payload.csrf : undefined
+      req.csrfToken = session.viaCookie ? session.csrf : undefined
       next()
     })().catch(next)
   }
@@ -217,10 +232,27 @@ export function createAuth(ctx: AppContext): Auth {
     }),
   )
 
-  return { router, requireAuth, requireCsrf }
+  return { router, requireAuth, requireCsrf, authenticate }
 }
 
 function bearer(req: Request): string | null {
   const h = req.headers.authorization
   return h?.startsWith('Bearer ') ? h.slice(7) : null
+}
+
+/** Minimal Cookie header parser (cookie-parser only runs on Express requests, not WebSocket upgrades). */
+export function parseCookie(header: string | undefined): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const part of (header ?? '').split(';')) {
+    const i = part.indexOf('=')
+    if (i < 0) continue
+    const k = part.slice(0, i).trim()
+    if (!k || k in out) continue
+    try {
+      out[k] = decodeURIComponent(part.slice(i + 1).trim())
+    } catch {
+      out[k] = part.slice(i + 1).trim()
+    }
+  }
+  return out
 }

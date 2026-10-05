@@ -5,7 +5,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { ErrorBanner, Field, Icon, Modal } from '../components/ui'
 import { api } from '../lib/api'
 import { useApi } from '../lib/hooks'
-import type { Host, Job, StepKind } from '../lib/types'
+import type { Environment, Host, Job, StepKind } from '../lib/types'
 import { useOrg } from '../shell/OrgContext'
 import { emptyJob, emptyStep, fromJob, toPayload, type JobForm, type StepForm } from './jobForm'
 
@@ -16,6 +16,7 @@ export function JobEditorPage() {
   const isNew = !id || id === 'new'
   const existing = useApi<{ job: Job }>(isNew ? null : org.api(`/jobs/${id}`))
   const hosts = useApi<{ hosts: Host[] }>(org.api('/hosts'))
+  const environments = useApi<{ environments: Environment[] }>(org.api('/environments'))
   const [form, setForm] = useState<JobForm>(emptyJob)
   const [errors, setErrors] = useState<string[]>([])
   const [saving, setSaving] = useState(false)
@@ -163,6 +164,7 @@ export function JobEditorPage() {
               index={i}
               step={s}
               hosts={hosts.data?.hosts ?? []}
+              environments={environments.data?.environments ?? []}
               count={form.steps.length}
               onChange={(p) => setStep(s.key, p)}
               onMove={(by) => move(i, by)}
@@ -224,6 +226,7 @@ function StepEditor(props: {
   index: number
   step: StepForm
   hosts: Host[]
+  environments: Environment[]
   count: number
   onChange: (p: Partial<StepForm>) => void
   onMove: (by: -1 | 1) => void
@@ -350,14 +353,31 @@ function StepEditor(props: {
             </Field>
             <Field label="Model" hint="Blank uses the org default.">{(id) => <input id={id} className="input mono" value={s.model} onChange={(e) => set({ model: e.target.value })} />}</Field>
           </div>
+          <Field label="Runs in" hint={s.environmentId ? 'Works in its own git worktree inside the environment; your checkout is not touched.' : 'A fresh container, removed afterwards.'}>
+            {(id) => (
+              <select id={id} className="select" value={s.environmentId} onChange={(e) => set({ environmentId: e.target.value })}>
+                <option value="">A fresh container</option>
+                {props.environments.map((env) => (
+                  <option key={env.id} value={env.id}>
+                    Environment: {env.name}
+                    {env.repo ? ` (${env.repo.url.replace(/^https:\/\//, '')})` : ''}
+                  </option>
+                ))}
+              </select>
+            )}
+          </Field>
           <div className="row">
-            <Field label="Repository (optional)" hint="https URL on GitHub, GitLab, Bitbucket or Azure DevOps.">
-              {(id) => <input id={id} className="input" value={s.repoUrl} placeholder="https://github.com/acme/app" onChange={(e) => set({ repoUrl: e.target.value })} />}
-            </Field>
-            <Field label="Base branch">{(id) => <input id={id} className="input mono" value={s.baseBranch} onChange={(e) => set({ baseBranch: e.target.value })} />}</Field>
+            {!s.environmentId && (
+              <>
+                <Field label="Repository (optional)" hint="https URL on GitHub, GitLab, Bitbucket or Azure DevOps.">
+                  {(id) => <input id={id} className="input" value={s.repoUrl} placeholder="https://github.com/acme/app" onChange={(e) => set({ repoUrl: e.target.value })} />}
+                </Field>
+                <Field label="Base branch">{(id) => <input id={id} className="input mono" value={s.baseBranch} onChange={(e) => set({ baseBranch: e.target.value })} />}</Field>
+              </>
+            )}
             <Field label="Result">
               {(id) => (
-                <select id={id} className="select" value={s.output} disabled={!s.repoUrl.trim()} onChange={(e) => set({ output: e.target.value as StepForm['output'] })}>
+                <select id={id} className="select" value={s.output} disabled={!s.repoUrl.trim() && !s.environmentId} onChange={(e) => set({ output: e.target.value as StepForm['output'] })}>
                   <option value="pr">Open a pull request</option>
                   <option value="branch">Push a branch</option>
                   <option value="none">Nothing (report only)</option>

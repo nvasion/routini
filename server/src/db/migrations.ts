@@ -263,6 +263,45 @@ CREATE INDEX queue_ready_idx ON queue (available_at);
 SELECT routini_tenant('queue');
 `,
   },
+  {
+    version: 3,
+    name: 'environments: persistent workspaces and their audit trail',
+    sql: `
+CREATE TABLE environments (
+  id               uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  org_id           uuid NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  name             text NOT NULL CHECK (name ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$'),
+  image            text NOT NULL,
+  repo             jsonb,
+  status           text NOT NULL CHECK (status IN ('starting', 'running', 'stopping', 'stopped', 'failed', 'deleting')),
+  status_detail    text,
+  container_id     text,
+  volume           text NOT NULL,
+  cpus             numeric(4, 2) NOT NULL DEFAULT 2,
+  memory_mb        integer NOT NULL DEFAULT 4096,
+  idle_minutes     integer NOT NULL DEFAULT 60 CHECK (idle_minutes BETWEEN 5 AND 10080),
+  last_active_at   timestamptz NOT NULL DEFAULT now(),
+  created_by       uuid REFERENCES users(id) ON DELETE SET NULL,
+  created_at       timestamptz NOT NULL DEFAULT now(),
+  updated_at       timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (org_id, name)
+);
+CREATE INDEX environments_running_idx ON environments (status) WHERE status IN ('starting', 'running');
+SELECT routini_tenant('environments');
+
+CREATE TABLE environment_events (
+  id             bigserial PRIMARY KEY,
+  org_id         uuid NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  environment_id uuid NOT NULL REFERENCES environments(id) ON DELETE CASCADE,
+  ts             timestamptz NOT NULL DEFAULT now(),
+  type           text NOT NULL,
+  user_id        uuid REFERENCES users(id) ON DELETE SET NULL,
+  data           jsonb NOT NULL DEFAULT '{}'::jsonb
+);
+CREATE INDEX environment_events_env_idx ON environment_events (environment_id, id);
+SELECT routini_tenant('environment_events');
+`,
+  },
 ]
 
 /** Grants the app role access to everything a migration created. Runs after every migration. */

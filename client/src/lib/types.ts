@@ -23,6 +23,7 @@ export interface OrgRef {
 
 export interface OrgLimits {
   maxConcurrentRuns: number
+  maxRunningEnvironments: number
   agentMinutesPerDay: number | null
   dailyBudgetUsd: number | null
 }
@@ -53,6 +54,7 @@ export interface AgentConfig {
   output?: 'pr' | 'branch' | 'none'
   check?: { command: string }
   model?: string
+  environmentId?: string
 }
 
 export interface ApprovalConfig {
@@ -203,4 +205,30 @@ export interface CredentialMeta {
   key: string
   createdAt: string
   updatedAt: string
+}
+
+export type EnvStatus = 'starting' | 'running' | 'stopping' | 'stopped' | 'failed' | 'deleting'
+
+export interface Environment {
+  id: string
+  name: string
+  image: string
+  repo: { url: string; branch: string; dir: string } | null
+  status: EnvStatus
+  statusDetail: string | null
+  cpus: number
+  memoryMb: number
+  idleMinutes: number
+  lastActiveAt: string
+  createdAt: string
+  /** Self-host only, while running: attach with your own tools. */
+  attachCommand?: string
+}
+
+export interface EnvEvent {
+  id: number
+  ts: string
+  type: string
+  userId: string | null
+  data: Record<string, unknown>
 }

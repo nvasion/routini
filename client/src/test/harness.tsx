@@ -70,7 +70,7 @@ export const ORG: Org = {
   plan: 'free',
   role: 'owner',
   createdAt: '2026-10-01T00:00:00Z',
-  limits: { maxConcurrentRuns: 2, agentMinutesPerDay: 120, dailyBudgetUsd: null },
+  limits: { maxConcurrentRuns: 2, maxRunningEnvironments: 1, agentMinutesPerDay: 120, dailyBudgetUsd: null },
 }
 
 export const EMPTY_INBOX = { approvals: [], failures: [], live: [], upcoming: [] }
@@ -82,6 +82,7 @@ export function baseRoutes(overrides: Record<string, Handler> = {}): Record<stri
     'GET /api/orgs/acme': () => ({ org: ORG }),
     'GET /api/orgs/acme/inbox': () => EMPTY_INBOX,
     'GET /api/orgs/acme/hosts': () => ({ hosts: [] }),
+    'GET /api/orgs/acme/environments': () => ({ environments: [] }),
     ...overrides,
   }
 }

@@ -11,6 +11,7 @@ import { JobsPage } from './pages/JobsPage'
 import { JobEditorPage } from './pages/JobEditorPage'
 import { IntegrationsPage } from './pages/IntegrationsPage'
 import { SettingsPage } from './pages/SettingsPage'
+import { EnvironmentsPage } from './pages/EnvironmentsPage'
 
 function RequireAuth({ children }: { children: ReactNode }) {
   const { session, loading } = useAuth()
@@ -68,6 +69,7 @@ export function AppRoutes() {
         <Route path="jobs" element={<JobsPage />} />
         <Route path="jobs/new" element={<JobEditorPage />} />
         <Route path="jobs/:id" element={<JobEditorPage />} />
+        <Route path="environments" element={<EnvironmentsPage />} />
         <Route path="integrations" element={<IntegrationsPage />} />
         <Route path="settings" element={<SettingsPage />} />
         <Route path="settings/:tab" element={<SettingsPage />} />

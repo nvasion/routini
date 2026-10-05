@@ -3,6 +3,8 @@
 
 import { bootstrap, startBackground, type Background } from './bootstrap.js'
 import { createApp } from './app.js'
+import { attachTerminal } from './http/terminal.js'
+import type { Auth } from './http/auth.js'
 
 const ctx = await bootstrap()
 const app = createApp(ctx)
@@ -13,10 +15,12 @@ const server = app.listen(ctx.config.port, () => {
   const worker = background ? 'inline worker' : 'no worker (run dist/worker.js)'
   console.log(`Routini API on http://localhost:${ctx.config.port} · ${store} · ${ctx.config.mode} · ${worker}`)
 })
+const terminals = attachTerminal(server, ctx, app.locals['auth'] as Auth)
 
 const shutdown = (signal: string) => {
   console.log(`[server] ${signal}: shutting down`)
   setTimeout(() => process.exit(1), 15_000).unref()
+  for (const ws of terminals.clients) ws.close(1001, 'server shutting down')
   server.close(() => {
     void (async () => {
       await background?.stop()

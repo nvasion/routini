@@ -10,6 +10,8 @@ import type { Org, Role, User } from '../repos/identity.js'
 import { EventHub } from '../engine/hub.js'
 import { createEngine, type Engine } from '../engine/engine.js'
 import type { EngineOptions } from '../engine/types.js'
+import { createEnvManager, type EnvManager } from '../engine/environments.js'
+import { DockerEnvRuntime, type EnvRuntime } from '../services/envRuntime.js'
 
 /** Everything route factories and the engine need. Built once at boot (or per test). */
 export interface AppContext {
@@ -18,6 +20,7 @@ export interface AppContext {
   box: SecretBox
   hub: EventHub
   engine: Engine
+  envs: EnvManager
   /** Test doubles for http/ssh/imap (shared by the engine and the host check). */
   actions?: EngineOptions['actions']
 }
@@ -25,9 +28,11 @@ export interface AppContext {
 export function createContext(
   base: { config: Config; db: Db; box: SecretBox },
   engineOpts: EngineOptions = {},
+  extra: { envRuntime?: EnvRuntime } = {},
 ): AppContext {
   const ctx = { ...base, actions: engineOpts.actions } as AppContext
   ctx.hub = new EventHub(base.db)
+  ctx.envs = createEnvManager({ db: base.db, box: base.box, runtime: extra.envRuntime ?? new DockerEnvRuntime() })
   ctx.engine = createEngine(ctx, engineOpts)
   return ctx
 }

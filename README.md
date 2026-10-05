@@ -30,6 +30,12 @@ webhook                  approval  waits for a person
   done-check (e.g. `npm test`), push a branch and open the pull request.
 - Every log line, output and error is **redacted** against the secrets that
   step was given.
+- **Environments** are persistent workspaces: a container plus a `/workspace`
+  volume, optionally with your repository cloned in. Open a terminal in one from
+  the console, or point agent steps at it (`environmentId`). Agents then work in
+  their own git worktree inside it, so your checkout is untouched and you can
+  inspect the result. Stopping keeps `/workspace`; idle environments stop on
+  their own.
 
 ## The console
 
@@ -71,7 +77,7 @@ Open http://localhost and create the first account: it owns the server, and
 further signups are closed (`ROUTINI_SIGNUP`). The stack is Postgres, the API,
 a worker (`docker compose up --scale worker=3` for more) and nginx.
 
-The worker starts agent containers through Docker. Mounting the socket gives it
+The API and the worker reach Docker (the API runs environments and their terminals; the worker runs agent containers). Mounting the socket gives them
 root-equivalent access to that host, so for production point `DOCKER_HOST` at a
 separate runner host (`ssh://…` or TLS `tcp://…`) instead.
 
@@ -93,6 +99,7 @@ stored secrets cannot be decrypted.
 | `DOCKER_HOST` | local socket | Where agent containers run. |
 | `ROUTINI_AGENT_IMAGE_CLAUDE` | `routini/agent-claude:latest` | Agent image (also `_OMNIMANCER`, `_OPENCODE`). |
 | `ROUTINI_WORKER_CONCURRENCY` | `4` | Runs per worker process. |
+| `ROUTINI_ENV_IMAGES` | agent images | Hosted mode: images environments may use (comma separated). Self-host allows any image. |
 | `SEED_EMAIL`, `SEED_PASSWORD` | dev: admin@routini.dev / changeme | First account on an empty database. |
 | `SMTP_*` | — | Run-finished emails (per-org settings decide who gets them). |
 
@@ -128,6 +135,7 @@ Under `/api/orgs/:org`:
 | Runs | `GET /runs`, `GET /runs/:run`, `GET /runs/:run/events`, `GET /runs/:run/stream` (SSE, resumes from `Last-Event-ID`), `POST /runs/:run/cancel`, `POST /runs/:run/rerun`, `POST /runs/:run/steps/:idx/approve` and `…/deny` |
 | Inbox | `GET /inbox`, `GET /stream` (SSE of run changes) |
 | Hosts | `GET/POST /hosts`, `GET/PUT/DELETE /hosts/:id`, `POST /hosts/:id/check` |
+| Environments | `GET/POST /environments`, `GET/PUT/DELETE /environments/:id`, `POST /environments/:id/start`, `…/stop`, `…/exec`; WebSocket `…/terminal` |
 | Integrations | `GET /integrations`, `PUT/DELETE /integrations/:id`, `POST /integrations/:id/test` |
 | Settings | `GET/PUT /settings`, `GET /credentials`, `PUT/DELETE /credentials/:key` |
 

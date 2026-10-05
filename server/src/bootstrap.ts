@@ -13,7 +13,7 @@ import { addIdentity, addMembership, countUsers, createOrg, createUser, pruneRev
 import { runNotifier } from './engine/notify.js'
 import { Scheduler } from './engine/scheduler.js'
 import { Worker } from './engine/worker.js'
-import { agentExecutor, killStepContainers } from './engine/agent.js'
+import { agentExecutor, defaultAgentImages, killStepContainers } from './engine/agent.js'
 import { DockerService } from './services/docker.js'
 
 export async function bootstrap(config: Config = loadConfig()): Promise<AppContext> {
@@ -46,10 +46,21 @@ export async function startBackground(ctx: AppContext): Promise<Background> {
   const prune = setInterval(() => {
     pruneRevokedTokens(ctx.db).catch(() => {})
   }, 60 * 60 * 1000)
+  // Environments: reconcile with Docker and stop idle ones every minute.
+  const sweep = setInterval(() => {
+    ctx.envs.sweep().catch((err) => console.error('[environments] sweep failed:', (err as Error).message))
+  }, 60 * 1000)
+  // Pre-pull agent images so the first run (or environment) does not wait on a download.
+  for (const image of new Set(Object.values(defaultAgentImages()).filter((i): i is string => Boolean(i)))) {
+    ctx.envs.runtime.pull(image).catch(() => {
+      // Locally built images (e.g. routini/agent-claude:latest) have no registry; that is fine.
+    })
+  }
   console.log(`[engine] worker ${worker.id} and scheduler started`)
   return {
     async stop() {
       clearInterval(prune)
+      clearInterval(sweep)
       await scheduler.stop()
       await worker.stop()
     },

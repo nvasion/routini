@@ -20,6 +20,8 @@ import { createPullRequest, parseGithubRepo } from '../integrations/github.js'
 import type { FetchFn } from '../integrations/providers.js'
 import type { AgentId } from '../integrations/catalog.js'
 import { AgentStreamParser } from './agentStream.js'
+import { EnvError } from './environments.js'
+import { addEnvironmentEvent, type Environment } from '../repos/environments.js'
 import type { AgentConfig } from './spec.js'
 import type { StepContext, StepExecutor, StepResult } from './types.js'
 
@@ -95,9 +97,19 @@ export function agentExecutor(opts: AgentRunnerOptions = {}): StepExecutor {
         let timeoutSec = ctx.step.timeoutSec ?? DEFAULT_AGENT_TIMEOUT_SEC
         if (agentMinutesPerDay !== null) timeoutSec = Math.min(timeoutSec, agentMinutesPerDay * 60 - usage.agentSeconds)
 
-        // ── Image, model endpoint, integrations ─────────────────────────
-        const image = images[cfg.agent]
+        // ── Where it runs: a persistent environment, or a fresh container ─
+        let environment: Environment | null = null
+        if (cfg.environmentId) {
+          try {
+            environment = await ctx.app.envs.ensureRunning(orgId, cfg.environmentId)
+          } catch (err) {
+            if (err instanceof EnvError) throw new StepFailure(err.message)
+            throw err
+          }
+        }
+        const image = environment ? environment.image : images[cfg.agent]
         if (!image) throw new StepFailure(`No runner image is configured for the ${cfg.agent} agent on this server`)
+        const repo = cfg.repo ?? (environment?.repo ? { url: environment.repo.url, baseBranch: environment.repo.branch } : undefined)
 
         const env = await db.org(orgId, async (q) => {
           const settings = await getOrgSettings(q, orgId)
@@ -113,14 +125,15 @@ export function agentExecutor(opts: AgentRunnerOptions = {}): StepExecutor {
         })
         for (const v of Object.values(env)) ctx.addSecret(v)
 
-        const output = cfg.repo ? (cfg.output ?? 'pr') : 'none'
+        const output = repo ? (cfg.output ?? 'pr') : 'none'
         const workBranch = `routini/run-${ctx.run.number}${ctx.run.jobSnapshot.steps.filter((s) => s.kind === 'agent').length > 1 ? `-${ctx.step.id}` : ''}`
         Object.assign(env, {
           ROUTINI_PROMPT: cfg.prompt,
           ROUTINI_SYSTEM_PROMPT: SYSTEM_PROMPT,
           ROUTINI_OUTPUT: output,
           ROUTINI_COMMIT_MESSAGE: `${ctx.run.jobSnapshot.name} (Routini run #${ctx.run.number})`,
-          ...(cfg.repo ? { REPO_URL: cfg.repo.url, BASE_BRANCH: cfg.repo.baseBranch, WORK_BRANCH: workBranch } : {}),
+          ...(repo ? { REPO_URL: repo.url, BASE_BRANCH: repo.baseBranch, WORK_BRANCH: workBranch } : {}),
+          ...(environment?.repo ? { ROUTINI_REPO_DIR: `/workspace/${environment.repo.dir}` } : {}),
           ...(cfg.check ? { CHECK_COMMAND: cfg.check.command } : {}),
         })
 
@@ -128,27 +141,34 @@ export function agentExecutor(opts: AgentRunnerOptions = {}): StepExecutor {
         const parser = new AgentStreamParser()
         let emitting = Promise.resolve()
         const started = Date.now()
-        await ctx.log(`Starting ${cfg.agent} agent (${image})${cfg.repo ? ` on ${cfg.repo.url}@${cfg.repo.baseBranch}` : ''}`)
-        const result = await docker.runStreaming(
-          {
-            image,
-            name: `routini-${ctx.run.number}-${ctx.idx}-${randomUUID().slice(0, 8)}`,
-            env,
-            user: AGENT_USER,
-            cpuCount: cfg.resources?.cpus ?? DEFAULT_CPUS,
-            memoryBytes: (cfg.resources?.memoryMb ?? DEFAULT_MEMORY_MB) * 1024 * 1024,
-            labels: { 'routini.managed': 'true', 'routini.org': orgId, 'routini.run': ctx.run.id, 'routini.step': String(ctx.idx) },
-          },
-          {
-            timeoutMs: timeoutSec * 1000,
-            signal: ctx.signal,
-            onLine: (line, stream) => {
-              for (const ev of parser.line(line, stream)) {
-                emitting = emitting.then(() => ctx.emit(ev.type, ev.data))
-              }
+        const onLine = (line: string, stream: 'stdout' | 'stderr') => {
+          for (const ev of parser.line(line, stream)) {
+            emitting = emitting.then(() => ctx.emit(ev.type, ev.data))
+          }
+        }
+        let result: { error?: string; exitCode: number | null; timedOut: boolean; aborted: boolean }
+        if (environment) {
+          await ctx.log(`Starting ${cfg.agent} agent in environment "${environment.name}"${repo ? ` (worktree ${workBranch} from ${repo.baseBranch})` : ''}`)
+          await ctx.app.envs.touch(orgId, environment.id)
+          await ctx.app.db.org(orgId, (q) => addEnvironmentEvent(q, orgId, environment!.id, 'agent.run', null, { runNumber: ctx.run.number, step: ctx.step.name }))
+          result = await ctx.app.envs.runtime.exec(environment.containerId!, ['routini-entrypoint'], { env, timeoutMs: timeoutSec * 1000, signal: ctx.signal, onLine })
+          await ctx.app.envs.touch(orgId, environment.id)
+          if (result.exitCode === 127) result.error = `The environment's image (${environment.image}) has no routini-entrypoint; use a Routini agent image`
+        } else {
+          await ctx.log(`Starting ${cfg.agent} agent (${image})${repo ? ` on ${repo.url}@${repo.baseBranch}` : ''}`)
+          result = await docker.runStreaming(
+            {
+              image,
+              name: `routini-${ctx.run.number}-${ctx.idx}-${randomUUID().slice(0, 8)}`,
+              env,
+              user: AGENT_USER,
+              cpuCount: cfg.resources?.cpus ?? DEFAULT_CPUS,
+              memoryBytes: (cfg.resources?.memoryMb ?? DEFAULT_MEMORY_MB) * 1024 * 1024,
+              labels: { 'routini.managed': 'true', 'routini.org': orgId, 'routini.run': ctx.run.id, 'routini.step': String(ctx.idx) },
             },
-          },
-        )
+            { timeoutMs: timeoutSec * 1000, signal: ctx.signal, onLine },
+          )
+        }
         await emitting
         const facts = parser.facts
         await ctx.addUsage({ costUsd: facts.costUsd, agentSeconds: (Date.now() - started) / 1000 })
@@ -168,12 +188,12 @@ export function agentExecutor(opts: AgentRunnerOptions = {}): StepExecutor {
         if (facts.noChanges || !facts.pushed) return { status: 'succeeded', output: { ...base, changes: false } }
         const withBranch = { ...base, changes: true, branch: facts.pushed.branch, commit: facts.commit?.sha ?? null }
         if (output === 'branch') {
-          await ctx.emit('artifact', { kind: 'branch', branch: facts.pushed.branch, repo: cfg.repo!.url })
+          await ctx.emit('artifact', { kind: 'branch', branch: facts.pushed.branch, repo: repo!.url })
           return { status: 'succeeded', output: withBranch }
         }
 
         // output === 'pr'
-        const gh = parseGithubRepo(cfg.repo!.url)
+        const gh = parseGithubRepo(repo!.url)
         if (!gh) return { status: 'failed', error: `Pushed ${facts.pushed.branch}, but pull requests are only supported on github.com`, output: withBranch }
         const token = (await db.org(orgId, (q) => getIntegrationCredentials(q, box, orgId, 'github')))['token']
         if (!token) return { status: 'failed', error: `Pushed ${facts.pushed.branch}, but the GitHub integration is not connected, so no pull request was opened`, output: withBranch }
@@ -183,7 +203,7 @@ export function agentExecutor(opts: AgentRunnerOptions = {}): StepExecutor {
           {
             ...gh,
             head: facts.pushed.branch,
-            base: cfg.repo!.baseBranch,
+            base: repo!.baseBranch,
             title: `${ctx.run.jobSnapshot.name} (Routini run #${ctx.run.number})`,
             body: [
               `Opened by Routini run #${ctx.run.number} of **${ctx.run.jobSnapshot.name}**.`,
