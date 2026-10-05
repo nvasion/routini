@@ -14,6 +14,7 @@ import { createEnvManager, type EnvManager } from '../engine/environments.js'
 import { DockerEnvRuntime, type EnvRuntime } from '../services/envRuntime.js'
 import { BrokerClient, brokerConfigFromEnv } from '../egress/client.js'
 import { RunnerGateway, type GatewayOptions } from '../runner/gateway.js'
+import type { ApiToken } from '../repos/apiTokens.js'
 
 function brokerFromEnv(): BrokerClient | null {
   const cfg = brokerConfigFromEnv()
@@ -58,6 +59,8 @@ declare global {
       csrfToken?: string
       /** Set by the org middleware for /api/orgs/:org/* routes. */
       org?: Org & { role: Role }
+      /** Set when the request authenticated with an API token (pinned to its org and role). */
+      apiToken?: ApiToken
     }
   }
 }

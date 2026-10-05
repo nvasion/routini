@@ -33,6 +33,10 @@ export interface Config {
   clientUrl: string
   /** Where runners and monitoring tools reach this server (ROUTINI_PUBLIC_URL; default CLIENT_URL). */
   publicUrl: string
+  /** Where agent containers reach this server for Routini's MCP tools (ROUTINI_AGENT_API_URL; default publicUrl). */
+  agentApiUrl: string
+  /** Sign-in with an OIDC provider (TynHub), or null. */
+  oidc: { issuer: string; clientId: string; clientSecret: string; name: string; scopes: string } | null
   signup: SignupPolicy
   /** Run the scheduler and queue worker inside the API process. Required with embedded Postgres. */
   inlineWorker: boolean
@@ -63,6 +67,7 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): Config {
   }
 
   const mode = nonEmpty('ROUTINI_MODE') === 'hosted' ? 'hosted' : 'selfhost'
+  const publicUrl = (nonEmpty('ROUTINI_PUBLIC_URL') ?? nonEmpty('CLIENT_URL') ?? 'http://localhost:5173').replace(/\/+$/, '')
 
   const signupRaw = nonEmpty('ROUTINI_SIGNUP')
   const signup: SignupPolicy =
@@ -104,9 +109,27 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): Config {
     cookieSecret: nonEmpty('COOKIE_SECRET'),
     masterKey,
     clientUrl: nonEmpty('CLIENT_URL') ?? 'http://localhost:5173',
-    publicUrl: (nonEmpty('ROUTINI_PUBLIC_URL') ?? nonEmpty('CLIENT_URL') ?? 'http://localhost:5173').replace(/\/+$/, ''),
+    publicUrl,
+    agentApiUrl: (nonEmpty('ROUTINI_AGENT_API_URL') ?? publicUrl).replace(/\/+$/, ''),
+    oidc: oidcFromEnv(nonEmpty),
     signup,
     inlineWorker,
     seed,
+  }
+}
+
+/** OIDC sign-in (TynHub or any provider): all of issuer, client id and secret, or nothing. */
+function oidcFromEnv(nonEmpty: (k: string) => string | undefined): Config['oidc'] {
+  const issuer = nonEmpty('ROUTINI_OIDC_ISSUER')
+  const clientId = nonEmpty('ROUTINI_OIDC_CLIENT_ID')
+  const clientSecret = nonEmpty('ROUTINI_OIDC_CLIENT_SECRET')
+  if (!issuer && !clientId && !clientSecret) return null
+  if (!issuer || !clientId || !clientSecret) throw new Error('ROUTINI_OIDC_ISSUER, ROUTINI_OIDC_CLIENT_ID and ROUTINI_OIDC_CLIENT_SECRET must be set together')
+  return {
+    issuer: issuer.replace(/\/+$/, ''),
+    clientId,
+    clientSecret,
+    name: nonEmpty('ROUTINI_OIDC_NAME') ?? 'TynHub',
+    scopes: nonEmpty('ROUTINI_OIDC_SCOPES') ?? 'openid profile email orgs',
   }
 }

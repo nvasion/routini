@@ -25,6 +25,7 @@ import {
   listMembers,
   listOrgsForUser,
   removeMembership,
+  setTynhubOrg,
   ROLES,
   roleAtLeast,
   updateOrg,
@@ -39,7 +40,9 @@ export function orgCollectionRouter(ctx: AppContext): Router {
   r.get(
     '/',
     ah(async (req, res) => {
-      res.json({ orgs: publicMemberships(await listOrgsForUser(ctx.db, currentUser(req).id)) })
+      const orgs = publicMemberships(await listOrgsForUser(ctx.db, currentUser(req).id))
+      // An API token sees only its own org.
+      res.json({ orgs: req.apiToken ? orgs.filter((o) => o.id === req.apiToken!.orgId) : orgs })
     }),
   )
 
@@ -47,6 +50,7 @@ export function orgCollectionRouter(ctx: AppContext): Router {
     '/',
     ah(async (req, res) => {
       const user = currentUser(req)
+      if (req.apiToken) throw new HttpError(403, 'API tokens cannot create orgs')
       const b = (req.body ?? {}) as Record<string, unknown>
       const name = typeof b['name'] === 'string' ? b['name'].trim() : ''
       if (!name || name.length > 100) throw badRequest('name must be 1–100 characters')
@@ -81,6 +85,20 @@ export function orgRouter(ctx: AppContext): Router {
   r.get('/', (req, res) => {
     res.json({ org: currentOrg(req) })
   })
+
+  // Link this org to a TynHub org: its members join here when they sign in with TynHub.
+  r.put(
+    '/tynhub',
+    requireRole('owner'),
+    ah(async (req, res) => {
+      const org = currentOrg(req)
+      const raw = (req.body ?? {})['tynhubOrg']
+      const slug = raw === null || raw === '' ? null : typeof raw === 'string' ? raw.trim().toLowerCase() : undefined
+      if (slug === undefined || (slug !== null && !/^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$/.test(slug))) throw badRequest('tynhubOrg must be a TynHub org slug or null')
+      const updated = await ctx.db.tx((q) => setTynhubOrg(q, org.id, slug))
+      res.json({ org: { ...updated, role: org.role } })
+    }),
+  )
 
   r.put(
     '/',

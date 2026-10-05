@@ -149,17 +149,27 @@ export interface McpAccess {
  * MCP servers an agent may use. With the broker, header values never go into
  * the config: the proxy sets them on requests to the server's host.
  */
-export async function mcpAccessFor(q: Queryable, box: SecretBox, orgId: string, agent: AgentId, brokered: boolean): Promise<McpAccess> {
+export interface ExtraMcpServer {
+  name: string
+  url: string
+  headers: Record<string, string>
+  /** Give the container the real headers even under the broker (plain-http URLs the proxy cannot inject into). */
+  direct?: boolean
+}
+
+/** The agent's MCP servers: the org's (scoped to this agent) plus `extra` ones (Routini's own tools). */
+export async function mcpAccessFor(q: Queryable, box: SecretBox, orgId: string, agent: AgentId, brokered: boolean, extra: ExtraMcpServer[] = []): Promise<McpAccess> {
   const servers = (await listMcpServers(q, orgId)).filter((s) => s.agents.includes(agent))
   const out: McpAccess = { config: null, bindings: [], hosts: [], secrets: [] }
-  if (servers.length === 0) return out
+  if (servers.length === 0 && extra.length === 0) return out
   out.config = { mcpServers: {} }
-  for (const s of servers) {
-    const headers = await mcpHeaders(q, box, orgId, s)
+  const all: ExtraMcpServer[] = [...(await Promise.all(servers.map(async (s) => ({ name: s.name, url: s.url, headers: await mcpHeaders(q, box, orgId, s) })))), ...extra]
+  for (const s of all) {
+    const headers = s.headers
     const host = new URL(s.url).hostname
     out.hosts.push(host)
     out.secrets.push(...Object.values(headers))
-    if (brokered) {
+    if (brokered && !s.direct) {
       for (const [h, v] of Object.entries(headers)) out.bindings.push({ host, header: h, format: 'raw', secret: v })
       const placeholders = Object.fromEntries(Object.keys(headers).map((h) => [h, PLACEHOLDER]))
       out.config.mcpServers[s.name] = { type: 'http', url: s.url, ...(Object.keys(placeholders).length ? { headers: placeholders } : {}) }

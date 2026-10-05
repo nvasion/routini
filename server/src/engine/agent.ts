@@ -16,6 +16,7 @@ import { DockerService } from '../services/docker.js'
 import { getOrgSettings, getEndpointKey, type AgentEndpointConfig } from '../repos/settings.js'
 import { getBrokeredIntegrationAccess, getIntegrationCredentials, getScopedIntegrationEnv } from '../repos/integrations.js'
 import { mcpAccessFor } from '../repos/mcp.js'
+import { createApiToken, revokeApiToken, runActor } from '../repos/apiTokens.js'
 import { getPolicy } from '../repos/policy.js'
 import { PLACEHOLDER, type CredentialBinding } from '../egress/types.js'
 import { usageToday } from '../repos/runs.js'
@@ -119,12 +120,33 @@ export function agentExecutor(opts: AgentRunnerOptions = {}): StepExecutor {
         if (!broker && ctx.app.config.mode === 'hosted') {
           throw new StepFailure('Agent steps on this server require the credential broker, which is not configured; ask the operator')
         }
+        // Routini's own tools: a run-scoped token, revoked when the step ends (expires anyway).
+        let routiniToken: { id: string; token: string } | null = null
+        if (cfg.routini) {
+          routiniToken = await db.org(orgId, async (q) => {
+            const actor = await runActor(q, orgId, ctx.run as { jobId: string; trigger: { kind: string; userId?: string } })
+            if (!actor) throw new StepFailure('Routini tools need an org member to act as; the job author is no longer a member')
+            const { token, apiToken } = await createApiToken(q, orgId, actor, {
+              name: `run #${ctx.run.number} step ${ctx.idx + 1}`,
+              role: 'member',
+              runId: ctx.run.id,
+              expiresAt: new Date(Date.now() + (timeoutSec + 600) * 1000),
+            })
+            return { id: apiToken.id, token }
+          })
+          ctx.addSecret(routiniToken.token)
+        }
+        const routiniMcp = routiniToken ? [{ name: 'routini', url: `${ctx.app.config.agentApiUrl}/mcp`, headers: { authorization: `Bearer ${routiniToken.token}` }, direct: ctx.app.config.agentApiUrl.startsWith('http:') }] : []
+        const revokeRoutiniToken = async () => {
+          if (routiniToken) await db.org(orgId, (q) => revokeApiToken(q, orgId, routiniToken!.id)).catch(() => {})
+        }
+
         const access = await db.org(orgId, async (q) => {
           const settings = await getOrgSettings(q, orgId)
           const endpointCfg = settings.ai.agents[cfg.agent]
           const key = endpointCfg.endpoint === 'gateway' ? await getEndpointKey(q, box, orgId, 'anthropic') : await getEndpointKey(q, box, orgId, endpointCfg.endpoint)
           const model = cfg.model ?? endpointCfg.model
-          const mcp = await mcpAccessFor(q, box, orgId, cfg.agent, Boolean(broker))
+          const mcp = await mcpAccessFor(q, box, orgId, cfg.agent, Boolean(broker), routiniMcp)
           const common = { ...(model ? { ROUTINI_MODEL: model } : {}), ...(mcp.config ? { ROUTINI_MCP_CONFIG: JSON.stringify(mcp.config) } : {}) }
           if (!broker) {
             const integrationEnv = await getScopedIntegrationEnv(q, box, orgId, cfg.agent)
@@ -231,6 +253,7 @@ export function agentExecutor(opts: AgentRunnerOptions = {}): StepExecutor {
         } finally {
           await emitting
           await closeSession()
+          await revokeRoutiniToken()
         }
         const facts = parser.facts
         await ctx.addUsage({ costUsd: facts.costUsd, agentSeconds: (Date.now() - started) / 1000 })

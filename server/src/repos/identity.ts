@@ -41,6 +41,8 @@ export interface Org {
   plan: string
   limits: OrgLimits
   createdAt: string
+  /** TynHub org slug whose members join this org when they sign in with TynHub. */
+  tynhubOrg: string | null
 }
 
 export interface OrgMembership {
@@ -69,6 +71,7 @@ interface OrgRow {
   plan: string
   limits: Partial<OrgLimits> | null
   created_at: Date | string
+  tynhub_org: string | null
 }
 
 const iso = (v: Date | string): string => (v instanceof Date ? v.toISOString() : new Date(v).toISOString())
@@ -93,11 +96,11 @@ export function effectiveLimits(plan: string, overrides: Partial<OrgLimits> | nu
 }
 
 function toOrg(r: OrgRow): Org {
-  return { id: r.id, slug: r.slug, name: r.name, plan: r.plan, limits: effectiveLimits(r.plan, r.limits), createdAt: iso(r.created_at) }
+  return { id: r.id, slug: r.slug, name: r.name, plan: r.plan, limits: effectiveLimits(r.plan, r.limits), createdAt: iso(r.created_at), tynhubOrg: r.tynhub_org }
 }
 
 const USER_COLS = 'id, email, display_name, password_hash, created_at'
-const ORG_COLS = 'id, slug, name, plan, limits, created_at'
+const ORG_COLS = 'id, slug, name, plan, limits, created_at, tynhub_org'
 
 // ── Users ────────────────────────────────────────────────────────────────────
 
@@ -261,4 +264,31 @@ export async function isTokenRevoked(q: Queryable, jti: string): Promise<boolean
 export async function pruneRevokedTokens(q: Queryable): Promise<number> {
   const rows = await q.query('DELETE FROM revoked_tokens WHERE expires_at < now() RETURNING jti')
   return rows.length
+}
+
+// ── External identities (OIDC) and TynHub org links ──────────────────────────
+
+export async function findUserByIdentity(q: Queryable, provider: string, subject: string): Promise<UserWithHash | null> {
+  const [row] = await q.query<UserRow>(
+    `SELECT u.${USER_COLS.split(', ').join(', u.')} FROM identities i JOIN users u ON u.id = i.user_id WHERE i.provider = $1 AND i.subject = $2`,
+    [provider, subject],
+  )
+  return row ? toUser(row) : null
+}
+
+export async function listIdentities(q: Queryable, userId: string): Promise<Array<{ provider: string; subject: string; createdAt: string }>> {
+  const rows = await q.query<{ provider: string; subject: string; created_at: Date }>('SELECT provider, subject, created_at FROM identities WHERE user_id = $1 ORDER BY created_at', [userId])
+  return rows.map((r) => ({ provider: r.provider, subject: r.subject, createdAt: iso(r.created_at) }))
+}
+
+/** Orgs linked to any of these TynHub org slugs. */
+export async function orgsLinkedToTynhub(q: Queryable, slugs: string[]): Promise<Org[]> {
+  if (!slugs.length) return []
+  const rows = await q.query<OrgRow>(`SELECT ${ORG_COLS} FROM orgs WHERE tynhub_org = ANY($1)`, [slugs])
+  return rows.map(toOrg)
+}
+
+export async function setTynhubOrg(q: Queryable, orgId: string, slug: string | null): Promise<Org | null> {
+  const [row] = await q.query<OrgRow>(`UPDATE orgs SET tynhub_org = $2 WHERE id = $1 RETURNING ${ORG_COLS}`, [orgId, slug])
+  return row ? toOrg(row) : null
 }

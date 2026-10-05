@@ -18,6 +18,7 @@ import jwt from 'jsonwebtoken'
 import rateLimit from 'express-rate-limit'
 import { randomBytes, randomUUID } from 'node:crypto'
 import type { IncomingHttpHeaders } from 'node:http'
+import { API_TOKEN_PREFIX, resolveApiToken, type ApiToken } from '../repos/apiTokens.js'
 import { ah, badRequest, currentUser, HttpError, type AppContext } from './common.js'
 import {
   addIdentity,
@@ -52,6 +53,8 @@ export interface Session {
   /** True when the credential came from the browser cookie (CSRF and Origin checks apply). */
   viaCookie: boolean
   csrf: string
+  /** Set when the credential is an API token (`rtk_…`): the request is pinned to its org and role. */
+  apiToken?: ApiToken
 }
 
 export interface Auth {
@@ -59,6 +62,8 @@ export interface Auth {
   requireAuth: (req: Request, res: Response, next: NextFunction) => void
   requireCsrf: (req: Request, res: Response, next: NextFunction) => void
   authenticate: (headers: IncomingHttpHeaders) => Promise<Session | null>
+  /** Starts a console session (cookie) for a user; used by external sign-in (OIDC). */
+  issueSession: (res: Response, userId: string) => { token: string; csrfToken: string }
 }
 
 export function publicMemberships(ms: OrgMembership[]) {
@@ -187,6 +192,11 @@ export function createAuth(ctx: AppContext): Auth {
     const bearerToken = auth?.startsWith('Bearer ') ? auth.slice(7) : undefined
     const token = cookieToken ?? bearerToken
     if (!token) return null
+    if (!cookieToken && token.startsWith(API_TOKEN_PREFIX)) {
+      const apiToken = await db.system((q) => resolveApiToken(q, token))
+      const owner = apiToken ? await findUserById(db, apiToken.userId) : null
+      return apiToken && owner ? { user: publicUser(owner), viaCookie: false, csrf: '', apiToken } : null
+    }
     const payload = await verify(token)
     const user = payload ? await findUserById(db, payload.sub) : null
     if (!payload || !user) return null
@@ -203,6 +213,7 @@ export function createAuth(ctx: AppContext): Auth {
         return
       }
       req.user = session.user
+      req.apiToken = session.apiToken
       // CSRF applies only when the browser attached the credential automatically.
       req.csrfToken = session.viaCookie ? session.csrf : undefined
       next()
@@ -232,7 +243,7 @@ export function createAuth(ctx: AppContext): Auth {
     }),
   )
 
-  return { router, requireAuth, requireCsrf, authenticate }
+  return { router, requireAuth, requireCsrf, authenticate, issueSession }
 }
 
 function bearer(req: Request): string | null {
