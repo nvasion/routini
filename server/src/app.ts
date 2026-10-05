@@ -19,11 +19,14 @@ import { hostsRouter } from './routes/hosts.js'
 import { hooksRouter } from './routes/hooks.js'
 import { environmentsRouter } from './routes/environments.js'
 import { policyRouter } from './routes/policy.js'
+import { mcpRouter, type McpFetch } from './routes/mcp.js'
 import type { ProviderTestContext } from './integrations/providers.js'
 
 export interface AppOptions {
   /** Overrides for integration live checks (tests inject a fake fetch). */
   providerCtx?: ProviderTestContext
+  /** fetch for MCP server health checks (tests). */
+  mcpFetch?: McpFetch
 }
 
 export function createApp(ctx: AppContext, opts: AppOptions = {}): Express {
@@ -68,6 +71,7 @@ export function createApp(ctx: AppContext, opts: AppOptions = {}): Express {
   org.use(hostsRouter(ctx))
   org.use(environmentsRouter(ctx))
   org.use(policyRouter(ctx))
+  org.use(mcpRouter(ctx, opts.mcpFetch))
   app.use('/api/orgs/:org', auth.requireAuth, auth.requireCsrf, org)
 
   app.get('/health', (_req, res) => {

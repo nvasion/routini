@@ -11,6 +11,7 @@ import {
   type AgentId,
   type IntegrationScopes,
 } from '../integrations/catalog.js'
+import { PLACEHOLDER, type CredentialBinding } from '../egress/types.js'
 import { deleteSecretsWithPrefix, getSecret, putSecret } from './credentials.js'
 
 export interface IntegrationState {
@@ -135,10 +136,53 @@ export async function getScopedIntegrationEnv(
   const env: Record<string, string> = {}
   for (const def of INTEGRATIONS) {
     const state = states.get(def.id)
-    if (!state?.connectedAt || !state.scopes.agents.includes(agentId)) continue
+    if (def.serverOnly || !state?.connectedAt || !state.scopes.agents.includes(agentId)) continue
     const creds = await getIntegrationCredentials(q, box, orgId, def.id)
     if (!def.fields.every((f) => creds[f.key] !== undefined)) continue
     for (const f of def.fields) env[f.env] = creds[f.key]!
   }
   return env
+}
+
+export interface BrokeredAccess {
+  /** Env for the container: non-secret fields as-is, secret fields as the placeholder. */
+  env: Record<string, string>
+  bindings: CredentialBinding[]
+  /** Hosts the bindings need (added to the session's allow-list). */
+  hosts: string[]
+  /** Real secret values, for redaction. */
+  secrets: string[]
+}
+
+/**
+ * The broker's view of an agent's integrations: same scoping as
+ * getScopedIntegrationEnv, but secrets become placeholders in the env and
+ * credential bindings for the proxy. Integrations without broker rules get
+ * no secret at all under the broker (they are not reachable safely).
+ */
+export async function getBrokeredIntegrationAccess(q: Queryable, box: SecretBox, orgId: string, agentId: AgentId): Promise<BrokeredAccess> {
+  const states = await listIntegrationStates(q, orgId)
+  const out: BrokeredAccess = { env: {}, bindings: [], hosts: [], secrets: [] }
+  for (const def of INTEGRATIONS) {
+    const state = states.get(def.id)
+    if (def.serverOnly || !state?.connectedAt || !state.scopes.agents.includes(agentId)) continue
+    const creds = await getIntegrationCredentials(q, box, orgId, def.id)
+    if (!def.fields.every((f) => creds[f.key] !== undefined)) continue
+    for (const f of def.fields) out.env[f.env] = f.secret ? PLACEHOLDER : creds[f.key]!
+    for (const rule of def.broker ?? []) {
+      let host = rule.host
+      if (!host && rule.hostFromField) {
+        try {
+          host = new URL(creds[rule.hostFromField]!).hostname
+        } catch {
+          continue
+        }
+      }
+      if (!host) continue
+      out.bindings.push({ host, header: rule.header, format: rule.format, secret: creds[rule.field]!, ...(rule.userField ? { user: creds[rule.userField] } : {}) })
+      out.hosts.push(host)
+      out.secrets.push(creds[rule.field]!)
+    }
+  }
+  return out
 }

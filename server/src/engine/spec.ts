@@ -25,6 +25,17 @@ export type ActionConfig =
   | { type: 'http'; url: string; method?: string; headers?: Record<string, string>; body?: string; expectStatus?: number; timeoutMs?: number }
   | { type: 'ssh'; hostId: string; command: string }
   | { type: 'imap'; host: string; port?: number; username: string; credentialKey: string; mailbox?: string; search?: string; tls?: boolean }
+  | {
+      type: 'factory'
+      operation: 'orchestrate' | 'prd'
+      projectId?: string
+      prdId?: string
+      request?: string
+      runtime?: 'claude-code' | 'omnimancer'
+      provider?: string
+      model?: string
+      createPr?: boolean
+    }
 
 export interface AgentConfig {
   agent: AgentId
@@ -165,8 +176,32 @@ function parseAction(c: Record<string, unknown>, p: string): ActionConfig {
         search: str(c['search'], `${p}.search`, 20, { optional: true }),
         tls: c['tls'] === undefined ? undefined : c['tls'] === true,
       }
+    case 'factory': {
+      const operation = (c['operation'] ?? 'orchestrate') as 'orchestrate' | 'prd'
+      if (operation !== 'orchestrate' && operation !== 'prd') fail(`${p}.operation must be orchestrate or prd`)
+      const id = (k: string) => {
+        const v = str(c[k], `${p}.${k}`, 64)!
+        if (!/^[A-Za-z0-9_-]+$/.test(v)) fail(`${p}.${k} is not a valid id`)
+        return v
+      }
+      const runtime = c['runtime']
+      if (runtime !== undefined && runtime !== 'claude-code' && runtime !== 'omnimancer') fail(`${p}.runtime must be claude-code or omnimancer`)
+      if (operation === 'orchestrate') {
+        return {
+          type: 'factory',
+          operation,
+          projectId: id('projectId'),
+          request: str(c['request'], `${p}.request`, 20_000)!,
+          runtime: runtime as 'claude-code' | 'omnimancer' | undefined,
+          provider: str(c['provider'], `${p}.provider`, 40, { optional: true }),
+          model: str(c['model'], `${p}.model`, 200, { optional: true }),
+          createPr: c['createPr'] === undefined ? undefined : c['createPr'] === true,
+        }
+      }
+      return { type: 'factory', operation, prdId: id('prdId') }
+    }
     default:
-      return fail(`${p}.type must be one of: http, ssh, imap`)
+      return fail(`${p}.type must be one of: http, ssh, imap, factory`)
   }
 }
 

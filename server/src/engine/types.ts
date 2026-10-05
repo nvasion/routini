@@ -9,6 +9,7 @@ import type { Step } from './spec.js'
 import type { HttpRunnerOptions } from '../services/http.js'
 import type { SshExecutor } from '../services/ssh.js'
 import type { ImapExecutor } from '../services/imap.js'
+import type { FactoryFetch } from './factory.js'
 
 export interface StepContext {
   app: AppContext
@@ -47,6 +48,8 @@ export interface EngineOptions {
     http?: Pick<HttpRunnerOptions, 'fetchImpl' | 'ssrfCheck'>
     sshExecutor?: SshExecutor
     imapExecutor?: ImapExecutor
+    factoryFetch?: FactoryFetch
+    factoryPollMs?: number
   }
   /** Delay before a failed step is retried (ms). Default: 5s × attempt. */
   retryDelayMs?: (attempt: number) => number

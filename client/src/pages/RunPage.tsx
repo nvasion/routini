@@ -11,7 +11,7 @@ import { useDock } from '../shell/Dock'
 import { useOrg } from '../shell/OrgContext'
 import { buildTimeline, mergeEvents } from './timeline'
 
-const STREAM_TYPES = ['status', 'step.status', 'log', 'agent.init', 'agent.message', 'agent.tool_call', 'agent.tool_result', 'agent.result', 'approval.requested', 'approval.decided', 'artifact', 'cost']
+const STREAM_TYPES = ['status', 'step.status', 'log', 'agent.init', 'agent.message', 'agent.tool_call', 'agent.tool_result', 'agent.result', 'approval.requested', 'approval.decided', 'artifact', 'cost', 'egress.blocked']
 
 export function RunPage() {
   const org = useOrg()
@@ -131,7 +131,7 @@ export function RunPage() {
             step={s}
             spec={run.jobSnapshot.steps[s.idx]}
             events={timeline.byStep.get(s.idx) ?? []}
-            approval={d.approvals.find((a) => a.stepIdx === s.idx)}
+            approval={[...d.approvals].reverse().find((a) => a.stepIdx === s.idx)}
             last={i === d.steps.length - 1}
             canDecide={(min) => org.can(min)}
             busy={busy}
@@ -149,7 +149,7 @@ export function RunPage() {
             {timeline.artifacts.map((a) => (
               <a key={a.id} className="card" style={{ textDecoration: 'none', color: 'var(--ink)' }} href={String(a.data['url'] ?? '#')} target="_blank" rel="noreferrer">
                 <span className="meta" style={{ color: 'var(--accent)' }}>
-                  {a.data['kind'] === 'pull_request' ? `PULL REQUEST #${String(a.data['number'])}` : 'BRANCH'}
+                  {a.data['kind'] === 'pull_request' ? `PULL REQUEST${a.data['number'] ? ` #${String(a.data['number'])}` : ''}${a.data['source'] === 'factory' ? ' · FACTORY' : ''}` : 'BRANCH'}
                 </span>
                 <span>{String(a.data['branch'] ?? a.data['url'])}</span>
               </a>
@@ -167,6 +167,7 @@ function stepSummary(spec: Step | undefined): string {
     const c = spec.config
     if (c.type === 'http') return `${c.method ?? 'GET'} ${c.url}`
     if (c.type === 'ssh') return `ssh: ${c.command}`
+    if (c.type === 'factory') return c.operation === 'prd' ? `factory: execute PRD ${c.prdId}` : `factory: orchestrate ${c.projectId} · ${c.runtime ?? 'claude-code'}${c.model ? ` · ${c.model}` : ''}`
     return `imap: ${c.username}@${c.host}`
   }
   if (spec.kind === 'agent') return `${spec.config.agent}${spec.config.environmentId ? ' · in an environment' : spec.config.repo ? ` · ${spec.config.repo.url}@${spec.config.repo.baseBranch}` : ''}`
@@ -215,6 +216,11 @@ function StepItem(props: {
 
         {approval && (
           <div className="approval-box">
+            {approval.source === 'policy' && (
+              <div className="meta" style={{ color: 'var(--warn)' }}>
+                POLICY{approval.rule ? ` · ${approval.rule}` : ''}
+              </div>
+            )}
             <div style={{ fontWeight: 600 }}>{approval.message}</div>
             {approval.status === 'pending' ? (
               props.canDecide(approval.minRole === 'viewer' ? 'member' : (approval.minRole as 'member' | 'admin' | 'owner')) ? (
@@ -280,7 +286,13 @@ function EventLine({ e }: { e: RunEvent }) {
     case 'agent.result':
       return <div className="tl-entry msg">{String(d['summary'] ?? (d['ok'] ? 'Agent finished.' : 'Agent reported an error.'))}</div>
     case 'approval.requested':
-      return <div className="tl-entry">approval requested</div>
+      return <div className="tl-entry">{d['source'] === 'policy' ? `approval required by policy${d['rule'] ? ` “${String(d['rule'])}”` : ''}` : 'approval requested'}</div>
+    case 'egress.blocked':
+      return (
+        <div className="tl-entry" style={{ color: 'var(--warn)' }}>
+          blocked outbound (not on the allow-list): {((d['hosts'] as string[] | undefined) ?? []).join(', ')}
+        </div>
+      )
     case 'approval.decided':
       return (
         <div className="tl-entry">

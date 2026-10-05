@@ -1,4 +1,4 @@
-// Org settings: general & limits, members, models & keys, hosts, credentials, notifications.
+// Org settings: general & limits, members, models & keys, hosts, credentials, policy, notifications.
 
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import { NavLink, useParams } from 'react-router-dom'
@@ -8,6 +8,7 @@ import { relativeTime } from '../lib/format'
 import { useApi } from '../lib/hooks'
 import type { AIEndpoint, AgentId, CredentialMeta, Host, Member, OrgSettings, Role } from '../lib/types'
 import { useOrg } from '../shell/OrgContext'
+import { PolicyPanel } from './PolicyPanel'
 
 const TABS: Array<[string, string]> = [
   ['general', 'General'],
@@ -15,6 +16,7 @@ const TABS: Array<[string, string]> = [
   ['models', 'Models'],
   ['hosts', 'Hosts'],
   ['credentials', 'Credentials'],
+  ['policy', 'Policy'],
   ['notifications', 'Notifications'],
 ]
 
@@ -39,6 +41,7 @@ export function SettingsPage() {
       {tab === 'models' && <Models />}
       {tab === 'hosts' && <Hosts />}
       {tab === 'credentials' && <Credentials />}
+      {tab === 'policy' && <PolicyPanel />}
       {tab === 'notifications' && <Notifications />}
     </>
   )

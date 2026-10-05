@@ -5,7 +5,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { ErrorBanner, Field, Icon, Modal } from '../components/ui'
 import { api } from '../lib/api'
 import { useApi } from '../lib/hooks'
-import type { Environment, Host, Job, StepKind } from '../lib/types'
+import type { Environment, Host, Job, PolicyDecision, StepKind } from '../lib/types'
 import { useOrg } from '../shell/OrgContext'
 import { emptyJob, emptyStep, fromJob, toPayload, type JobForm, type StepForm } from './jobForm'
 
@@ -22,6 +22,7 @@ export function JobEditorPage() {
   const [saving, setSaving] = useState(false)
   const [secret, setSecret] = useState<{ secret: string; url: string; jobId: string } | null>(null)
   const readOnly = !org.can('member')
+  const decisions = usePolicyPreview(org.api('/policy/evaluate'), form)
 
   useEffect(() => {
     if (existing.data) setForm(fromJob(existing.data.job))
@@ -165,6 +166,7 @@ export function JobEditorPage() {
               step={s}
               hosts={hosts.data?.hosts ?? []}
               environments={environments.data?.environments ?? []}
+              decision={decisions.get(s.id.trim() || `step-${i + 1}`)}
               count={form.steps.length}
               onChange={(p) => setStep(s.key, p)}
               onMove={(by) => move(i, by)}
@@ -227,6 +229,7 @@ function StepEditor(props: {
   step: StepForm
   hosts: Host[]
   environments: Environment[]
+  decision?: PolicyDecision
   count: number
   onChange: (p: Partial<StepForm>) => void
   onMove: (by: -1 | 1) => void
@@ -236,8 +239,11 @@ function StepEditor(props: {
   return (
     <div className="card">
       <div className="inline" style={{ justifyContent: 'space-between' }}>
-        <span className="meta">
-          {index + 1} · {s.kind.toUpperCase()}
+        <span className="inline" style={{ gap: 8 }}>
+          <span className="meta">
+            {index + 1} · {s.kind.toUpperCase()}
+          </span>
+          <PolicyBadge decision={props.decision} />
         </span>
         <div className="inline">
           <button type="button" className="btn small" aria-label="Move step up" disabled={index === 0} onClick={() => props.onMove(-1)}>
@@ -267,9 +273,9 @@ function StepEditor(props: {
       {s.kind === 'action' && (
         <>
           <div className="segmented" role="group" aria-label="Action type" style={{ alignSelf: 'flex-start' }}>
-            {(['http', 'ssh', 'imap'] as const).map((t) => (
+            {(['http', 'ssh', 'imap', 'factory'] as const).map((t) => (
               <button key={t} type="button" aria-pressed={s.actionType === t} onClick={() => set({ actionType: t })}>
-                {t.toUpperCase()}
+                {t === 'factory' ? 'Factory' : t.toUpperCase()}
               </button>
             ))}
           </div>
@@ -312,6 +318,51 @@ function StepEditor(props: {
                 {(id) => <input id={id} className="input mono" value={s.command} placeholder="df -h / | tail -1" onChange={(e) => set({ command: e.target.value })} />}
               </Field>
             </div>
+          )}
+          {s.actionType === 'factory' && (
+            <>
+              <div className="segmented" role="group" aria-label="Factory operation" style={{ alignSelf: 'flex-start' }}>
+                <button type="button" aria-pressed={s.factoryOperation === 'orchestrate'} onClick={() => set({ factoryOperation: 'orchestrate' })}>
+                  Orchestrate
+                </button>
+                <button type="button" aria-pressed={s.factoryOperation === 'prd'} onClick={() => set({ factoryOperation: 'prd' })}>
+                  Execute PRD
+                </button>
+              </div>
+              {s.factoryOperation === 'prd' ? (
+                <Field label="PRD id" hint="Runs every task in the PRD; the step waits for the orchestration to finish.">
+                  {(id) => <input id={id} className="input mono" value={s.factoryPrdId} onChange={(e) => set({ factoryPrdId: e.target.value })} />}
+                </Field>
+              ) : (
+                <>
+                  <Field label="What should Factory build?">
+                    {(id) => <textarea id={id} className="textarea" rows={3} value={s.factoryRequest} onChange={(e) => set({ factoryRequest: e.target.value })} />}
+                  </Field>
+                  <div className="row">
+                    <Field label="Project id">{(id) => <input id={id} className="input mono" value={s.factoryProjectId} onChange={(e) => set({ factoryProjectId: e.target.value })} />}</Field>
+                    <Field label="Runtime">
+                      {(id) => (
+                        <select id={id} className="select" value={s.factoryRuntime} onChange={(e) => set({ factoryRuntime: e.target.value as StepForm['factoryRuntime'] })}>
+                          <option value="claude-code">Claude Code</option>
+                          <option value="omnimancer">Omnimancer</option>
+                        </select>
+                      )}
+                    </Field>
+                    {s.factoryRuntime === 'omnimancer' && (
+                      <>
+                        <Field label="Provider">{(id) => <input id={id} className="input mono" placeholder="openrouter" value={s.factoryProvider} onChange={(e) => set({ factoryProvider: e.target.value })} />}</Field>
+                        <Field label="Model">{(id) => <input id={id} className="input mono" placeholder="anthropic/claude-opus-5" value={s.factoryModel} onChange={(e) => set({ factoryModel: e.target.value })} />}</Field>
+                      </>
+                    )}
+                  </div>
+                  <label className="inline" style={{ gap: 6 }}>
+                    <input type="checkbox" checked={s.factoryCreatePr} onChange={(e) => set({ factoryCreatePr: e.target.checked })} />
+                    Open a pull request when the orchestration finishes
+                  </label>
+                </>
+              )}
+              <span className="hint">Uses the Factory integration. If Routini stops waiting (timeout or cancel), the orchestration keeps running in Factory.</span>
+            </>
           )}
           {s.actionType === 'imap' && (
             <div className="row">
@@ -428,5 +479,45 @@ function StepEditor(props: {
         </details>
       )}
     </div>
+  )
+}
+
+/** Dry-runs the org policy against the steps as they are edited (debounced). */
+function usePolicyPreview(path: string, form: JobForm): Map<string, PolicyDecision> {
+  const [decisions, setDecisions] = useState<Map<string, PolicyDecision>>(new Map())
+  const result = toPayload(form)
+  const key = result.ok ? JSON.stringify(result.payload['steps']) : ''
+  useEffect(() => {
+    if (!key) return
+    const controller = new AbortController()
+    const t = window.setTimeout(() => {
+      api<{ decisions: PolicyDecision[] }>(path, { body: { steps: JSON.parse(key) as unknown }, signal: controller.signal })
+        .then((r) => setDecisions(new Map(r.decisions.map((d) => [d.stepId, d]))))
+        .catch(() => {
+          // preview only; the server enforces the policy at run time
+        })
+    }, 400)
+    return () => {
+      window.clearTimeout(t)
+      controller.abort()
+    }
+  }, [path, key])
+  return decisions
+}
+
+function PolicyBadge({ decision }: { decision?: PolicyDecision }) {
+  if (!decision || decision.effect === 'allow') return null
+  const rule = decision.rule?.name ?? 'org policy'
+  if (decision.effect === 'deny') {
+    return (
+      <span className="badge fail" title={decision.rule?.reason ? `${rule}: ${decision.rule.reason}` : rule}>
+        blocked by policy
+      </span>
+    )
+  }
+  return (
+    <span className="badge warn" title={rule}>
+      needs {decision.rule?.minRole ?? 'member'} approval
+    </span>
   )
 }

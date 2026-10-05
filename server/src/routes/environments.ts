@@ -57,6 +57,7 @@ export function environmentsRouter(ctx: AppContext): Router {
     ...e,
     containerId: undefined,
     volume: undefined,
+    egressToken: undefined,
     // Self-hosters can attach their own tools (VS Code Dev Containers, a shell).
     ...(ctx.config.mode === 'selfhost' && e.status === 'running' && e.containerId
       ? { attachCommand: `docker exec -it -u 1000 -w /workspace ${e.containerId.slice(0, 12)} bash -l` }

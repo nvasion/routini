@@ -67,3 +67,34 @@ describe('job form', () => {
 function stripUndefined<T>(o: T): T {
   return JSON.parse(JSON.stringify(o)) as T
 }
+
+describe('job form: Factory steps', () => {
+  const base = { ...job, steps: [] as Job['steps'] }
+
+  it('round-trips orchestrate and PRD steps', () => {
+    const steps: Job['steps'] = [
+      { id: 'build', name: 'Build', kind: 'action', when: 'on_success', retries: 0, config: { type: 'factory', operation: 'orchestrate', projectId: 'routini', request: 'Add SSO', runtime: 'omnimancer', provider: 'openrouter', model: 'anthropic/claude-opus-5', createPr: false } },
+      { id: 'prd', name: 'PRD', kind: 'action', when: 'on_success', retries: 0, config: { type: 'factory', operation: 'prd', prdId: 'prd_42' } },
+    ]
+    const r = toPayload(fromJob({ ...base, steps }))
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.payload['steps']).toEqual(steps.map(({ retries: _r, ...s }) => s))
+  })
+
+  it('drops provider and model when blank and validates ids', () => {
+    const form = fromJob({ ...base, steps: [] })
+    form.steps = [
+      { ...emptyStep('action', 0), actionType: 'factory', factoryProjectId: 'routini', factoryRequest: 'x' },
+      { ...emptyStep('action', 1), actionType: 'factory', factoryProjectId: 'bad id', factoryRequest: '' },
+      { ...emptyStep('action', 2), actionType: 'factory', factoryOperation: 'prd' },
+    ]
+    const r = toPayload(form)
+    expect(r.ok).toBe(false)
+    if (r.ok) return
+    expect(r.errors).toEqual(['Step 2 (Action): enter the Factory project id.', 'Step 2 (Action): describe what Factory should build.', 'Step 3 (Action): enter the Factory PRD id.'])
+    form.steps = form.steps.slice(0, 1)
+    const ok = toPayload(form)
+    expect(ok.ok && ok.payload['steps']).toEqual([{ id: 'step-1', name: 'Action', kind: 'action', when: 'on_success', config: { type: 'factory', operation: 'orchestrate', projectId: 'routini', request: 'x', runtime: 'claude-code', createPr: true } }])
+  })
+})

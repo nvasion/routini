@@ -12,7 +12,7 @@ export interface StepForm {
   retries: string
   timeoutSec: string
   // action
-  actionType: 'http' | 'ssh' | 'imap'
+  actionType: 'http' | 'ssh' | 'imap' | 'factory'
   url: string
   method: string
   expectStatus: string
@@ -26,6 +26,14 @@ export interface StepForm {
   imapCredential: string
   mailbox: string
   search: string
+  factoryOperation: 'orchestrate' | 'prd'
+  factoryProjectId: string
+  factoryPrdId: string
+  factoryRequest: string
+  factoryRuntime: 'claude-code' | 'omnimancer'
+  factoryProvider: string
+  factoryModel: string
+  factoryCreatePr: boolean
   // agent
   agent: AgentId
   prompt: string
@@ -77,6 +85,14 @@ export function emptyStep(kind: StepKind, index: number): StepForm {
     imapCredential: '',
     mailbox: '',
     search: '',
+    factoryOperation: 'orchestrate',
+    factoryProjectId: '',
+    factoryPrdId: '',
+    factoryRequest: '',
+    factoryRuntime: 'claude-code',
+    factoryProvider: '',
+    factoryModel: '',
+    factoryCreatePr: true,
     agent: 'claude',
     prompt: '',
     repoUrl: '',
@@ -123,6 +139,17 @@ function fromStep(s: Step, i: number): StepForm {
       Object.assign(f, { url: c.url, method: c.method ?? 'GET', expectStatus: c.expectStatus ? String(c.expectStatus) : '', headersJson: c.headers ? JSON.stringify(c.headers, null, 2) : '', body: c.body ?? '' })
     } else if (c.type === 'ssh') {
       Object.assign(f, { hostId: c.hostId, command: c.command })
+    } else if (c.type === 'factory') {
+      Object.assign(f, {
+        factoryOperation: c.operation,
+        factoryProjectId: c.projectId ?? '',
+        factoryPrdId: c.prdId ?? '',
+        factoryRequest: c.request ?? '',
+        factoryRuntime: c.runtime ?? 'claude-code',
+        factoryProvider: c.provider ?? '',
+        factoryModel: c.model ?? '',
+        factoryCreatePr: c.createPr ?? true,
+      })
     } else {
       Object.assign(f, { imapHost: c.host, imapPort: c.port ? String(c.port) : '', imapUser: c.username, imapCredential: c.credentialKey, mailbox: c.mailbox ?? '', search: c.search ?? '' })
     }
@@ -171,6 +198,19 @@ export function toPayload(form: JobForm): PayloadResult {
         if (!s.hostId) errors.push(`${label}: choose a host.`)
         if (!s.command.trim()) errors.push(`${label}: enter a command.`)
         base['config'] = { type: 'ssh', hostId: s.hostId, command: s.command }
+      } else if (s.actionType === 'factory') {
+        const idOk = (v: string) => /^[A-Za-z0-9_-]+$/.test(v.trim())
+        if (s.factoryOperation === 'prd') {
+          if (!idOk(s.factoryPrdId)) errors.push(`${label}: enter the Factory PRD id.`)
+          base['config'] = { type: 'factory', operation: 'prd', prdId: s.factoryPrdId.trim() }
+        } else {
+          if (!idOk(s.factoryProjectId)) errors.push(`${label}: enter the Factory project id.`)
+          if (!s.factoryRequest.trim()) errors.push(`${label}: describe what Factory should build.`)
+          const cfg: Record<string, unknown> = { type: 'factory', operation: 'orchestrate', projectId: s.factoryProjectId.trim(), request: s.factoryRequest, runtime: s.factoryRuntime, createPr: s.factoryCreatePr }
+          if (s.factoryProvider.trim()) cfg['provider'] = s.factoryProvider.trim()
+          if (s.factoryModel.trim()) cfg['model'] = s.factoryModel.trim()
+          base['config'] = cfg
+        }
       } else {
         if (!s.imapHost.trim() || !s.imapUser.trim() || !s.imapCredential.trim()) errors.push(`${label}: IMAP needs host, username and a credential.`)
         const cfg: Record<string, unknown> = { type: 'imap', host: s.imapHost.trim(), username: s.imapUser.trim(), credentialKey: s.imapCredential.trim() }

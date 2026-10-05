@@ -322,6 +322,29 @@ ALTER TABLE approvals ADD COLUMN rule text;
 ALTER TABLE run_steps ADD COLUMN policy_cleared boolean NOT NULL DEFAULT false;
 `,
   },
+  {
+    version: 5,
+    name: 'broker sessions for environments; MCP servers',
+    sql: `
+-- An environment's own egress session token (only usable from inside the org's sandbox network).
+ALTER TABLE environments ADD COLUMN egress_token text;
+
+-- Remote MCP servers agents may use. Auth headers are secrets: credentials "mcp.<id>.<header>".
+CREATE TABLE mcp_servers (
+  id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  org_id      uuid NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  name        text NOT NULL CHECK (name ~ '^[a-z0-9][a-z0-9_-]{0,39}$'),
+  url         text NOT NULL,
+  header_names text[] NOT NULL DEFAULT '{}',
+  agents      text[] NOT NULL DEFAULT '{claude,omnimancer,opencode}',
+  last_test   jsonb,
+  created_at  timestamptz NOT NULL DEFAULT now(),
+  updated_at  timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (org_id, name)
+);
+SELECT routini_tenant('mcp_servers');
+`,
+  },
 ]
 
 /** Grants the app role access to everything a migration created. Runs after every migration. */

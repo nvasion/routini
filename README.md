@@ -12,7 +12,7 @@ TynHub at routini.tynhub.com.
 
 ```
 Trigger ─▶ Job ─▶ Run ─▶ Steps
-manual        trigger    action    http · ssh · imap
+manual        trigger    action    http · ssh · imap · factory
 cron (tz)     + steps    agent     a coding agent in a container → PR
 webhook                  approval  waits for a person
 ```
@@ -36,11 +36,26 @@ webhook                  approval  waits for a person
   their own git worktree inside it, so your checkout is untouched and you can
   inspect the result. Stopping keeps `/workspace`; idle environments stop on
   their own.
+- **Policy** gates steps before they run: ordered rules (first match wins) can
+  require an approval from a given role, or block a step outright, by step kind,
+  action type, SSH host tags and groups, agent result, repository host, or
+  whether an agent runs in an environment. The job editor previews each step's
+  decision as you edit.
+- The **credential broker** keeps secrets out of sandboxes. Agent and
+  environment containers sit on an internal network whose only way out is the
+  egress proxy. They hold placeholders; the proxy enforces the org's egress
+  allow-list and adds the real model key or integration token to requests for
+  the hosts it belongs to. Blocked connections are shown on the run.
+- **MCP servers** (remote, HTTP) give agents extra tools; their headers are
+  stored like any other secret and brokered the same way.
+- **Factory** is an integration: a `factory` action starts an orchestration or a
+  PRD execution on Factory and waits for it, recording the pull request.
 
 ## The console
 
 Inbox (what needs you, what's live, what's next) · Runs · live run timeline ·
-Jobs and the job editor · Integrations · Settings. The right-hand **dock** shows
+Jobs and the job editor · Environments · Integrations and MCP servers · Settings
+(including Policy). The right-hand **dock** shows
 your servers with health checks, and a live view of any run; it collapses or
 pops out into its own window. Three themes: **Routini** (default), **TynHub
 dark** and **TynHub light**.
@@ -77,6 +92,11 @@ Open http://localhost and create the first account: it owns the server, and
 further signups are closed (`ROUTINI_SIGNUP`). The stack is Postgres, the API,
 a worker (`docker compose up --scale worker=3` for more) and nginx.
 
+Turn on the credential broker (recommended; required in hosted mode for agent
+steps) by adding `COMPOSE_PROFILES=broker` and `ROUTINI_EGRESS_SECRET` to `.env`:
+this adds the `egress` service, and sandboxed containers then reach the network
+only through it.
+
 The API and the worker reach Docker (the API runs environments and their terminals; the worker runs agent containers). Mounting the socket gives them
 root-equivalent access to that host, so for production point `DOCKER_HOST` at a
 separate runner host (`ssh://…` or TLS `tcp://…`) instead.
@@ -100,6 +120,11 @@ stored secrets cannot be decrypted.
 | `ROUTINI_AGENT_IMAGE_CLAUDE` | `routini/agent-claude:latest` | Agent image (also `_OMNIMANCER`, `_OPENCODE`). |
 | `ROUTINI_WORKER_CONCURRENCY` | `4` | Runs per worker process. |
 | `ROUTINI_ENV_IMAGES` | agent images | Hosted mode: images environments may use (comma separated). Self-host allows any image. |
+| `ROUTINI_EGRESS_CONTROL_URL`, `ROUTINI_EGRESS_SECRET` | — | Credential broker: the egress proxy's control API and its shared secret. Both set = broker on. |
+| `ROUTINI_EGRESS_PROXY_HOST`, `ROUTINI_EGRESS_PROXY_PORT` | `routini-egress`, `3128` | The proxy as sandboxed containers see it (a network alias). |
+| `ROUTINI_EGRESS_CONTAINER` | `routini-egress` | Proxy container, attached to each org's sandbox network. |
+| `ROUTINI_SANDBOX_NETWORK_PREFIX` | `routini-sb` | Per-org internal Docker networks. |
+| `ROUTINI_EGRESS_CA_DIR` | — | Egress proxy only: where its CA persists (ephemeral if unset). |
 | `SEED_EMAIL`, `SEED_PASSWORD` | dev: admin@routini.dev / changeme | First account on an empty database. |
 | `SMTP_*` | — | Run-finished emails (per-org settings decide who gets them). |
 
@@ -117,8 +142,9 @@ stored secrets cannot be decrypted.
 - **Limits** per org: concurrent runs, agent minutes per day, model budget per
   day. Plans set the ceiling; admins can tighten it. Self-hosted orgs default to
   10 concurrent runs and no daily caps; hosted free orgs to 2 and 120 minutes.
-- Known gap (Phase 2): an agent container can read the tokens it is given. A
-  credential broker and egress proxy will keep them out of the sandbox.
+- With the credential broker on, sandboxed containers never receive real
+  credentials and can only reach allow-listed hosts. Without it (self-host
+  default), agents get the keys they are scoped to as environment variables.
 
 ## API
 
@@ -138,6 +164,8 @@ Under `/api/orgs/:org`:
 | Environments | `GET/POST /environments`, `GET/PUT/DELETE /environments/:id`, `POST /environments/:id/start`, `…/stop`, `…/exec`; WebSocket `…/terminal` |
 | Integrations | `GET /integrations`, `PUT/DELETE /integrations/:id`, `POST /integrations/:id/test` |
 | Settings | `GET/PUT /settings`, `GET /credentials`, `PUT/DELETE /credentials/:key` |
+| Policy | `GET/PUT /policy` (rules + egress allow-list), `POST /policy/evaluate` (dry run for steps) |
+| MCP servers | `GET/POST /mcp-servers`, `PUT/DELETE /mcp-servers/:id`, `POST /mcp-servers/:id/test` |
 
 Webhook triggers: `POST /api/hooks/:org/:jobId` with
 `Authorization: Bearer <secret>` (works with Alertmanager) or
@@ -150,9 +178,12 @@ run.
 server/src/
   config.ts  bootstrap.ts  index.ts (API)  worker.ts (worker)  app.ts
   db/        Postgres + PGlite drivers, migrations, tenancy (org/system transactions)
-  repos/     data access: identity, credentials, integrations, settings, jobs, runs, hosts
+  repos/     data access: identity, credentials, integrations, settings, jobs, runs, hosts,
+             environments, policy, mcp
   engine/    spec, engine (run state machine), worker (queue), scheduler, executors,
-             agent (+ agentStream parser), hub (SSE fan-out), notify
+             agent (+ agentStream parser), hub (SSE fan-out), notify,
+             environments, policy, factory
+  egress/    credential broker: egress proxy (egress.ts), CA, broker client
   routes/    org-scoped HTTP APIs, hooks
   http/      auth, org context, SSE, errors
   services/  http / ssh / imap / email executors, Docker
@@ -164,7 +195,7 @@ tests/       server tests (Vitest); client tests live next to their code
 ```bash
 make test           # server (embedded Postgres) + client
 make test-pg        # needs ROUTINI_TEST_PG_URL: real Postgres, non-superuser owner
-make test-docker    # needs Docker: real agent containers with the fake image
+make test-docker    # needs Docker: agents, environments and the credential broker, for real
 ```
 
 ## License

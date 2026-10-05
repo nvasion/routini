@@ -274,7 +274,7 @@ export class DockerService {
    * always removed afterwards.
    */
   async runStreaming(
-    config: ContainerConfig & { labels?: Record<string, string> },
+    config: ContainerConfig & { labels?: Record<string, string>; network?: string },
     opts: { timeoutMs: number; signal?: AbortSignal; onLine: (line: string, stream: 'stdout' | 'stderr') => void },
   ): Promise<ContainerLifecycleResult & { aborted: boolean }> {
     const { image, name, env, memoryBytes = DEFAULT_MEMORY_BYTES, cpuCount = DEFAULT_CPU_COUNT, user = DEFAULT_USER, capDrop = [...DEFAULT_CAP_DROP] } = config
@@ -296,6 +296,7 @@ export class DockerService {
         AttachStderr: true,
         Tty: false,
         HostConfig: {
+          ...(config.network ? { NetworkMode: config.network } : {}),
           Memory: memoryBytes,
           NanoCpus: Math.round(cpuCount * 1e9),
           CapDrop: capDrop,

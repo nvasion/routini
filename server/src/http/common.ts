@@ -41,7 +41,7 @@ export function createContext(
   const ctx = { ...base, actions: engineOpts.actions } as AppContext
   ctx.hub = new EventHub(base.db)
   ctx.broker = extra.broker === undefined ? brokerFromEnv() : extra.broker
-  ctx.envs = createEnvManager({ db: base.db, box: base.box, runtime: extra.envRuntime ?? new DockerEnvRuntime() })
+  ctx.envs = createEnvManager({ db: base.db, box: base.box, runtime: extra.envRuntime ?? new DockerEnvRuntime(), broker: ctx.broker, mode: base.config.mode })
   ctx.engine = createEngine(ctx, engineOpts)
   return ctx
 }

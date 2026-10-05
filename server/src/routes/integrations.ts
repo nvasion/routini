@@ -43,6 +43,7 @@ function view(def: IntegrationDef, state: IntegrationState | null | undefined) {
     lastTestOk: state?.lastTestOk ?? null,
     lastTestMessage: state?.lastTestMessage ?? null,
     scopes: state?.scopes ?? DEFAULT_SCOPES,
+    serverOnly: Boolean(def.serverOnly),
   }
 }
 
@@ -123,7 +124,7 @@ export function integrationsRouter(ctx: AppContext, providerCtx: ProviderTestCon
       let ok = false
       let message: string
       try {
-        const result = await runProviderTest(def.id, creds, providerCtx)
+        const result = await runProviderTest(def.id, creds, { allowPrivateHosts: ctx.config.mode === 'selfhost', ...providerCtx })
         ok = result.ok
         message = result.message
       } catch (err) {
