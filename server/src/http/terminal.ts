@@ -41,6 +41,8 @@ export function attachTerminal(server: Server, ctx: AppContext, auth: Auth): Web
     void (async () => {
       const session = await auth.authenticate(req.headers)
       if (!session) return reject(socket, 401, 'Unauthorized')
+      // Interactive shells are for people signed in to the console, not API tokens.
+      if (session.apiToken) return reject(socket, 403, 'Terminals need a signed-in session')
       if (session.viaCookie && req.headers.origin !== allowedOrigin) return reject(socket, 403, 'Forbidden origin')
       const org = await getOrgBySlug(ctx.db, m[1]!)
       const role = org ? await getMembershipRole(ctx.db, org.id, session.user.id) : null

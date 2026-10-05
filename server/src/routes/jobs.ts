@@ -17,7 +17,7 @@ import { randomBytes } from 'node:crypto'
 import { ah, badRequest, currentOrg, currentUser, notFound, type AppContext } from '../http/common.js'
 import { requireRole } from '../http/orgContext.js'
 import { parseJobSpec, SpecError, type JobSpec } from '../engine/spec.js'
-import { archiveJob, createJob, getJob, listJobs, updateJob, type Job } from '../repos/jobs.js'
+import { archiveJob, createJob, getJob, isHiddenJob, listJobs, updateJob, type Job } from '../repos/jobs.js'
 import { createRun, type Run } from '../repos/runs.js'
 import { getHost } from '../repos/hosts.js'
 import { getEnvironment } from '../repos/environments.js'
@@ -80,7 +80,8 @@ export function jobsRouter(ctx: AppContext): Router {
 
   const jobOr404 = async (q: Queryable, orgId: string, id: string) => {
     const job = /^[0-9a-f-]{36}$/i.test(id) ? await getJob(q, orgId, id) : null
-    if (!job || job.archivedAt) throw notFound('Job not found')
+    // Routini's own hidden jobs (ad-hoc commands) are not editable or runnable as jobs.
+    if (!job || job.archivedAt || (await isHiddenJob(q, orgId, job.id))) throw notFound('Job not found')
     return job
   }
 

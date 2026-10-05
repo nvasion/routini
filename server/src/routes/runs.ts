@@ -42,6 +42,7 @@ import {
 import type { Queryable } from '../db/index.js'
 import { runSummary } from './jobs.js'
 import { listIncidents } from '../repos/incidents.js'
+import { cancelRun, RunStateError } from '../engine/runControl.js'
 
 const RUN_STATUSES: RunStatus[] = ['queued', 'running', 'waiting', 'succeeded', 'failed', 'canceled']
 
@@ -142,23 +143,13 @@ export function runsRouter(ctx: AppContext): Router {
     requireRole('member'),
     ah(async (req, res) => {
       const org = currentOrg(req)
-      const run = await db.org(org.id, async (q) => {
-        const run = await runOr404(q, org.id, String(req.params['run']))
-        if (TERMINAL_RUN.includes(run.status)) throw new HttpError(409, `Run is already ${run.status}`)
-        await requestCancel(q, org.id, run.id)
-        return run
-      })
-      // A run nobody is executing must be finalised here; a running one stops on its worker's next heartbeat.
-      const idle = await db.org(org.id, async (q) => {
-        if (run.status === 'waiting') return true
-        const freed = await q.query(
-          `DELETE FROM queue WHERE run_id = $1 AND (locked_until IS NULL OR locked_until < now()) RETURNING id`,
-          [run.id],
-        )
-        return freed.length > 0
-      })
-      if (idle) await ctx.engine.cancelIdleRun({ ...run, cancelRequested: true })
-      res.status(202).json({ run: runSummary((await db.org(org.id, (q) => getRun(q, org.id, run.id)))!) })
+      const run = await db.org(org.id, (q) => runOr404(q, org.id, String(req.params['run'])))
+      try {
+        res.status(202).json({ run: runSummary(await cancelRun(ctx, org.id, run)) })
+      } catch (err) {
+        if (err instanceof RunStateError) throw new HttpError(409, err.message)
+        throw err
+      }
     }),
   )
 

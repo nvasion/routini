@@ -904,3 +904,22 @@ table.table {
 .main > .searchbox {
   flex: 0 0 auto;
 }
+
+/* ── Sign-in ────────────────────────────────────────────────────────────── */
+.btn.sso {
+  justify-content: center;
+  text-decoration: none;
+}
+.divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.divider::before,
+.divider::after {
+  content: '';
+  flex: 1;
+  border-top: 1px solid var(--line);
+}

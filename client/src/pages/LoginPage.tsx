@@ -1,17 +1,22 @@
 import { useState, type FormEvent } from 'react'
-import { Navigate, useNavigate } from 'react-router-dom'
+import { Navigate, useLocation, useNavigate } from 'react-router-dom'
 import { ErrorBanner, Field } from '../components/ui'
 import { pickDefaultOrg, useAuth } from '../lib/auth'
+import { useApi } from '../lib/hooks'
 
 export function LoginPage() {
   const { session, login, signup } = useAuth()
   const navigate = useNavigate()
+  const location = useLocation()
+  const providers = useApi<{ oidc: { name: string } | null }>('/api/auth/providers')
+  const callbackError = new URLSearchParams(location.search).get('error')
+  const next = (location.state as { from?: string } | null)?.from ?? '/'
   const [mode, setMode] = useState<'login' | 'signup'>('login')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [displayName, setDisplayName] = useState('')
   const [orgName, setOrgName] = useState('')
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(callbackError)
   const [busy, setBusy] = useState(false)
 
   if (session) {
@@ -57,6 +62,16 @@ export function LoginPage() {
             Create account
           </button>
         </div>
+        {providers.data?.oidc && (
+          <>
+            <a className="btn primary sso" href={`/api/auth/oidc/start?next=${encodeURIComponent(next)}`}>
+              Continue with {providers.data.oidc.name}
+            </a>
+            <div className="divider" role="separator">
+              <span>or with email</span>
+            </div>
+          </>
+        )}
         <form className="stack" style={{ gap: 14 }} onSubmit={submit}>
           <Field label="Email">{(id) => <input id={id} className="input" type="email" autoComplete="email" required value={email} onChange={(e) => setEmail(e.target.value)} />}</Field>
           <Field label="Password" hint={mode === 'signup' ? 'At least 8 characters.' : undefined}>

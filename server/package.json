@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.8",
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "bcryptjs": "^3.0.3",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
@@ -23,9 +24,11 @@
     "jsonwebtoken": "^9.0.3",
     "node-forge": "^1.4.0",
     "nodemailer": "^9.0.3",
+    "openid-client": "^6.8.8",
     "pg": "^8.23.1",
     "ssh2": "^1.17.0",
-    "ws": "^8.22.0"
+    "ws": "^8.22.0",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",

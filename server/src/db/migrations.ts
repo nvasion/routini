@@ -470,6 +470,34 @@ ALTER TABLE runs ADD COLUMN incident_id uuid REFERENCES incidents(id) ON DELETE 
 CREATE INDEX runs_incident_idx ON runs (incident_id) WHERE incident_id IS NOT NULL;
 `,
   },
+  {
+    version: 7,
+    name: 'API tokens (MCP), hidden jobs, TynHub org links',
+    sql: `
+-- Personal, org-scoped API tokens (MCP clients, scripts). Run-scoped ones are minted for agent steps.
+CREATE TABLE api_tokens (
+  id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  org_id       uuid NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  user_id      uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name         text NOT NULL CHECK (length(name) BETWEEN 1 AND 80),
+  token_hash   text NOT NULL UNIQUE,
+  role         text NOT NULL CHECK (role IN ('viewer', 'member', 'admin')),
+  run_id       uuid REFERENCES runs(id) ON DELETE CASCADE,
+  expires_at   timestamptz,
+  last_used_at timestamptz,
+  revoked_at   timestamptz,
+  created_at   timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX api_tokens_org_user_idx ON api_tokens (org_id, user_id);
+SELECT routini_tenant('api_tokens');
+
+-- Jobs Routini manages itself (the per-org "Ad-hoc commands" job behind MCP run_command).
+ALTER TABLE jobs ADD COLUMN hidden boolean NOT NULL DEFAULT false;
+
+-- The TynHub org whose members (signing in with TynHub) join this org.
+ALTER TABLE orgs ADD COLUMN tynhub_org text;
+`,
+  },
 ]
 
 /** Grants the app role access to everything a migration created. Runs after every migration. */

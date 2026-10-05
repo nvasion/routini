@@ -112,7 +112,10 @@ export function RunPage() {
       </div>
       <div className="inline meta" style={{ fontSize: 12 }}>
         <span className="badge">run #{run.number}</span>
-        <span className="badge">trigger: {run.trigger.kind}</span>
+        <span className="badge">
+          trigger: {run.trigger.kind}
+          {run.trigger.kind === 'mcp' && typeof run.trigger['tokenName'] === 'string' ? ` · ${run.trigger['tokenName']} (${String(run.trigger['tool'] ?? '')})` : ''}
+        </span>
         {run.trigger.kind === 'alert' && typeof run.trigger['incidentNumber'] === 'number' && (
           <Link className="badge fail" to={org.path(`/incidents/${run.trigger['incidentNumber']}`)}>
             incident #{run.trigger['incidentNumber']}

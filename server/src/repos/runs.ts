@@ -22,6 +22,8 @@ export type RunTrigger =
   | { kind: 'webhook'; payload?: unknown }
   | { kind: 'retry'; previousRunId: string }
   | { kind: 'alert'; incidentId: string; incidentNumber: number; alert: NormalizedAlert; hostId: string | null }
+  /** Started from an MCP client (or an agent's Routini tools) with an API token. */
+  | { kind: 'mcp'; userId: string; tokenId: string; tokenName: string; tool: string }
 
 export interface Run {
   id: string

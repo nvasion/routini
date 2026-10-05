@@ -57,6 +57,8 @@ export interface AgentConfig {
   model?: string
   /** Run inside this persistent environment (and its repository) instead of a fresh container. */
   environmentId?: string
+  /** Give the agent Routini's own MCP tools (fleet commands, runs, incidents) with a run-scoped token. */
+  routini?: boolean
   resources?: { cpus?: number; memoryMb?: number }
 }
 
@@ -282,6 +284,10 @@ function parseAgent(c: Record<string, unknown>, p: string): AgentConfig {
     cfg.check = { command: str((c['check'] as Record<string, unknown>)['command'], `${p}.check.command`, 4000)! }
   }
   if (c['model'] !== undefined) cfg.model = str(c['model'], `${p}.model`, 200)
+  if (c['routini'] !== undefined) {
+    if (typeof c['routini'] !== 'boolean') fail(`${p}.routini must be true or false`)
+    if (c['routini']) cfg.routini = true
+  }
   if (c['resources'] !== undefined) {
     if (!isObj(c['resources'])) fail(`${p}.resources must be an object`)
     const r = c['resources'] as Record<string, unknown>

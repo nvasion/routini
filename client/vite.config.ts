@@ -20,6 +20,10 @@ export default defineConfig({
       '/health': {
         target: apiTarget,
         changeOrigin: true
+      },
+      '/mcp': {
+        target: apiTarget,
+        changeOrigin: true
       }
     }
   }
