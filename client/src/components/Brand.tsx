@@ -1,29 +1,20 @@
-// The Routini mark, inlined so it follows the theme (--mark-* tokens).
-// `full` keeps the split disc (use from ~40px up); `glyph` is just the loop and
-// the arrow, for the header, favicons and anything small.
-// Source: brand/make_mark.py (regenerate there, never edit these SVGs by hand).
+// The Routini emblem (the logo art, cut out: brand/cutout.py) and the lockup
+// used in the header. The wordmark next to it is live text in the brand font,
+// so it stays crisp and readable on every theme.
 
-import markSvg from '../brand/mark.svg?raw'
-import glyphSvg from '../brand/mark-glyph.svg?raw'
+import emblemUrl from '../brand/emblem.png'
 
-export function Mark({ size = 32, variant = 'full', label }: { size?: number; variant?: 'full' | 'glyph'; label?: string }) {
-  return (
-    <span
-      className="mark"
-      style={{ width: size, height: size }}
-      {...(label ? { role: 'img', 'aria-label': label } : { 'aria-hidden': true })}
-      dangerouslySetInnerHTML={{ __html: variant === 'full' ? markSvg : glyphSvg }}
-    />
-  )
+export function Mark({ size = 32, label }: { size?: number; label?: string }) {
+  return <img className="mark" src={emblemUrl} width={size} height={size} alt={label ?? ''} aria-hidden={label ? undefined : true} draggable={false} />
 }
 
-/** Mark + wordmark, with an optional line under the name. */
-export function Lockup({ size = 32, variant = 'glyph', sub }: { size?: number; variant?: 'full' | 'glyph'; sub?: string }) {
+/** Emblem + wordmark, with an optional line under the name. */
+export function Lockup({ size = 32, sub }: { size?: number; sub?: string }) {
   return (
     <span className="lockup">
-      <Mark size={size} variant={variant} />
+      <Mark size={size} />
       <span className="lockup-text">
-        <span className="brand-name" style={{ fontSize: Math.round(size * 0.66) }}>
+        <span className="brand-name" style={{ fontSize: Math.round(size * 0.62) }}>
           ROUTINI
         </span>
         {sub && <span className="brand-sub">{sub}</span>}

@@ -47,7 +47,7 @@ export function LoginPage() {
     <div className="auth-wrap">
       <div className="card auth-card" style={{ padding: 24, gap: 16 }}>
         <div className="auth-brand">
-          <Mark size={72} label="Routini" />
+          <Mark size={96} label="Routini" />
           <span className="brand-name" style={{ fontSize: 34 }}>
             ROUTINI
           </span>

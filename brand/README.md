@@ -1,53 +1,38 @@
 # Routini brand
 
-The mark is a flat redraw of the red/black emblem. Two bands, red over the top and steel under the bottom, turn as one loop: the routine. Inside it, a rising orange arrow splits the disc: automation moving things forward.
+The logo art is the red/black emblem (`source/routini_logo.png`): a two-band loop around a glowing rising arrow. That's the routine, and automation moving it forward. The `ROUTINI` wordmark art and the character, the power-button mascot, complete the set.
 
 ## Files
 
 | File | Use |
 |---|---|
-| `svg/mark.svg` | Full mark, themeable (`--mark-*` CSS variables). Use it from about 40px up. |
-| `svg/mark-glyph.svg` | Loop and arrow only, themeable. Use it below about 40px: the header and anything small. |
-| `svg/mark-on-dark.svg`, `svg/mark-on-light.svg` | Full mark with fixed colours, for dark and light grounds. |
-| `svg/glyph-on-dark.svg`, `svg/glyph-on-light.svg` | Glyph with fixed colours. |
-| `svg/favicon.svg` | Browser tab icon. The steel follows the tab's light or dark scheme. |
-| `png/mark-on-*-512.png`, `png/glyph-on-*-512.png` | Transparent PNGs. |
-| `png/lockup-on-dark.png`, `png/lockup-on-light.png` | Mark plus wordmark, transparent. |
-| `png/og.png` | Social card (1200×630), also served at `/og.png`. |
+| `source/*.png` | The original art, as delivered on a paper background. These are the masters. |
+| `art/emblem.png`, `art/emblem-{512,256,128,64}.png` | The emblem, cut out, transparent. This is the logo. |
+| `art/wordmark.png` | The `ROUTINI` wordmark art, transparent. Light grounds only: its dark metal disappears on dark ones. |
+| `art/lockup.png` | Emblem over the wordmark (with the character as the "i"). Light grounds. |
+| `art/character.png` | The mascot, for illustrations and empty states. It is not the logo. |
 
-The console's favicon, app icons and manifest live in `client/public/`. The themeable SVGs the console inlines live in `client/src/brand/`.
+The console's favicon, app icons, manifest and social card (`og.png`) live in `client/public/`. The header and login use `client/src/brand/emblem.png`.
 
-## Colours
+## In the console
 
-| Role | Value | Notes |
-|---|---|---|
-| Red | `#e3261b` | The top band. Identity colour. |
-| Red, deep | `#a11c15` | Upper half of the disc. |
-| Steel on dark | `#8d919b` / deep `#34363d` | The bottom band and lower disc on dark grounds. |
-| Steel on light | `#1d1e22` / deep `#2c2d33` | The same, on light grounds. |
-| Orange | `#ff8a1f` | The arrow. Never recolour it. |
-
-These colours stay the same in every console theme. Only the steel follows the ground.
-
-## Type
-
-- **Wordmark:** "ROUTINI" in Barlow Semi Condensed 700, letter-spacing 0.04em.
-- **Supporting line:** IBM Plex Mono, upper case, letter-spacing 0.06–0.08em.
-- **Tagline:** "Your AI engineer, on call." in Barlow Semi Condensed 600.
+- The emblem is the mark everywhere: header (34px), login (96px), favicon and app icons. Its orange arrow keeps it readable down to favicon size on dark and light grounds.
+- Next to it, "ROUTINI" is live text: Barlow Semi Condensed 700, letter-spacing 0.04em. That keeps it crisp on all three themes. The wordmark art is for light-ground marketing such as the social card and docs.
+- Tagline: "Your AI engineer, on call."
 
 ## Rules
 
-- Keep clear space of at least a quarter of the mark's width around it.
-- Use the glyph below 40px. The full mark's disc turns to noise at small sizes.
-- Don't rotate, outline or add effects (bevels, glows, textures) to the mark. Don't put it on busy photos.
-- The character (the power-button figure) is a mascot for illustrations and empty states. It is not the logo.
+- Keep clear space of at least a quarter of the emblem's width around it.
+- Use the art as delivered: don't recolour, outline, or redraw it.
+- Use the wordmark and lockup art on light grounds. On dark grounds, use the emblem with the text wordmark.
+- Neither the old tagline ("Algorithms. Protocols. Automation.") nor the teal "weathered" variant is used.
 
 ## Regenerating
 
 ```sh
-python3 brand/make_mark.py                      # SVGs (also copies the themeable ones into client/src/brand)
-PLAYWRIGHT=…/playwright/index.mjs node brand/export.mjs   # PNGs, icons, social card
-python3 brand/make_ico.py                       # favicon.ico (needs Pillow)
+python3 brand/cutout.py      # art/ from source/ (needs numpy, scipy, Pillow)
+PLAYWRIGHT=…/playwright/index.mjs node brand/export.mjs   # icons and the social card into client/public
+python3 brand/make_ico.py    # favicon.ico
 ```
 
-Change the geometry or colours in `make_mark.py`, never in the generated files.
+`cutout.py` separates the art from the paper with a proper matte (colour-to-alpha against a smoothed paper estimate), so there's no cream fringe. It drops the faint circuit lines and paper shadows, and leaves the art's interiors untouched.

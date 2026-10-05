@@ -40,12 +40,6 @@
   --fail: #ff4d3d;
   --fail-line: #5e1e18;
   --off: #6e6a64;
-  /* The mark keeps its colours in every theme; only the steel follows the ground. */
-  --mark-red: #e3261b;
-  --mark-red-deep: #a11c15;
-  --mark-steel: #8d919b;
-  --mark-steel-deep: #34363d;
-  --mark-orange: #ff8a1f;
   --h-bg: #0b0b0d;
   --h-rule: #ff2d1f;
 }
@@ -81,11 +75,6 @@
   --fail: #f0716e;
   --fail-line: #6a3433;
   --off: #6b7480;
-  --mark-red: #e3261b;
-  --mark-red-deep: #a11c15;
-  --mark-steel: #8d919b;
-  --mark-steel-deep: #34363d;
-  --mark-orange: #ff8a1f;
   --h-bg: #1c232c;
   --h-rule: #333b45;
 }
@@ -121,19 +110,12 @@
   --fail: #b8332a;
   --fail-line: #e6b0ab;
   --off: #8a929b;
-  --mark-red: #e3261b;
-  --mark-red-deep: #a11c15;
-  --mark-steel: #1d1e22;
-  --mark-steel-deep: #2c2d33;
-  --mark-orange: #ff8a1f;
   --h-bg: #24303e;
   --h-rule: #24303e;
 }
 
 /* TynHub light keeps the slate masthead, so the header re-scopes its tokens. */
 [data-theme='tynhub-light'] .rq-header {
-  --mark-steel: #8d919b;
-  --mark-steel-deep: #34363d;
   --ink: #f4f4f2;
   --muted: #b7c1cc;
   --line: #3a4757;
