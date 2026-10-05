@@ -3,7 +3,8 @@
 // builds an AppContext and calls createApp(ctx).
 // ─────────────────────────────────────────────────────────────────────────────
 
-import express, { type Express } from 'express'
+import { isIP } from 'node:net'
+import express, { type Express, type RequestHandler } from 'express'
 import cors from 'cors'
 import cookieParser from 'cookie-parser'
 import rateLimit from 'express-rate-limit'
@@ -36,10 +37,25 @@ export interface AppOptions {
   mcpCommandWaitMs?: number
 }
 
+/**
+ * Takes req.ip from a header the platform edge sets itself (App Platform:
+ * do-connecting-ip). Behind a CDN plus a router, the forwarded chain has more
+ * hops than `trust proxy` expects, and every client would share the edge's
+ * address in rate limits. Only use a header the edge overwrites.
+ */
+export function clientIpFromHeader(header: string): RequestHandler {
+  return (req, _res, next) => {
+    const value = req.get(header)?.trim()
+    if (value && isIP(value)) Object.defineProperty(req, 'ip', { value, configurable: true })
+    next()
+  }
+}
+
 export function createApp(ctx: AppContext, opts: AppOptions = {}): Express {
   const app = express()
   app.disable('x-powered-by')
   app.set('trust proxy', 1) // behind nginx / a load balancer: rate limits key on the client IP
+  if (ctx.config.clientIpHeader) app.use(clientIpFromHeader(ctx.config.clientIpHeader))
 
   // Webhooks verify signatures over the raw body, so they mount before the JSON parser.
   app.use('/api/hooks', hooksRouter(ctx))

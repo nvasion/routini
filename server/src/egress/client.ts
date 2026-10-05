@@ -12,6 +12,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import Dockerode from 'dockerode'
+import { dockerFromEnv } from '../services/dockerClient.js'
 import { randomBytes } from 'node:crypto'
 import type { EgressSession, SessionStats } from './types.js'
 
@@ -35,7 +36,7 @@ export class BrokerClient {
 
   constructor(
     readonly cfg: BrokerConfig,
-    private readonly docker: Dockerode = new Dockerode(),
+    private readonly docker: Dockerode = dockerFromEnv(),
     private readonly fetchImpl: typeof fetch = fetch,
   ) {}
 

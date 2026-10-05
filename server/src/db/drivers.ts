@@ -15,9 +15,31 @@ export const APP_ROLE = 'routini_app'
 
 // ── node-postgres ────────────────────────────────────────────────────────────
 
+/**
+ * Connection settings for `url`. With DATABASE_CA_CERT (a PEM, e.g. App
+ * Platform's ${db.CA_CERT}), TLS is verified against that CA: the chain must
+ * lead to it, though the host name is not checked, so private and public
+ * endpoints of a managed cluster both work. Any sslmode in the URL is dropped
+ * then, because node-postgres would let it override the CA (and treats
+ * sslmode=require as verify-full against the system store).
+ */
+export function pgConfig(url: string, env: NodeJS.ProcessEnv = process.env): pg.ClientConfig {
+  const ca = env['DATABASE_CA_CERT']?.trim()
+  if (!ca) return { connectionString: url }
+  const u = new URL(url)
+  for (const key of ['sslmode', 'ssl', 'sslrootcert', 'uselibpqcompat']) u.searchParams.delete(key)
+  return { connectionString: u.toString(), ssl: { ca, rejectUnauthorized: true, checkServerIdentity: () => undefined } }
+}
+
+/** Pool size per process (ROUTINI_DB_POOL_MAX, default 10). Keep it small on shared clusters. */
+export function poolMax(env: NodeJS.ProcessEnv = process.env): number {
+  const n = Number(env['ROUTINI_DB_POOL_MAX'])
+  return Number.isInteger(n) && n > 0 ? n : 10
+}
+
 /** Opens a single unpooled client as the connecting user, for migrations. */
 export async function withOwnerClient<T>(url: string, fn: (q: Queryable) => Promise<T>): Promise<T> {
-  const client = new pg.Client({ connectionString: url })
+  const client = new pg.Client(pgConfig(url))
   await client.connect()
   try {
     return await fn({ query: async (sql, params) => (await client.query(sql, params as unknown[])).rows })
@@ -27,7 +49,7 @@ export async function withOwnerClient<T>(url: string, fn: (q: Queryable) => Prom
 }
 
 export function createPgDriver(url: string, opts: { max?: number } = {}): Driver {
-  const pool = new pg.Pool({ connectionString: url, max: opts.max ?? 10 })
+  const pool = new pg.Pool({ ...pgConfig(url), max: opts.max ?? poolMax() })
   // node-postgres queues statements per client, so this runs before any query
   // issued on a freshly connected client.
   pool.on('connect', (client) => {
@@ -57,7 +79,7 @@ export function createPgDriver(url: string, opts: { max?: number } = {}): Driver
     async listen(channel: string, handler: NotifyHandler) {
       assertChannel(channel)
       // LISTEN needs a dedicated connection that is never returned to the pool.
-      const client = new pg.Client({ connectionString: url })
+      const client = new pg.Client(pgConfig(url))
       await client.connect()
       client.on('notification', (msg) => {
         if (msg.channel === channel) handler(msg.payload ?? '')

@@ -16,9 +16,11 @@ FROM nginx:stable-alpine AS runtime
 # Copy compiled assets
 COPY --from=build /app/dist /usr/share/nginx/html
 
-# Nginx config handles SPA routing and reverse-proxies /api and /health
-# to the "server" Docker Compose service
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+# Nginx config: nginx.conf (Compose) serves the app and reverse-proxies /api,
+# /mcp and /health to the "server" service; nginx.platform.conf serves the app
+# only, for platforms whose router sends those paths to the API itself.
+ARG NGINX_CONF=nginx.conf
+COPY ${NGINX_CONF} /etc/nginx/conf.d/default.conf
 
 EXPOSE 80
 
