@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Fake Claude Code for tests. Replays /opt/routini/transcript.jsonl as stream-json.
+# The prompt steers it:
+#   contains "FAIL"   → print an error result and exit 1
+#   contains "EDIT"   → also write NOTES.md in the working directory
+#   contains "SLOW"   → sleep 30s first (for cancel/timeout tests)
+prompt=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -p) prompt="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+case "$prompt" in *SLOW*) sleep 30 ;; esac
+if [[ "$prompt" == *FAIL* ]]; then
+  echo '{"type":"result","subtype":"error_during_execution","is_error":true,"result":"Could not complete the task","total_cost_usd":0.01,"num_turns":1}'
+  exit 1
+fi
+cat /opt/routini/transcript.jsonl
+if [[ "$prompt" == *EDIT* ]]; then
+  echo "Notes written by the fake agent." > NOTES.md
+fi
+echo "plain stderr output from the agent" >&2
+exit 0

@@ -267,6 +267,111 @@ export class DockerService {
     return { containerId, exitCode, logs, timedOut }
   }
 
+  /**
+   * Runs a container and streams its output line by line while it runs.
+   * Attaches before start so no output is missed. Same security defaults as
+   * runContainer. The container is killed on `signal` abort or timeout and
+   * always removed afterwards.
+   */
+  async runStreaming(
+    config: ContainerConfig & { labels?: Record<string, string> },
+    opts: { timeoutMs: number; signal?: AbortSignal; onLine: (line: string, stream: 'stdout' | 'stderr') => void },
+  ): Promise<ContainerLifecycleResult & { aborted: boolean }> {
+    const { image, name, env, memoryBytes = DEFAULT_MEMORY_BYTES, cpuCount = DEFAULT_CPU_COUNT, user = DEFAULT_USER, capDrop = [...DEFAULT_CAP_DROP] } = config
+    for (const [k, v] of Object.entries(env)) {
+      if (!k || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(k)) throw new Error(`Invalid environment variable key: "${k}"`)
+      if (v.includes('\0')) throw new Error(`Environment variable "${k}" contains a null byte`)
+    }
+    const empty = { logs: [] as string[], timedOut: false, aborted: false, exitCode: null }
+
+    let container: Dockerode.Container
+    try {
+      container = await this.docker.createContainer({
+        Image: image,
+        name,
+        User: user,
+        Env: Object.entries(env).map(([k, v]) => `${k}=${v}`),
+        Labels: config.labels,
+        AttachStdout: true,
+        AttachStderr: true,
+        Tty: false,
+        HostConfig: {
+          Memory: memoryBytes,
+          NanoCpus: Math.round(cpuCount * 1e9),
+          CapDrop: capDrop,
+          SecurityOpt: ['no-new-privileges:true'],
+          AutoRemove: false,
+        },
+      })
+    } catch (err) {
+      return { ...empty, containerId: '', error: `Failed to create container: ${toErrMsg(err)}` }
+    }
+    const containerId = container.id.slice(0, 12)
+
+    const splitters = {
+      stdout: lineSplitter((l) => opts.onLine(l, 'stdout')),
+      stderr: lineSplitter((l) => opts.onLine(l, 'stderr')),
+    }
+    try {
+      const stream = (await container.attach({ stream: true, stdout: true, stderr: true })) as NodeJS.ReadableStream
+      const demux = createDemuxer((kind, chunk) => splitters[kind].push(chunk))
+      stream.on('data', (b: Buffer) => demux(b))
+      await container.start()
+    } catch (err) {
+      await this.forceRemove(container)
+      return { ...empty, containerId, error: `Failed to start container: ${toErrMsg(err)}` }
+    }
+
+    let timedOut = false
+    let aborted = false
+    let exitCode: number | null = null
+    const kill = async () => {
+      try {
+        await container.kill()
+      } catch {
+        /* already exited */
+      }
+    }
+    const onAbort = () => {
+      aborted = true
+      void kill()
+    }
+    opts.signal?.addEventListener('abort', onAbort, { once: true })
+    if (opts.signal?.aborted) onAbort()
+    const timer = setTimeout(() => {
+      timedOut = true
+      void kill()
+    }, opts.timeoutMs)
+    try {
+      const r = (await container.wait()) as { StatusCode: number }
+      exitCode = timedOut || aborted ? null : r.StatusCode
+    } catch {
+      exitCode = null
+    } finally {
+      clearTimeout(timer)
+      opts.signal?.removeEventListener('abort', onAbort)
+    }
+    // Give the attach stream a moment to deliver its last frames.
+    await new Promise((r) => setTimeout(r, 50))
+    splitters.stdout.flush()
+    splitters.stderr.flush()
+    await this.forceRemove(container)
+    return { containerId, exitCode, logs: [], timedOut, aborted }
+  }
+
+  /** Kills and removes every container carrying all of `labels`. Returns how many. */
+  async killByLabels(labels: Record<string, string>): Promise<number> {
+    const filters = { label: Object.entries(labels).map(([k, v]) => `${k}=${v}`) }
+    let list: Array<{ Id: string }> = []
+    try {
+      list = await this.docker.listContainers({ all: true, filters })
+    } catch {
+      return 0
+    }
+    for (const c of list) await this.forceRemove(this.docker.getContainer(c.Id))
+    return list.length
+  }
+
   /** Removes a container, silencing errors (it may already be removed). */
   private async forceRemove(container: Dockerode.Container): Promise<void> {
     try {
@@ -278,6 +383,50 @@ export class DockerService {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+/**
+ * Incremental parser for Docker's multiplexed attach stream (8-byte frame
+ * headers; see parseDockerLogs). Frames may arrive split across chunks.
+ */
+export function createDemuxer(onFrame: (stream: 'stdout' | 'stderr', payload: Buffer) => void): (chunk: Buffer) => void {
+  let pending: Buffer = Buffer.alloc(0)
+  return (chunk) => {
+    pending = pending.length ? Buffer.concat([pending, chunk]) : chunk
+    while (pending.length >= 8) {
+      const size = pending.readUInt32BE(4)
+      if (pending.length < 8 + size) break
+      const kind = pending[0] === 2 ? 'stderr' : 'stdout'
+      onFrame(kind, pending.subarray(8, 8 + size))
+      pending = pending.subarray(8 + size)
+    }
+  }
+}
+
+/** Buffers bytes and emits complete lines (without the newline). Very long lines are emitted in pieces. */
+export function lineSplitter(onLine: (line: string) => void, maxLine = 64 * 1024): { push(b: Buffer): void; flush(): void } {
+  let buf = ''
+  const decoder = new TextDecoder()
+  return {
+    push(b) {
+      buf += decoder.decode(b, { stream: true })
+      let i: number
+      while ((i = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, i).replace(/\r$/, '')
+        buf = buf.slice(i + 1)
+        if (line) onLine(line)
+      }
+      while (buf.length > maxLine) {
+        onLine(buf.slice(0, maxLine))
+        buf = buf.slice(maxLine)
+      }
+    },
+    flush() {
+      buf += decoder.decode()
+      if (buf.trim()) onLine(buf)
+      buf = ''
+    },
+  }
+}
 
 function toErrMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err)

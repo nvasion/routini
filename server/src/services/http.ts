@@ -5,7 +5,7 @@
  * response status matches an expected value.  Intended for "check that my
  * dashboard / health endpoint is responding" style daily tasks.
  *
- * Configuration (from DailyTask.config — non-secret only):
+ * Configuration (from ActionTask.config — non-secret only):
  *   url            – full URL to fetch (required)
  *   method         – HTTP method; default "GET"
  *   expectedStatus – expected HTTP status code as a string; default "200"
@@ -19,16 +19,16 @@
  *   – The hostname is resolved via DNS and the resulting IP is re-checked
  *     against private/loopback ranges (resolvedIpIsSsrfSafe) to mitigate
  *     basic DNS rebinding attacks.
- *   – Redirects to private addresses cannot be blocked with native fetch; the
- *     service sets redirect: 'follow' with a cap of 5 redirects via the
- *     fetchImpl abstraction so tests can verify redirect behaviour.
+ *   – Redirects are never followed (redirect: 'manual'): native fetch cannot
+ *     re-check a redirect target against the SSRF guard, so a 3xx is reported
+ *     as the response status instead.
  *   – No credentials are accepted in the URL (user:pass@host is rejected).
  *   – Response bodies are truncated to MAX_BODY_PREVIEW_CHARS to avoid
  *     excessive memory use.
  */
 
 import { resolvedIpIsSsrfSafe, isSsrfSafeHostname } from '../utils/network.js'
-import type { DailyTask } from '../types.js'
+import type { ActionTask } from './actionTypes.js'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -66,6 +66,8 @@ export interface HttpRunnerOptions {
    * Pass `async () => true` to disable the check in unit tests.
    */
   ssrfCheck?: (hostname: string) => Promise<boolean>
+  /** Allow private and loopback targets (self-hosted installs only; see ssh.ts). */
+  allowPrivateHosts?: boolean
 }
 
 // ── URL validation ────────────────────────────────────────────────────────────
@@ -80,7 +82,7 @@ interface UrlInvalidResult {
 }
 type UrlValidation = UrlValidResult | UrlInvalidResult
 
-function validateHttpUrl(rawUrl: string): UrlValidation {
+function validateHttpUrl(rawUrl: string, allowPrivateHosts = false): UrlValidation {
   if (!rawUrl || typeof rawUrl !== 'string' || rawUrl.trim() === '') {
     return { valid: false, error: 'HTTP task config is missing required field: url' }
   }
@@ -103,7 +105,7 @@ function validateHttpUrl(rawUrl: string): UrlValidation {
     return { valid: false, error: 'url must not contain embedded credentials' }
   }
 
-  if (!isSsrfSafeHostname(parsed.hostname)) {
+  if (!allowPrivateHosts && !isSsrfSafeHostname(parsed.hostname)) {
     return {
       valid: false,
       error: `url hostname "${parsed.hostname}" is not allowed: private or loopback addresses are blocked`,
@@ -138,18 +140,18 @@ function parseHeaders(raw: string | undefined): Record<string, string> | null {
  * Performs the HTTP request configured in `task.config` and returns the
  * result as logs plus status/success metadata.
  *
- * @param task     The DailyTask record (must have actionType === 'http').
+ * @param task     The ActionTask record (must have actionType === 'http').
  * @param options  Optional overrides for testing.
  */
 export async function runHttpTask(
-  task: DailyTask,
+  task: ActionTask,
   options: HttpRunnerOptions = {},
 ): Promise<HttpTaskResult> {
   const fetchImpl = options.fetchImpl ?? (fetch as FetchFn)
-  const ssrfCheck = options.ssrfCheck ?? resolvedIpIsSsrfSafe
+  const ssrfCheck = options.allowPrivateHosts ? async () => true : (options.ssrfCheck ?? resolvedIpIsSsrfSafe)
 
   // ── Validate URL ───────────────────────────────────────────────────────────
-  const urlCheck = validateHttpUrl(task.config['url'] ?? '')
+  const urlCheck = validateHttpUrl(task.config['url'] ?? '', options.allowPrivateHosts)
   if (!urlCheck.valid) {
     return { success: false, logs: [], error: urlCheck.error }
   }
@@ -208,10 +210,12 @@ export async function runHttpTask(
       method,
       signal: controller.signal,
       headers: {
-        'User-Agent': 'Routini-DailyTask/1.0',
+        'User-Agent': 'Routini-ActionTask/1.0',
         ...(extraHeaders ?? {}),
       },
-      redirect: 'follow',
+      // Never follow redirects: a public URL could bounce the request to an internal
+      // address after the SSRF guard has passed. 3xx is reported as the status.
+      redirect: 'manual',
     }
 
     if (body && ['POST', 'PUT', 'PATCH'].includes(method)) {
@@ -246,17 +250,17 @@ export async function runHttpTask(
       success: false,
       logs,
       statusCode,
-      error: `[task:${task.id}] Expected status ${expectedStatus}, got ${statusCode}`,
+      error: `Expected status ${expectedStatus}, got ${statusCode}`,
     }
   } catch (err) {
     if (err instanceof Error && err.name === 'AbortError') {
       const msg = `Request timed out after ${timeoutMs}ms`
       logs.push(msg)
-      return { success: false, logs, error: `[task:${task.id}] ${msg}` }
+      return { success: false, logs, error: `${msg}` }
     }
     const msg = err instanceof Error ? err.message : 'Unexpected HTTP error'
     logs.push(`Request failed: ${msg}`)
-    return { success: false, logs, error: `[task:${task.id}] ${msg}` }
+    return { success: false, logs, error: `${msg}` }
   } finally {
     clearTimeout(timer)
   }

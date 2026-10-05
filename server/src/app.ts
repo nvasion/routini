@@ -1,83 +1,76 @@
-import express, { Request, Response, NextFunction } from 'express'
+// ─────────────────────────────────────────────────────────────────────────────
+// Express app factory. No listen() and no globals: index.ts (and each test)
+// builds an AppContext and calls createApp(ctx).
+// ─────────────────────────────────────────────────────────────────────────────
+
+import express, { type Express } from 'express'
 import cors from 'cors'
 import cookieParser from 'cookie-parser'
 import rateLimit from 'express-rate-limit'
-import { authRouter, requireAuth } from './routes/auth.js'
-import { tasksRouter } from './routes/tasks.js'
+import { errorHandler, type AppContext } from './http/common.js'
+import { createAuth } from './http/auth.js'
+import { loadOrg } from './http/orgContext.js'
+import { orgCollectionRouter, orgRouter } from './routes/orgs.js'
 import { settingsRouter } from './routes/settings.js'
-import { notificationsRouter } from './routes/notifications.js'
-import { credentialsRouter } from './routes/credentials.js'
 import { integrationsRouter } from './routes/integrations.js'
+import { jobsRouter } from './routes/jobs.js'
+import { runsRouter } from './routes/runs.js'
+import { hostsRouter } from './routes/hosts.js'
+import { hooksRouter } from './routes/hooks.js'
+import type { ProviderTestContext } from './integrations/providers.js'
 
-export const app = express()
+export interface AppOptions {
+  /** Overrides for integration live checks (tests inject a fake fetch). */
+  providerCtx?: ProviderTestContext
+}
 
-// ── CORS ──────────────────────────────────────────────────────────
-// Restrict to the known frontend origin; credentials (cookies) require
-// an explicit origin — wildcard '*' is not permitted with credentials.
+export function createApp(ctx: AppContext, opts: AppOptions = {}): Express {
+  const app = express()
+  app.disable('x-powered-by')
+  app.set('trust proxy', 1) // behind nginx / a load balancer: rate limits key on the client IP
 
-app.use(cors({
-  origin: process.env.CLIENT_URL || 'http://localhost:5173',
-  credentials: true,
-}))
+  // Webhooks verify signatures over the raw body, so they mount before the JSON parser.
+  app.use('/api/hooks', hooksRouter(ctx))
 
-// ── Body / cookie parsing ─────────────────────────────────────────
-// COOKIE_SECRET signs cookies so tampering is detectable.  In dev/test
-// the env var may be absent; production must set it explicitly.
+  // Credentials (cookies) require an explicit origin; '*' is not allowed.
+  app.use(cors({ origin: ctx.config.clientUrl, credentials: true }))
+  app.use(express.json({ limit: '1mb' }))
+  app.use(cookieParser(ctx.config.cookieSecret))
 
-app.use(express.json())
-app.use(cookieParser(process.env.COOKIE_SECRET))
+  app.use(
+    '/api',
+    rateLimit({
+      windowMs: 15 * 60 * 1000,
+      max: 600,
+      standardHeaders: true,
+      legacyHeaders: false,
+      message: { error: 'Too many requests, please try again later' },
+      skip: () => ctx.config.env === 'test',
+    }),
+  )
 
-// ── General API rate limit ────────────────────────────────────────
-// Auth routes carry their own stricter limiter (see routes/auth.ts).
-// This limiter provides a backstop against request flooding on all /api
-// paths. Skipped in test environments to avoid blocking integration tests.
+  const auth = createAuth(ctx)
+  app.use('/api/auth', auth.router)
 
-const apiLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15-minute window
-  max: 200,                  // 200 requests per window per IP
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: 'Too many requests, please try again later' },
-  skip: () => process.env['NODE_ENV'] === 'test',
-})
+  // Every org route: authenticated, CSRF-checked for mutations, membership-resolved.
+  app.use('/api/orgs', auth.requireAuth, auth.requireCsrf, orgCollectionRouter(ctx))
+  const org = express.Router({ mergeParams: true })
+  org.use(loadOrg(ctx))
+  org.use(orgRouter(ctx))
+  org.use(settingsRouter(ctx))
+  org.use(integrationsRouter(ctx, opts.providerCtx))
+  org.use(jobsRouter(ctx))
+  org.use(runsRouter(ctx))
+  org.use(hostsRouter(ctx))
+  app.use('/api/orgs/:org', auth.requireAuth, auth.requireCsrf, org)
 
-app.use('/api', apiLimiter)
+  app.get('/health', (_req, res) => {
+    res.json({ status: 'ok', timestamp: new Date().toISOString() })
+  })
 
-// ── API routes ────────────────────────────────────────────────────
-// Public: auth endpoints (login/logout/me)
-app.use('/api/auth', authRouter)
-
-// Protected: all task and settings endpoints require a valid Bearer token.
-// Defense-in-depth: auth is enforced at the mount point rather than relying
-// solely on individual handler checks.
-app.use('/api/tasks', requireAuth, tasksRouter)
-app.use('/api/settings', requireAuth, settingsRouter)
-app.use('/api/notifications', requireAuth, notificationsRouter)
-// Protected: credential CRUD.  Authentication (and CSRF for state-changing
-// methods) is enforced inside the credentials router itself, so it is mounted
-// without a mount-level requireAuth to keep CSRF handling colocated with the
-// route definitions.
-app.use('/api/credentials', credentialsRouter)
-// Protected: Integrations tab (catalog, connect/disconnect, live test).
-app.use('/api/integrations', requireAuth, integrationsRouter)
-
-// ── Health check (public) ─────────────────────────────────────────
-
-app.get('/health', (_req: Request, res: Response) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() })
-})
-
-// ── 404 handler ───────────────────────────────────────────────────
-
-app.use((_req: Request, res: Response) => {
-  res.status(404).json({ error: 'Not found' })
-})
-
-// ── Global error handler ──────────────────────────────────────────
-// Logs details server-side; returns a generic message to clients to
-// prevent leaking stack traces or implementation details.
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
-  console.error('[error]', err.message)
-  res.status(500).json({ error: 'Internal server error' })
-})
+  app.use((_req, res) => {
+    res.status(404).json({ error: 'Not found' })
+  })
+  app.use(errorHandler)
+  return app
+}

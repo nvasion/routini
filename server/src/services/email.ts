@@ -24,8 +24,8 @@
 
 import nodemailer from 'nodemailer'
 import type { Transporter, SentMessageInfo } from 'nodemailer'
-import type { TaskStatus, TaskType } from '../types.js'
-import { getCredentialSecret as getCredentialSecretFromStore } from './credentials.js'
+/** Outcome of a run, as reported in notification emails. */
+export type OutcomeStatus = 'succeeded' | 'failed' | 'canceled'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -46,8 +46,8 @@ export interface MailTransporter {
 export interface TaskOutcomePayload {
   taskId: string
   taskName: string
-  taskType: TaskType
-  status: TaskStatus
+  taskType: string
+  status: OutcomeStatus | string
   timestamp: string
   /** Optional human-readable error detail. Must not contain secrets or PII. */
   error?: string
@@ -95,93 +95,19 @@ function escapeHtml(str: string): string {
   return str.replace(/[&<>"']/g, ch => HTML_ESCAPE[ch] ?? ch)
 }
 
-// ── Credential store integration ───────────────────────────────────────────────
+// ── SMTP credentials ──────────────────────────────────────────────────────────
 //
-// SMTP secrets (SMTP_USER, SMTP_PASS) are resolved from the encrypted
-// credential store FIRST, falling back to environment variables when nothing
-// is stored.  This mirrors the pattern established by the SSH and IMAP
-// services: secrets saved through the credentials API take precedence over
-// process environment variables, while the original env-var behaviour is
-// preserved as a default so existing deployments keep working unchanged.
-//
-// The credential store (services/credentials.ts) uses a synchronous
-// better-sqlite3 backend, so resolution here is synchronous too — keeping
-// `createTransporter` synchronous as the original API requires.  A store read
-// failure (e.g. the DB is not yet initialised, or a decryption error) is
-// non-fatal: it is logged server-side only and resolution falls back to
-// environment variables, so a transient store issue never breaks email
-// notifications that could otherwise run with env-based credentials.
-//
-// The resolver is injectable (see `setSmtpCredentialResolver`) so unit tests
-// can verify the store-first → env-var-fallback precedence without a live
-// database, mirroring the injectable-credential-provider pattern used by the
-// SSH and IMAP services.
+// SMTP is operator-level configuration (the server's own mail relay, shared by
+// every org), so its secrets come from the environment.
 
-/**
- * Resolves a single SMTP secret by name (e.g. "SMTP_USER").
- *
- * Implementations MUST check the encrypted credential store first and fall
- * back to environment variables only when nothing is stored under `name`.
- * Returning the empty string (not `undefined`) signals "not configured",
- * matching the original `process.env[name] ?? ''` default.
- *
- * Resolving every secret through a single resolver keeps the lookup order
- * (store-first → env-var fallback) consistent across all SMTP credentials.
- */
+/** Resolves an SMTP secret by name (e.g. "SMTP_PASS"); empty string = not configured. */
 export type SmtpCredentialResolver = (name: string) => string
 
-/**
- * Default credential resolver.
- *
- * Lookup order:
- *   1. Encrypted credential store — checked first so that secrets saved
- *      through the credentials API take precedence over process environment
- *      variables.  SMTP credentials are system-scoped (global mail-server
- *      configuration shared by all users), so they are looked up under the
- *      `null` (system) userId — consistent with the AI API key handling in
- *      settings.ts.
- *   2. `process.env[name]` — the original source of SMTP credentials, kept as
- *      a fallback so existing deployments that configure secrets via env
- *      vars continue to work unchanged.
- *
- * Returns the empty string when neither source has a value.  Empty-string
- * store values are treated as "not set" so a blank stored secret never
- * shadows a real env-var value.
- */
-const defaultSmtpCredentialResolver: SmtpCredentialResolver = (name: string): string => {
-  try {
-    const stored = getCredentialSecretFromStore(null, name)
-    if (stored && stored.trim() !== '') {
-      return stored
-    }
-  } catch (err) {
-    // A store read failure is non-fatal: fall through to the env-var fallback
-    // so a transient DB/decryption issue does not break email notifications
-    // that could otherwise run with env-based credentials.  Log server-side
-    // only; never include credential material in the message.
-    console.warn(
-      `[email] Credential store read failed for "${name}" — falling back to env var:`,
-      err instanceof Error ? err.message : 'unknown error',
-    )
-  }
-  return process.env[name] ?? ''
-}
+const defaultSmtpCredentialResolver: SmtpCredentialResolver = (name: string): string => process.env[name] ?? ''
 
-/**
- * Active SMTP credential resolver.  Defaults to the store-first → env-var
- * fallback implementation; unit tests may override it via
- * `setSmtpCredentialResolver` to control precedence without a live database.
- */
 let smtpCredentialResolver: SmtpCredentialResolver = defaultSmtpCredentialResolver
 
-/**
- * Overrides the SMTP credential resolver.  Intended for unit tests that need
- * to verify the store-first → env-var-fallback precedence without standing
- * up a real credential store.  Pass `undefined` to restore the default
- * resolver.
- *
- * @internal exported for tests; not part of the stable public API.
- */
+/** @internal Overrides the default resolver (tests). Pass undefined to restore it. */
 export function setSmtpCredentialResolver(
   resolver: SmtpCredentialResolver | undefined,
 ): void {
