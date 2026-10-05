@@ -113,6 +113,11 @@ export function RunPage() {
       <div className="inline meta" style={{ fontSize: 12 }}>
         <span className="badge">run #{run.number}</span>
         <span className="badge">trigger: {run.trigger.kind}</span>
+        {run.trigger.kind === 'alert' && typeof run.trigger['incidentNumber'] === 'number' && (
+          <Link className="badge fail" to={org.path(`/incidents/${run.trigger['incidentNumber']}`)}>
+            incident #{run.trigger['incidentNumber']}
+          </Link>
+        )}
         <span className="badge">started {relativeTime(run.startedAt ?? run.createdAt)}</span>
         <span className="badge">{duration(run.startedAt, run.finishedAt)}</span>
         <span className="badge">model spend {money(run.costUsd)}</span>
@@ -166,7 +171,7 @@ function stepSummary(spec: Step | undefined): string {
   if (spec.kind === 'action') {
     const c = spec.config
     if (c.type === 'http') return `${c.method ?? 'GET'} ${c.url}`
-    if (c.type === 'ssh') return `ssh: ${c.command}`
+    if (c.type === 'ssh') return `${c.host === 'alert' ? "alert's host" : 'host'}: ${c.command}`
     if (c.type === 'factory') return c.operation === 'prd' ? `factory: execute PRD ${c.prdId}` : `factory: orchestrate ${c.projectId} · ${c.runtime ?? 'claude-code'}${c.model ? ` · ${c.model}` : ''}`
     return `imap: ${c.username}@${c.host}`
   }

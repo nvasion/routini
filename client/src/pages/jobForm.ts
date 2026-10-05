@@ -18,6 +18,7 @@ export interface StepForm {
   expectStatus: string
   headersJson: string
   body: string
+  /** A host id, or ALERT_HOST for "the host the alert is about". */
   hostId: string
   command: string
   imapHost: string
@@ -53,11 +54,18 @@ export interface JobForm {
   name: string
   description: string
   enabled: boolean
-  triggerKind: 'manual' | 'cron' | 'webhook'
+  triggerKind: 'manual' | 'cron' | 'webhook' | 'alert'
+  /** Alert trigger: names (comma separated; "Disk*" matches a prefix), severities, label=value lines. */
+  alertNames: string
+  alertSeverities: string[]
+  alertLabels: string
   cronExpr: string
   cronTz: string
   steps: StepForm[]
 }
+
+/** Step host value meaning "the host the alert is about" (config `host: 'alert'`). */
+export const ALERT_HOST = 'alert'
 
 let counter = 0
 const nextKey = () => `s${++counter}`
@@ -107,7 +115,7 @@ export function emptyStep(kind: StepKind, index: number): StepForm {
 }
 
 export function emptyJob(): JobForm {
-  return { name: '', description: '', enabled: true, triggerKind: 'manual', cronExpr: '0 9 * * 1-5', cronTz: guessTz(), steps: [emptyStep('action', 0)] }
+  return { name: '', description: '', enabled: true, triggerKind: 'manual', cronExpr: '0 9 * * 1-5', cronTz: guessTz(), alertNames: '', alertSeverities: [], alertLabels: '', steps: [emptyStep('action', 0)] }
 }
 
 function guessTz(): string {
@@ -126,6 +134,14 @@ export function fromJob(job: Job): JobForm {
     triggerKind: job.trigger.kind,
     cronExpr: job.trigger.kind === 'cron' ? job.trigger.expr : '0 9 * * 1-5',
     cronTz: job.trigger.kind === 'cron' ? job.trigger.tz : guessTz(),
+    alertNames: job.trigger.kind === 'alert' ? (job.trigger.match.alertnames ?? []).join(', ') : '',
+    alertSeverities: job.trigger.kind === 'alert' ? job.trigger.match.severities ?? [] : [],
+    alertLabels:
+      job.trigger.kind === 'alert'
+        ? Object.entries(job.trigger.match.labels ?? {})
+            .map(([k, v]) => `${k}=${v}`)
+            .join('\n')
+        : '',
     steps: job.steps.map((s, i) => fromStep(s, i)),
   }
 }
@@ -138,7 +154,7 @@ function fromStep(s: Step, i: number): StepForm {
     if (c.type === 'http') {
       Object.assign(f, { url: c.url, method: c.method ?? 'GET', expectStatus: c.expectStatus ? String(c.expectStatus) : '', headersJson: c.headers ? JSON.stringify(c.headers, null, 2) : '', body: c.body ?? '' })
     } else if (c.type === 'ssh') {
-      Object.assign(f, { hostId: c.hostId, command: c.command })
+      Object.assign(f, { hostId: c.host === 'alert' ? ALERT_HOST : c.hostId ?? '', command: c.command })
     } else if (c.type === 'factory') {
       Object.assign(f, {
         factoryOperation: c.operation,
@@ -196,8 +212,9 @@ export function toPayload(form: JobForm): PayloadResult {
         base['config'] = cfg
       } else if (s.actionType === 'ssh') {
         if (!s.hostId) errors.push(`${label}: choose a host.`)
+        if (s.hostId === ALERT_HOST && form.triggerKind !== 'alert') errors.push(`${label}: only alert-triggered jobs can run on the alert's host.`)
         if (!s.command.trim()) errors.push(`${label}: enter a command.`)
-        base['config'] = { type: 'ssh', hostId: s.hostId, command: s.command }
+        base['config'] = s.hostId === ALERT_HOST ? { type: 'ssh', host: 'alert', command: s.command } : { type: 'ssh', hostId: s.hostId, command: s.command }
       } else if (s.actionType === 'factory') {
         const idOk = (v: string) => /^[A-Za-z0-9_-]+$/.test(v.trim())
         if (s.factoryOperation === 'prd') {
@@ -242,6 +259,34 @@ export function toPayload(form: JobForm): PayloadResult {
   })
 
   if (errors.length) return { ok: false, errors }
-  const trigger = form.triggerKind === 'cron' ? { kind: 'cron', expr: form.cronExpr.trim(), tz: form.cronTz.trim() || 'UTC' } : { kind: form.triggerKind }
+  const trigger =
+    form.triggerKind === 'cron'
+      ? { kind: 'cron', expr: form.cronExpr.trim(), tz: form.cronTz.trim() || 'UTC' }
+      : form.triggerKind === 'alert'
+        ? { kind: 'alert', match: alertMatch(form, errors) }
+        : { kind: form.triggerKind }
+  if (errors.length) return { ok: false, errors }
   return { ok: true, payload: { name: form.name.trim(), description: form.description, enabled: form.enabled, trigger, steps } }
+}
+
+const list = (s: string) =>
+  s
+    .split(',')
+    .map((x) => x.trim())
+    .filter(Boolean)
+
+/** The alert trigger's match from the form; blank fields match anything. */
+export function alertMatch(form: JobForm, errors: string[]): Record<string, unknown> {
+  const match: Record<string, unknown> = {}
+  const names = list(form.alertNames)
+  if (names.length) match['alertnames'] = names
+  if (form.alertSeverities.length) match['severities'] = form.alertSeverities
+  const labels: Record<string, string> = {}
+  for (const line of form.alertLabels.split('\n').map((l) => l.trim()).filter(Boolean)) {
+    const m = /^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/.exec(line)
+    if (!m) errors.push(`Alert labels: "${line}" should look like name=value.`)
+    else labels[m[1]!] = m[2]!
+  }
+  if (Object.keys(labels).length) match['labels'] = labels
+  return match
 }

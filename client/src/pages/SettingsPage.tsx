@@ -1,7 +1,7 @@
-// Org settings: general & limits, members, models & keys, hosts, credentials, policy, notifications.
+// Org settings: general & limits, members, models & keys, hosts, credentials, policy, alerts, notifications.
 
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
-import { NavLink, useParams } from 'react-router-dom'
+import { Link, NavLink, useParams } from 'react-router-dom'
 import { Empty, ErrorBanner, Field, Modal } from '../components/ui'
 import { api } from '../lib/api'
 import { relativeTime } from '../lib/format'
@@ -9,6 +9,7 @@ import { useApi } from '../lib/hooks'
 import type { AIEndpoint, AgentId, CredentialMeta, Host, Member, OrgSettings, Role } from '../lib/types'
 import { useOrg } from '../shell/OrgContext'
 import { PolicyPanel } from './PolicyPanel'
+import { AlertsPanel } from './AlertsPanel'
 
 const TABS: Array<[string, string]> = [
   ['general', 'General'],
@@ -17,6 +18,7 @@ const TABS: Array<[string, string]> = [
   ['hosts', 'Hosts'],
   ['credentials', 'Credentials'],
   ['policy', 'Policy'],
+  ['alerts', 'Alerts'],
   ['notifications', 'Notifications'],
 ]
 
@@ -42,6 +44,7 @@ export function SettingsPage() {
       {tab === 'hosts' && <Hosts />}
       {tab === 'credentials' && <Credentials />}
       {tab === 'policy' && <PolicyPanel />}
+      {tab === 'alerts' && <AlertsPanel />}
       {tab === 'notifications' && <Notifications />}
     </>
   )
@@ -350,6 +353,7 @@ function Hosts() {
   const creds = useApi<{ credentials: CredentialMeta[] }>(org.api('/credentials'))
   const [draft, setDraft] = useState<HostDraft | null>(null)
   const { busy, run, feedback } = useAction()
+  const sshHosts = (hosts.data?.hosts ?? []).filter((h) => h.transport !== 'runner')
 
   const save = (e: FormEvent) => {
     e.preventDefault()
@@ -374,10 +378,13 @@ function Hosts() {
 
   return (
     <div className="stack" style={{ gap: 16 }}>
-      <p className="lead">Servers jobs can reach over SSH. Store the private key or password under Credentials, then pick it here.</p>
+      <p className="lead">
+        Servers jobs reach over SSH. Store the private key or password under Credentials, then pick it here. Servers running routini-runner are managed in{' '}
+        <Link to={org.path('/fleet')}>Fleet</Link>.
+      </p>
       <div className="list">
-        {hosts.data?.hosts.length === 0 && <Empty>No hosts yet.</Empty>}
-        {hosts.data?.hosts.map((h) => (
+        {sshHosts.length === 0 && <Empty>No SSH hosts yet.</Empty>}
+        {sshHosts.map((h) => (
           <div key={h.id} className="list-row">
             <span className="grow">
               <span className="title mono">{h.name}</span>
@@ -391,7 +398,7 @@ function Hosts() {
                 <button
                   type="button"
                   className="btn small"
-                  onClick={() => setDraft({ id: h.id, name: h.name, group: h.group, address: h.address, port: String(h.port), username: h.username, auth: h.auth, credentialKey: h.credentialKey ?? '', tags: h.tags.join(', ') })}
+                  onClick={() => setDraft({ id: h.id, name: h.name, group: h.group, address: h.address, port: String(h.port), username: h.username ?? '', auth: h.auth, credentialKey: h.credentialKey ?? '', tags: h.tags.join(', ') })}
                 >
                   Edit
                 </button>

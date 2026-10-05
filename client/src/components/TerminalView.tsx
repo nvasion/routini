@@ -1,18 +1,18 @@
-// An interactive terminal (xterm.js) connected to an environment's shell over
-// WebSocket. The session cookie authenticates the upgrade.
+// An interactive terminal (xterm.js) connected to an environment's shell, or a
+// fleet host's shell, over WebSocket. The session cookie authenticates the upgrade.
 
 import { useEffect, useRef, useState } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
-import { terminalUrl } from '../lib/terminalUrl'
+import { hostTerminalUrl, terminalUrl } from '../lib/terminalUrl'
 
 
 function cssVar(name: string): string {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim()
 }
 
-export function TerminalView({ org, envId, height = 380 }: { org: string; envId: string; height?: number }) {
+export function TerminalView({ org, envId, hostId, height = 380 }: { org: string; envId?: string; hostId?: string; height?: number }) {
   const host = useRef<HTMLDivElement>(null)
   const [state, setState] = useState<'connecting' | 'open' | 'closed'>('connecting')
   const [attempt, setAttempt] = useState(0)
@@ -35,7 +35,7 @@ export function TerminalView({ org, envId, height = 380 }: { org: string; envId:
       // not laid out yet
     }
     setState('connecting')
-    const ws = new WebSocket(terminalUrl(org, envId, term.cols, term.rows))
+    const ws = new WebSocket(hostId ? hostTerminalUrl(org, hostId, term.cols, term.rows) : terminalUrl(org, envId!, term.cols, term.rows))
     ws.binaryType = 'arraybuffer'
     const send = (msg: unknown) => ws.readyState === WebSocket.OPEN && ws.send(JSON.stringify(msg))
     ws.onopen = () => {
@@ -64,7 +64,7 @@ export function TerminalView({ org, envId, height = 380 }: { org: string; envId:
       ws.close()
       term.dispose()
     }
-  }, [org, envId, attempt])
+  }, [org, envId, hostId, attempt])
 
   return (
     <div className="stack" style={{ gap: 6 }}>

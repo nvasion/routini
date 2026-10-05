@@ -39,12 +39,18 @@ export interface Session {
   csrfToken?: string
 }
 
-export type Trigger = { kind: 'manual' } | { kind: 'cron'; expr: string; tz: string } | { kind: 'webhook' }
+export interface AlertMatch {
+  alertnames?: string[]
+  severities?: string[]
+  labels?: Record<string, string>
+}
+export type Trigger = { kind: 'manual' } | { kind: 'cron'; expr: string; tz: string } | { kind: 'webhook' } | { kind: 'alert'; match: AlertMatch }
 export type When = 'on_success' | 'on_failure' | 'always'
 
 export type ActionConfig =
   | { type: 'http'; url: string; method?: string; headers?: Record<string, string>; body?: string; expectStatus?: number; timeoutMs?: number }
-  | { type: 'ssh'; hostId: string; command: string }
+  /** A command on a host (SSH or routini-runner). host: 'alert' targets the incident's host. */
+  | { type: 'ssh'; hostId?: string; host?: 'alert'; command: string }
   | { type: 'imap'; host: string; port?: number; username: string; credentialKey: string; mailbox?: string; search?: string; tls?: boolean }
   | { type: 'factory'; operation: 'orchestrate' | 'prd'; projectId?: string; prdId?: string; request?: string; runtime?: 'claude-code' | 'omnimancer'; provider?: string; model?: string; createPr?: boolean }
 
@@ -153,6 +159,8 @@ export interface Inbox {
   failures: RunSummary[]
   live: RunSummary[]
   upcoming: Array<{ jobId: string; name: string; nextRunAt: string }>
+  /** Open incidents (Phase 3). */
+  incidents?: Incident[]
 }
 
 export interface HostCheck {
@@ -171,11 +179,34 @@ export interface Host {
   group: string
   address: string
   port: number
-  username: string
+  username: string | null
   auth: 'key' | 'password'
   credentialKey: string | null
   tags: string[]
   lastCheck: HostCheck | null
+  transport: 'ssh' | 'runner'
+  runner: HostRunner | null
+}
+
+export interface HostRunner {
+  id: string
+  name: string
+  version: string | null
+  hostname: string | null
+  online: boolean
+  connectedAt: string | null
+  lastSeenAt: string | null
+  capabilities: string[]
+  facts: Record<string, unknown> | null
+  revoked: boolean
+}
+
+export interface HostEvent {
+  id: number
+  ts: string
+  type: string
+  userId: string | null
+  data: Record<string, unknown>
 }
 
 export interface Integration {
@@ -283,4 +314,66 @@ export interface McpServer {
   agents: AgentId[]
   lastTest: { ok: boolean; at: string; message: string } | null
   createdAt: string
+}
+
+// ── Fleet and incidents (Phase 3) ────────────────────────────────────────────
+
+export interface Enrollment {
+  token: string
+  expiresAt: string
+  url: string
+  commands: { script: string; docker: string; manual: string }
+}
+
+export interface Postmortem {
+  markdown: string
+  generatedAt: string | null
+  editedAt: string | null
+  editedBy: string | null
+}
+
+export interface Incident {
+  id: string
+  number: number
+  fingerprint: string
+  title: string
+  severity: string
+  status: 'open' | 'resolved'
+  source: string
+  labels: Record<string, string>
+  annotations: Record<string, string>
+  hostId: string | null
+  hostName: string | null
+  alertCount: number
+  openedAt: string
+  lastAlertAt: string
+  resolvedAt: string | null
+  resolvedBy: string | null
+  postmortem: Postmortem | null
+}
+
+export interface IncidentEvent {
+  id: number
+  ts: string
+  type: string
+  userId: string | null
+  userName: string | null
+  data: Record<string, unknown>
+}
+
+export interface IncidentRun {
+  id: string
+  number: number
+  jobName: string
+  status: RunStatus
+  error: string | null
+  createdAt: string
+  startedAt: string | null
+  finishedAt: string | null
+}
+
+export interface IncidentDetail {
+  incident: Incident
+  events: IncidentEvent[]
+  runs: IncidentRun[]
 }

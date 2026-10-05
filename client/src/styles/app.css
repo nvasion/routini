@@ -818,3 +818,89 @@ table.table {
 .broker-card.on {
   border-left-color: var(--ok);
 }
+
+/* ── Fleet ──────────────────────────────────────────────────────────────── */
+.modal.wide {
+  width: min(960px, 100%);
+}
+.fleet-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+}
+.host-card {
+  gap: 10px;
+}
+.host-facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px 12px;
+}
+.host-facts > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.kv {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 16px;
+  margin: 0;
+  font-size: 14px;
+}
+.kv dt {
+  color: var(--muted);
+}
+.kv dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* ── Incidents ──────────────────────────────────────────────────────────── */
+.sev {
+  text-transform: uppercase;
+}
+.sev.critical,
+.sev.error,
+.sev.page {
+  color: var(--fail);
+  border-color: var(--fail-line);
+}
+.sev.warning,
+.sev.warn {
+  color: var(--warn);
+  border-color: var(--warn-line);
+}
+.labels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.md {
+  line-height: 1.55;
+  font-size: 14px;
+}
+.md h1 {
+  font-size: 22px;
+  margin: 0 0 8px;
+}
+.md h2 {
+  font-size: 17px;
+  margin: 18px 0 6px;
+}
+.md h3 {
+  font-size: 15px;
+  margin: 14px 0 4px;
+}
+.md ul {
+  margin: 4px 0;
+  padding-left: 20px;
+}
+.md p {
+  margin: 6px 0;
+}
+/* In a page's column layout the search box's flex basis would become its height. */
+.main > .searchbox {
+  flex: 0 0 auto;
+}

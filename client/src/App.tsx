@@ -12,6 +12,8 @@ import { JobEditorPage } from './pages/JobEditorPage'
 import { IntegrationsPage } from './pages/IntegrationsPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { EnvironmentsPage } from './pages/EnvironmentsPage'
+import { FleetPage } from './pages/FleetPage'
+import { IncidentPage, IncidentsPage } from './pages/IncidentsPage'
 
 function RequireAuth({ children }: { children: ReactNode }) {
   const { session, loading } = useAuth()
@@ -70,6 +72,9 @@ export function AppRoutes() {
         <Route path="jobs/new" element={<JobEditorPage />} />
         <Route path="jobs/:id" element={<JobEditorPage />} />
         <Route path="environments" element={<EnvironmentsPage />} />
+        <Route path="fleet" element={<FleetPage />} />
+        <Route path="incidents" element={<IncidentsPage />} />
+        <Route path="incidents/:number" element={<IncidentPage />} />
         <Route path="integrations" element={<IntegrationsPage />} />
         <Route path="settings" element={<SettingsPage />} />
         <Route path="settings/:tab" element={<SettingsPage />} />
