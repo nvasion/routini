@@ -1,4 +1,4 @@
-.PHONY: install dev dev-server dev-client build start worker test test-server test-client test-pg test-docker agents up down clean
+.PHONY: install dev dev-server dev-client build start worker test test-server test-client test-pg test-docker agents up down local local-down clean
 
 # Install all dependencies
 install:
@@ -44,6 +44,12 @@ up:
 	docker compose up --build -d
 down:
 	docker compose down
+
+# Everything on this machine: the stack plus a connected routini-runner (http://localhost:8088)
+local:
+	bash scripts/local.sh
+local-down:
+	bash scripts/local.sh down
 
 clean:
 	rm -rf server/dist client/dist node_modules server/node_modules client/node_modules

@@ -2,6 +2,7 @@ import { useState, type FormEvent } from 'react'
 import { Navigate, useLocation, useNavigate } from 'react-router-dom'
 import { ErrorBanner, Field } from '../components/ui'
 import { pickDefaultOrg, useAuth } from '../lib/auth'
+import { Mark } from '../components/Brand'
 import { useApi } from '../lib/hooks'
 
 export function LoginPage() {
@@ -45,14 +46,12 @@ export function LoginPage() {
   return (
     <div className="auth-wrap">
       <div className="card auth-card" style={{ padding: 24, gap: 16 }}>
-        <div className="brand">
-          <span className="brand-mark" aria-hidden="true">
-            R
+        <div className="auth-brand">
+          <Mark size={72} label="Routini" />
+          <span className="brand-name" style={{ fontSize: 34 }}>
+            ROUTINI
           </span>
-          <span style={{ display: 'flex', flexDirection: 'column' }}>
-            <span className="brand-name">ROUTINI</span>
-            <span className="brand-sub">AI ENGINEER · ON TYNHUB</span>
-          </span>
+          <span className="auth-tagline">Your AI engineer, on call.</span>
         </div>
         <div className="tabs" role="tablist">
           <button type="button" role="tab" className="tab" aria-selected={mode === 'login'} onClick={() => setMode('login')}>

@@ -40,3 +40,7 @@ build/
 *.sqlite
 *.sqlite3
 server/data/
+
+# Local secrets (docker compose)
+.env
+.env.local

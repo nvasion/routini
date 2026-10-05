@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Link, NavLink, Outlet, useNavigate, useParams } from 'react-router-dom'
 import { Icon, type IconName } from '../components/ui'
+import { Lockup } from '../components/Brand'
 import { rememberOrg, useAuth } from '../lib/auth'
 import { initials } from '../lib/format'
 import { useApi, useEventStream } from '../lib/hooks'
@@ -62,14 +63,8 @@ function TopBar() {
 
   return (
     <header className="rq-header">
-      <Link className="brand" to={org.path('/inbox')}>
-        <span className="brand-mark" aria-hidden="true">
-          R
-        </span>
-        <span style={{ display: 'flex', flexDirection: 'column' }}>
-          <span className="brand-name">ROUTINI</span>
-          <span className="brand-sub">AI ENGINEER · ON TYNHUB</span>
-        </span>
+      <Link className="brand" to={org.path('/inbox')} aria-label="Routini home">
+        <Lockup size={34} sub="AI ENGINEER · ON TYNHUB" />
       </Link>
 
       <label className="inline" style={{ gap: 6 }}>
