@@ -22,6 +22,9 @@ import { policyRouter } from './routes/policy.js'
 import { mcpRouter, type McpFetch } from './routes/mcp.js'
 import { runnerEnrollRouter, runnersRouter } from './routes/runners.js'
 import { alertIntakeRouter, incidentsRouter } from './routes/incidents.js'
+import { tokensRouter } from './routes/tokens.js'
+import { mcpRouter as routiniMcpRouter } from './mcp/server.js'
+import { identitiesRouter, oidcRouter } from './http/oidc.js'
 import type { ProviderTestContext } from './integrations/providers.js'
 
 export interface AppOptions {
@@ -29,6 +32,8 @@ export interface AppOptions {
   providerCtx?: ProviderTestContext
   /** fetch for MCP server health checks (tests). */
   mcpFetch?: McpFetch
+  /** How long MCP run_command waits for a result (tests shorten it). */
+  mcpCommandWaitMs?: number
 }
 
 export function createApp(ctx: AppContext, opts: AppOptions = {}): Express {
@@ -64,6 +69,14 @@ export function createApp(ctx: AppContext, opts: AppOptions = {}): Express {
   // The terminal WebSocket (http/terminal.ts) authenticates upgrades with the same session logic.
   app.locals['auth'] = auth
   app.use('/api/auth', auth.router)
+  app.use('/api/auth', oidcRouter(ctx, auth), identitiesRouter(ctx, auth))
+
+  // Routini as an MCP server (API tokens only).
+  app.use(
+    '/mcp',
+    rateLimit({ windowMs: 60_000, max: 600, standardHeaders: true, legacyHeaders: false, skip: () => ctx.config.env === 'test' }),
+    routiniMcpRouter(ctx, auth, { commandWaitMs: opts.mcpCommandWaitMs }),
+  )
 
   // Every org route: authenticated, CSRF-checked for mutations, membership-resolved.
   app.use('/api/orgs', auth.requireAuth, auth.requireCsrf, orgCollectionRouter(ctx))
@@ -80,6 +93,7 @@ export function createApp(ctx: AppContext, opts: AppOptions = {}): Express {
   org.use(mcpRouter(ctx, opts.mcpFetch))
   org.use(runnersRouter(ctx))
   org.use(incidentsRouter(ctx))
+  org.use(tokensRouter(ctx))
   app.use('/api/orgs/:org', auth.requireAuth, auth.requireCsrf, org)
 
   app.get('/health', (_req, res) => {

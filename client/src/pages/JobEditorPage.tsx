@@ -478,6 +478,15 @@ function StepEditor(props: {
           <Field label="Done check (optional)" hint="Runs after the agent; the step fails if it exits non-zero. E.g. npm test">
             {(id) => <input id={id} className="input mono" value={s.checkCommand} onChange={(e) => set({ checkCommand: e.target.value })} />}
           </Field>
+          <label className="inline" style={{ gap: 8, alignItems: 'flex-start' }}>
+            <input type="checkbox" checked={s.routini} onChange={(e) => set({ routini: e.target.checked })} style={{ marginTop: 3 }} />
+            <span>
+              Can use Routini: run commands on fleet servers, read runs and incidents, add incident notes.
+              <span className="hint" style={{ display: 'block' }}>
+                Through a token that only lives for this step. Commands follow org policy, and the agent can&apos;t approve anything.
+              </span>
+            </span>
+          </label>
         </>
       )}
 

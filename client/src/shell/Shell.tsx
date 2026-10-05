@@ -111,6 +111,7 @@ function TopBar() {
                 <span className="sub">{session?.user.email}</span>
               </span>
             </div>
+            <LinkProvider />
             <button
               type="button"
               role="menuitem"
@@ -262,5 +263,24 @@ function LeftNav() {
         </div>
       )}
     </nav>
+  )
+}
+
+/** Account menu: link a password account to the identity provider (TynHub), once. */
+function LinkProvider() {
+  const ids = useApi<{ provider: { name: string; linked: boolean } | null }>('/api/auth/identities')
+  const p = ids.data?.provider
+  if (!p) return null
+  if (p.linked) {
+    return (
+      <div className="list-row meta" style={{ cursor: 'default' }}>
+        Linked to {p.name}
+      </div>
+    )
+  }
+  return (
+    <a role="menuitem" className="list-row" href={`/api/auth/oidc/start?link=1`}>
+      Link your {p.name} account
+    </a>
   )
 }

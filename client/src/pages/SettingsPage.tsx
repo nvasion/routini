@@ -10,6 +10,8 @@ import type { AIEndpoint, AgentId, CredentialMeta, Host, Member, OrgSettings, Ro
 import { useOrg } from '../shell/OrgContext'
 import { PolicyPanel } from './PolicyPanel'
 import { AlertsPanel } from './AlertsPanel'
+import { TokensPanel } from './TokensPanel'
+import { TynhubLink } from './TynhubLink'
 
 const TABS: Array<[string, string]> = [
   ['general', 'General'],
@@ -19,6 +21,7 @@ const TABS: Array<[string, string]> = [
   ['credentials', 'Credentials'],
   ['policy', 'Policy'],
   ['alerts', 'Alerts'],
+  ['tokens', 'API tokens'],
   ['notifications', 'Notifications'],
 ]
 
@@ -38,13 +41,19 @@ export function SettingsPage() {
           </NavLink>
         ))}
       </nav>
-      {tab === 'general' && <General />}
+      {tab === 'general' && (
+        <div className="stack" style={{ gap: 16 }}>
+          <General />
+          <TynhubLink />
+        </div>
+      )}
       {tab === 'members' && <Members />}
       {tab === 'models' && <Models />}
       {tab === 'hosts' && <Hosts />}
       {tab === 'credentials' && <Credentials />}
       {tab === 'policy' && <PolicyPanel />}
       {tab === 'alerts' && <AlertsPanel />}
+      {tab === 'tokens' && <TokensPanel />}
       {tab === 'notifications' && <Notifications />}
     </>
   )

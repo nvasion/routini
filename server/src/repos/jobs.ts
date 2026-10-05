@@ -80,7 +80,7 @@ export async function getJob(q: Queryable, orgId: string, id: string): Promise<J
 }
 
 export async function listJobs(q: Queryable, orgId: string): Promise<Job[]> {
-  const rows = await q.query<Row>(`SELECT ${COLS} FROM jobs WHERE org_id = $1 AND archived_at IS NULL ORDER BY name`, [orgId])
+  const rows = await q.query<Row>(`SELECT ${COLS} FROM jobs WHERE org_id = $1 AND archived_at IS NULL AND NOT hidden ORDER BY name`, [orgId])
   return rows.map(toJob)
 }
 
@@ -97,9 +97,32 @@ export async function archiveJob(q: Queryable, orgId: string, id: string): Promi
 export async function listUpcoming(q: Queryable, orgId: string, limit = 10): Promise<Array<{ jobId: string; name: string; nextRunAt: string }>> {
   const rows = await q.query<{ id: string; name: string; next_run_at: Date }>(
     `SELECT id, name, next_run_at FROM jobs
-     WHERE org_id = $1 AND enabled AND archived_at IS NULL AND next_run_at IS NOT NULL
+     WHERE org_id = $1 AND enabled AND archived_at IS NULL AND NOT hidden AND next_run_at IS NOT NULL
      ORDER BY next_run_at LIMIT $2`,
     [orgId, limit],
   )
   return rows.map((r) => ({ jobId: r.id, name: r.name, nextRunAt: iso(r.next_run_at)! }))
+}
+
+export const ADHOC_JOB_NAME = 'Ad-hoc commands'
+
+/**
+ * The org's hidden job behind ad-hoc commands (MCP run_command). Runs of it
+ * carry their own one-step snapshot, so every command is a normal, audited,
+ * policy-checked run.
+ */
+export async function ensureAdhocJob(q: Queryable, orgId: string): Promise<Job> {
+  const [found] = await q.query<Row>(`SELECT ${COLS} FROM jobs WHERE org_id = $1 AND hidden AND name = $2 LIMIT 1`, [orgId, ADHOC_JOB_NAME])
+  if (found) return toJob(found)
+  const [row] = await q.query<Row>(
+    `INSERT INTO jobs (org_id, name, description, trigger, steps, enabled, hidden)
+     VALUES ($1, $2, 'Commands run from MCP clients and agents.', '{"kind":"manual"}', '[]', true, true) RETURNING ${COLS}`,
+    [orgId, ADHOC_JOB_NAME],
+  )
+  return toJob(row!)
+}
+
+export async function isHiddenJob(q: Queryable, orgId: string, id: string): Promise<boolean> {
+  const [row] = await q.query<{ hidden: boolean }>('SELECT hidden FROM jobs WHERE org_id = $1 AND id = $2', [orgId, id])
+  return row?.hidden ?? false
 }

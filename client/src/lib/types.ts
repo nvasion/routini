@@ -31,6 +31,8 @@ export interface OrgLimits {
 export interface Org extends OrgRef {
   limits: OrgLimits
   createdAt: string
+  /** TynHub org slug whose members join on "Continue with TynHub". */
+  tynhubOrg?: string | null
 }
 
 export interface Session {
@@ -62,6 +64,8 @@ export interface AgentConfig {
   check?: { command: string }
   model?: string
   environmentId?: string
+  /** Routini's own MCP tools for the agent. */
+  routini?: boolean
 }
 
 export interface ApprovalConfig {
@@ -376,4 +380,23 @@ export interface IncidentDetail {
   incident: Incident
   events: IncidentEvent[]
   runs: IncidentRun[]
+}
+
+// ── API tokens and sign-in (Phase 4) ─────────────────────────────────────────
+
+export interface ApiToken {
+  id: string
+  name: string
+  role: 'viewer' | 'member' | 'admin'
+  userEmail?: string
+  expiresAt: string | null
+  lastUsedAt: string | null
+  createdAt: string
+}
+
+export interface CreatedToken {
+  token: string
+  apiToken: ApiToken
+  mcpUrl: string
+  mcpCommand: string
 }
