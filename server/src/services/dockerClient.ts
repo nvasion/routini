@@ -29,7 +29,15 @@ export function dockerOptions(env: NodeJS.ProcessEnv = process.env): Dockerode.D
   const hostEnv = env['DOCKER_HOST']?.trim()
   if (!hostEnv?.startsWith('tcp://')) throw new Error('Docker TLS settings need DOCKER_HOST=tcp://host:port')
   const url = new URL(hostEnv)
-  const options: Dockerode.DockerOptions = { protocol: 'https', host: url.hostname, port: Number(url.port || 2376), ca, cert, key }
+  // docker-modem passes checkServerIdentity to TLS; @types/dockerode does not declare it.
+  const options: Dockerode.DockerOptions & { checkServerIdentity?: typeof checkServerIdentity } = {
+    protocol: 'https',
+    host: url.hostname,
+    port: Number(url.port || 2376),
+    ca,
+    cert,
+    key,
+  }
   // The daemon's certificate can name the host instead of its address, so it
   // can be issued before the host (and its private IP) exists.
   const serverName = env['ROUTINI_DOCKER_TLS_SERVER_NAME']?.trim()
