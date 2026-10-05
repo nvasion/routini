@@ -106,14 +106,6 @@
   color: #1f1d1a;
   border-color: #c9c3b6;
 }
-.hero-note {
-  margin: 0;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  letter-spacing: 0.06em;
-  color: #6a655c;
-  text-transform: uppercase;
-}
 
 .public-section {
   max-width: 1120px;
@@ -141,28 +133,6 @@
   line-height: 1.55;
 }
 
-.how {
-  display: flex;
-  align-items: center;
-  gap: clamp(24px, 5vw, 64px);
-  flex-wrap: wrap;
-  border-top: 1px solid var(--line-soft);
-}
-.how-art {
-  flex: 0 0 auto;
-  margin: 0 auto;
-}
-.how-art img {
-  width: clamp(120px, 16vw, 190px);
-  height: auto;
-  display: block;
-}
-.how-body {
-  flex: 1 1 420px;
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
-}
 .steps {
   list-style: none;
   margin: 0;
@@ -324,4 +294,168 @@
   .public-actions {
     margin-left: auto;
   }
+}
+
+/* Campaign-style pieces */
+.badges {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+}
+.badges li {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  color: #3b3833;
+  background: #ffffff;
+  border: 1px solid #d9d3c6;
+  border-radius: 999px;
+  padding: 5px 12px;
+}
+
+.story {
+  display: flex;
+  align-items: flex-start;
+  gap: clamp(24px, 5vw, 64px);
+  flex-wrap: wrap;
+  scroll-margin-top: 12px;
+}
+.story-art {
+  flex: 0 0 auto;
+  margin: 0 auto;
+}
+.story-art img {
+  width: clamp(110px, 14vw, 170px);
+  height: auto;
+  display: block;
+}
+.story-body {
+  flex: 1 1 460px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 760px;
+}
+.story-lead {
+  margin: 0;
+  font-size: clamp(17px, 1.7vw, 20px);
+  line-height: 1.6;
+}
+.story-more p {
+  margin: 0 0 12px;
+  color: var(--ink-2);
+  line-height: 1.6;
+}
+.read-more {
+  align-self: flex-start;
+}
+
+.install {
+  scroll-margin-top: 12px;
+}
+.install-tabs {
+  width: fit-content;
+  max-width: 100%;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+.install-tabs button {
+  min-height: 36px;
+  padding: 0 14px;
+  font-size: 14px;
+}
+.install-card p {
+  margin: 0;
+  color: var(--ink-2);
+  line-height: 1.55;
+}
+.copy-block {
+  position: relative;
+}
+.copy-block pre {
+  margin: 0;
+  padding-right: 80px;
+  white-space: pre;
+  overflow-x: auto;
+}
+.copy-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+}
+.install-more {
+  display: inline-block;
+  margin-top: 14px;
+  font-weight: 500;
+}
+
+.progress-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+  gap: 14px;
+}
+.progress-h {
+  margin: 0;
+  font-family: var(--font-sign);
+  font-size: 20px;
+}
+.progress-h.done {
+  color: var(--ok);
+}
+.progress-h.next {
+  color: var(--accent);
+}
+.progress-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  color: var(--ink-2);
+}
+.progress-list li {
+  display: flex;
+  gap: 10px;
+  line-height: 1.45;
+}
+.tick {
+  color: var(--ok);
+  font-weight: 700;
+}
+.tick.next {
+  color: var(--accent);
+}
+
+.faq {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 820px;
+}
+.faq details {
+  padding: 14px 18px;
+}
+.faq summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.faq details p {
+  margin: 10px 0 0;
+  color: var(--ink-2);
+  line-height: 1.55;
+}
+
+.final-cta {
+  text-align: center;
+  padding: clamp(40px, 6vw, 72px) 16px;
+  border-top: 1px solid var(--line-soft);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
 }

@@ -1,7 +1,7 @@
 // Public pages: landing, getting started and sign up.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, screen, within } from '@testing-library/react'
+import { cleanup, fireEvent, screen, within } from '@testing-library/react'
 import { baseRoutes, FakeEventSource, mockFetch, renderAt } from '../../test/harness'
 
 const signedOut = (signupOpen = true) => ({
@@ -27,17 +27,41 @@ describe('landing page', () => {
     expect(await screen.findByRole('heading', { level: 1, name: 'Your AI engineer, on call.' })).toBeTruthy()
     expect(screen.getByRole('img', { name: 'Routini' })).toBeTruthy()
     const main = screen.getByRole('main')
-    expect((await within(main).findByRole('link', { name: 'Get started, free' })).getAttribute('href')).toBe('/signup')
-    expect(within(main).getByRole('link', { name: 'Read the 5-minute guide' }).getAttribute('href')).toBe('/docs/getting-started')
+    expect((await within(main).findAllByRole('link', { name: 'Get started, free' }))[0]!.getAttribute('href')).toBe('/signup')
     expect(within(main).getByRole('heading', { name: 'Your fleet, without the keys' })).toBeTruthy()
+    expect(within(main).getByRole('list', { name: 'Highlights' }).textContent).toContain('No inbound ports')
     expect(screen.getByRole('link', { name: 'Sign in' }).getAttribute('href')).toBe('/login')
+  })
+
+  it('tells the story with "Read more", then shows how to install', async () => {
+    mockFetch(signedOut())
+    renderAt('/')
+    const main = await screen.findByRole('main')
+    expect(await within(main).findByText(/Routini is the engineer who takes that list/)).toBeTruthy()
+    const more = () => within(main).getByText(/It reaches your servers without opening them\./).closest('#story-more') as HTMLElement
+    expect(more().hidden).toBe(true)
+    fireEvent.click(within(main).getByRole('button', { name: 'Read more' }))
+    expect(more().hidden).toBe(false)
+    expect(within(main).getByRole('button', { name: 'Read less' }).getAttribute('aria-expanded')).toBe('true')
+
+    // Install: self-host by default, with the other options a click away.
+    expect(within(main).getByLabelText('Run it yourself').textContent).toContain('make local')
+    fireEvent.click(within(main).getByRole('tab', { name: 'Connect a server' }))
+    expect(within(main).getByLabelText('Connect a server').textContent).toContain('install.sh')
+    fireEvent.click(within(main).getByRole('tab', { name: 'Use it hosted' }))
+    expect(within(main).getByText('Add a model key')).toBeTruthy()
+    expect(within(main).getByRole('link', { name: /The full 5-minute guide/ }).getAttribute('href')).toBe('/docs/getting-started')
+
+    // Where it's at, and the first questions.
+    expect(within(main).getByRole('heading', { name: 'Shipped' })).toBeTruthy()
+    expect(within(main).getByText('Do I have to open my servers to the internet?')).toBeTruthy()
   })
 
   it('offers sign in instead of sign up when the server has signup closed', async () => {
     mockFetch(signedOut(false))
     renderAt('/')
     const main = await screen.findByRole('main')
-    expect(await within(main).findByRole('link', { name: 'Sign in' })).toBeTruthy()
+    expect((await within(main).findAllByRole('link', { name: 'Sign in' })).length).toBeGreaterThan(0)
     expect(screen.queryByRole('link', { name: /Get started/ })).toBeNull()
   })
 
