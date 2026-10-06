@@ -46,6 +46,17 @@ interface Live {
 const HOP_BY_HOP = ['proxy-authorization', 'proxy-connection', 'connection', 'keep-alive', 'transfer-encoding', 'te', 'trailer', 'upgrade']
 const MAX_BLOCKED = 50
 
+/**
+ * Answers a CONNECT with a complete (length-delimited) response and closes.
+ * libcurl clients that probe before authenticating (git sets CURLAUTH_ANY)
+ * only retry with credentials after a well-formed 407; a 407 ended by the
+ * connection closing makes them fail with "Proxy CONNECT aborted".
+ */
+function refuseConnect(socket: Duplex, status: string, body = '', headers: string[] = []): void {
+  const head = [`HTTP/1.1 ${status}`, ...headers, 'Content-Type: text/plain', `Content-Length: ${Buffer.byteLength(body)}`, 'Connection: close', 'Proxy-Connection: close']
+  socket.end(`${head.join('\r\n')}\r\n\r\n${body}`)
+}
+
 function credentialValue(b: CredentialBinding): string {
   switch (b.format) {
     case 'bearer':
@@ -147,7 +158,7 @@ export class EgressProxy {
     socket.on('error', () => {})
     const live = this.sessionFor(req)
     if (!live) {
-      socket.end('HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm="routini"\r\n\r\n')
+      refuseConnect(socket, '407 Proxy Authentication Required', '', ['Proxy-Authenticate: Basic realm="routini"'])
       return
     }
     const [rawHost, rawPort] = (req.url ?? '').split(':')
@@ -155,20 +166,27 @@ export class EgressProxy {
     const port = Number(rawPort) || 443
     if (!host || !hostAllowed(live.session.allowedHosts, host)) {
       this.block(live, host)
-      socket.end('HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\n\r\nblocked by Routini egress policy\n')
+      refuseConnect(socket, '403 Forbidden', `${host || 'this host'} is blocked by Routini egress policy (add it to the org's allowed hosts)\n`)
       return
     }
     live.stats.requests++
     const bound = live.session.bindings.some((b) => b.host === host)
     if (!bound) {
       const t = this.target(host, port)
+      let established = false
       const upstream = net.connect(t.port, t.host, () => {
+        established = true
         socket.write('HTTP/1.1 200 Connection Established\r\n\r\n')
         if (head.length) upstream.write(head)
         upstream.pipe(socket)
         socket.pipe(upstream)
       })
-      upstream.on('error', () => socket.end('HTTP/1.1 502 Bad Gateway\r\n\r\n'))
+      upstream.on('error', (err) => {
+        this.log(`tunnel to ${host}:${port} failed: ${err.message}`)
+        // Before the tunnel is up, refuse properly; after, just end the stream.
+        if (established) socket.destroy()
+        else refuseConnect(socket, '502 Bad Gateway', `could not reach ${host}:${port}\n`)
+      })
       socket.on('close', () => upstream.destroy())
       return
     }
