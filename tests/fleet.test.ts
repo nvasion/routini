@@ -188,6 +188,8 @@ describe('command steps on runner hosts', () => {
     expect(d.steps[0].output).toEqual({ hostId, exitCode: 0, stdout: 'Filesystem Size Used\n/dev/sda1 79G 72G\n' })
     const events = (await u.get(`${base}/runs/${id}/events`)).body.events.filter((e: { type: string }) => e.type === 'log').map((e: { data: unknown }) => e.data)
     expect(events).toEqual(expect.arrayContaining([{ message: 'Filesystem Size Used' }, { message: 'warning: low disk', stream: 'stderr' }]))
+    const placement = (await u.get(`${base}/runs/${id}/events`)).body.events.filter((e: { type: string }) => e.type === 'step.placement')
+    expect(placement).toEqual([expect.objectContaining({ stepIdx: 0, data: { target: 'fleet', via: 'runner', host: expect.any(String), hostId } })])
   })
 
   it('sends the command, env and timeout as exec.start; non-zero exit fails the step', async () => {

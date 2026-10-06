@@ -9,9 +9,9 @@ import { useApi, useEventStream, useTick } from '../lib/hooks'
 import type { Approval, RunDetail, RunEvent, RunStep, Step } from '../lib/types'
 import { useDock } from '../shell/Dock'
 import { useOrg } from '../shell/OrgContext'
-import { buildTimeline, mergeEvents } from './timeline'
+import { buildTimeline, mergeEvents, placementLabel } from './timeline'
 
-const STREAM_TYPES = ['status', 'step.status', 'log', 'agent.init', 'agent.message', 'agent.tool_call', 'agent.tool_result', 'agent.result', 'approval.requested', 'approval.decided', 'artifact', 'cost', 'egress.blocked']
+const STREAM_TYPES = ['status', 'step.status', 'step.placement', 'log', 'agent.init', 'agent.message', 'agent.tool_call', 'agent.tool_result', 'agent.result', 'approval.requested', 'approval.decided', 'artifact', 'cost', 'egress.blocked']
 
 export function RunPage() {
   const org = useOrg()
@@ -196,6 +196,7 @@ function StepItem(props: {
   const [comment, setComment] = useState('')
   const output = step.output ?? {}
   const pr = output['pullRequest'] as { url: string; number: number } | undefined
+  const placement = placementLabel(events)
   return (
     <li className="tl-item">
       <div className="tl-rail">
@@ -208,7 +209,10 @@ function StepItem(props: {
           {step.attempt > 1 ? ` · attempt ${step.attempt}` : ''}
           {step.startedAt ? ` · ${duration(step.startedAt, step.finishedAt)}` : ''}
         </div>
-        <div style={{ fontWeight: 600 }}>{step.name}</div>
+        <div className="inline" style={{ gap: 8 }}>
+          <span style={{ fontWeight: 600 }}>{step.name}</span>
+          {placement && <span className="badge" title="Where this step executed">{placement}</span>}
+        </div>
         <div className="mono muted" style={{ fontSize: 12 }}>
           {stepSummary(spec)}
         </div>

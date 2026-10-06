@@ -28,6 +28,8 @@ import { EnvError } from './environments.js'
 import { addEnvironmentEvent, type Environment } from '../repos/environments.js'
 import type { AgentConfig } from './spec.js'
 import type { StepContext, StepExecutor, StepResult } from './types.js'
+import { emitPlacement } from './placement.js'
+import { dockerHostLabel } from '../services/dockerClient.js'
 
 export const DEFAULT_AGENT_TIMEOUT_SEC = 30 * 60
 const DEFAULT_CPUS = 2
@@ -74,9 +76,36 @@ function claudeEndpointEnv(cfg: AgentEndpointConfig, key: string | null): Record
       return { ANTHROPIC_BASE_URL: 'https://openrouter.ai/api', ANTHROPIC_AUTH_TOKEN: key, ANTHROPIC_API_KEY: '' }
     case 'gateway':
       return { ANTHROPIC_BASE_URL: cfg.gatewayUrl ?? '', ANTHROPIC_AUTH_TOKEN: key ?? 'routini-gateway' }
+    case 'aws-bedrock':
+      if (!key) throw new StepFailure('No AWS Bedrock API key is stored. Add one in Settings → Models.')
+      return bedrockEnv(cfg, key)
     default:
       throw new StepFailure(`Claude Code reaches "${cfg.endpoint}" through claude-code-model-gateway. Set the Claude endpoint to "gateway" in Settings → Models.`)
   }
+}
+
+/**
+ * Claude Code on Bedrock: native support, authenticated with a Bedrock API key
+ * (sent as `authorization: Bearer`, no SigV4). Claude Code needs the region
+ * explicitly; it does not read ~/.aws/config.
+ */
+function bedrockEnv(cfg: AgentEndpointConfig, token: string): Record<string, string> {
+  if (!cfg.region) throw new StepFailure('The AWS Bedrock endpoint needs a region. Set one in Settings → Models.')
+  return { CLAUDE_CODE_USE_BEDROCK: '1', AWS_REGION: cfg.region, AWS_BEARER_TOKEN_BEDROCK: token, ANTHROPIC_API_KEY: '' }
+}
+
+/** Runtime (inference) and control-plane (inference profiles, credential checks) hosts agents call on Bedrock. */
+const bedrockHosts = (region: string) => [`bedrock-runtime.${region}.amazonaws.com`, `bedrock.${region}.amazonaws.com`]
+
+/** Model endpoint env for agents other than Claude Code; their image maps ROUTINI_ENDPOINT* onto its own config. */
+function routiniEndpointEnv(cfg: AgentEndpointConfig, key: string): Record<string, string> {
+  const env: Record<string, string> = { ROUTINI_ENDPOINT: cfg.endpoint, ROUTINI_ENDPOINT_KEY: key }
+  if (cfg.endpoint === 'gateway' && cfg.gatewayUrl) env['ROUTINI_GATEWAY_URL'] = cfg.gatewayUrl
+  if (cfg.endpoint === 'aws-bedrock') {
+    if (!cfg.region) throw new StepFailure('The AWS Bedrock endpoint needs a region. Set one in Settings → Models.')
+    env['ROUTINI_ENDPOINT_REGION'] = cfg.region
+  }
+  return env
 }
 
 export function agentExecutor(opts: AgentRunnerOptions = {}): StepExecutor {
@@ -150,10 +179,7 @@ export function agentExecutor(opts: AgentRunnerOptions = {}): StepExecutor {
           const common = { ...(model ? { ROUTINI_MODEL: model } : {}), ...(mcp.config ? { ROUTINI_MCP_CONFIG: JSON.stringify(mcp.config) } : {}) }
           if (!broker) {
             const integrationEnv = await getScopedIntegrationEnv(q, box, orgId, cfg.agent)
-            const modelEnv =
-              cfg.agent === 'claude'
-                ? claudeEndpointEnv(endpointCfg, key)
-                : { ROUTINI_ENDPOINT: endpointCfg.endpoint, ROUTINI_ENDPOINT_KEY: key ?? '', ...(endpointCfg.gatewayUrl ? { ROUTINI_GATEWAY_URL: endpointCfg.gatewayUrl } : {}) }
+            const modelEnv = cfg.agent === 'claude' ? claudeEndpointEnv(endpointCfg, key) : routiniEndpointEnv(endpointCfg, key ?? '')
             const env: Record<string, string> = { ...integrationEnv, ...modelEnv, ...common }
             return { env, bindings: [] as CredentialBinding[], hosts: [] as string[], secrets: [...Object.values(integrationEnv), ...Object.values(modelEnv), ...mcp.secrets] }
           }
@@ -227,6 +253,7 @@ export function agentExecutor(opts: AgentRunnerOptions = {}): StepExecutor {
 
         let result: { error?: string; exitCode: number | null; timedOut: boolean; aborted: boolean }
         try {
+        await emitPlacement(ctx, { target: 'sandbox', host: dockerHostLabel(), ...(environment ? { environment: environment.name } : {}) })
         if (environment) {
           await ctx.log(`Starting ${cfg.agent} agent in environment "${environment.name}"${repo ? ` (worktree ${workBranch} from ${repo.baseBranch})` : ''}`)
           await ctx.app.envs.touch(orgId, environment.id)
@@ -344,6 +371,12 @@ export function brokeredModelAccess(
         ? { ANTHROPIC_BASE_URL: cfg.gatewayUrl!, ANTHROPIC_AUTH_TOKEN: key ? PLACEHOLDER : 'routini-gateway' }
         : { ROUTINI_ENDPOINT: 'gateway', ROUTINI_GATEWAY_URL: cfg.gatewayUrl!, ROUTINI_ENDPOINT_KEY: key ? PLACEHOLDER : '' }
     return { env, bindings: key ? [{ host, header: 'authorization', format: 'bearer', secret: key }] : [], hosts: [host], secrets: key ? [key] : [] }
+  }
+  if (cfg.endpoint === 'aws-bedrock') {
+    if (!key) throw new StepFailure('No AWS Bedrock API key is stored. Add one in Settings → Models.')
+    const env = agent === 'claude' ? bedrockEnv(cfg, PLACEHOLDER) : routiniEndpointEnv(cfg, PLACEHOLDER)
+    const hosts = bedrockHosts(cfg.region!)
+    return { env, bindings: hosts.map((host) => ({ host, header: 'authorization', format: 'bearer' as const, secret: key })), hosts, secrets: [key] }
   }
   const b = ENDPOINT_BINDINGS[cfg.endpoint]
   if (!b) throw new StepFailure(`The "${cfg.endpoint}" endpoint is not supported through the credential broker; use the gateway endpoint`)

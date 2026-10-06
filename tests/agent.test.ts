@@ -6,7 +6,8 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { makeTestApp, type TestApp, type TestUser } from './helpers/testApp'
 import { Worker } from '../server/src/engine/worker'
-import { agentExecutor, type AgentDocker } from '../server/src/engine/agent'
+import { agentExecutor, brokeredModelAccess, type AgentDocker } from '../server/src/engine/agent'
+import { PLACEHOLDER } from '../server/src/egress/types'
 import { AgentStreamParser } from '../server/src/engine/agentStream'
 import { createDemuxer, lineSplitter } from '../server/src/services/docker'
 import type { FetchFn } from '../server/src/integrations/providers'
@@ -48,6 +49,30 @@ describe('AgentStreamParser', () => {
     const big = 'x'.repeat(10_000)
     const [ev] = p.line(JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't', content: big }] } }))
     expect(String(ev!.data['output']).length).toBeLessThan(2100)
+  })
+})
+
+describe('brokeredModelAccess', () => {
+  it('gives Claude on Bedrock a placeholder token and binds both Bedrock hosts', () => {
+    const access = brokeredModelAccess('claude', { endpoint: 'aws-bedrock', model: '', region: 'us-west-2' }, 'ABSKreal')
+    expect(access.env).toEqual({ CLAUDE_CODE_USE_BEDROCK: '1', AWS_REGION: 'us-west-2', AWS_BEARER_TOKEN_BEDROCK: PLACEHOLDER, ANTHROPIC_API_KEY: '' })
+    expect(access.hosts).toEqual(['bedrock-runtime.us-west-2.amazonaws.com', 'bedrock.us-west-2.amazonaws.com'])
+    expect(access.bindings).toEqual(access.hosts.map((host) => ({ host, header: 'authorization', format: 'bearer', secret: 'ABSKreal' })))
+    expect(access.secrets).toEqual(['ABSKreal'])
+  })
+
+  it('gives other agents on Bedrock the ROUTINI_ENDPOINT contract with a region, and the same bindings', () => {
+    const access = brokeredModelAccess('omnimancer', { endpoint: 'aws-bedrock', model: '', region: 'eu-central-1' }, 'ABSKreal')
+    expect(access.env).toEqual({ ROUTINI_ENDPOINT: 'aws-bedrock', ROUTINI_ENDPOINT_KEY: PLACEHOLDER, ROUTINI_ENDPOINT_REGION: 'eu-central-1' })
+    expect(access.hosts).toEqual(['bedrock-runtime.eu-central-1.amazonaws.com', 'bedrock.eu-central-1.amazonaws.com'])
+    expect(access.bindings.every((b) => b.header === 'authorization' && b.format === 'bearer' && b.secret === 'ABSKreal')).toBe(true)
+  })
+
+  it('refuses Bedrock without a key or a region', () => {
+    for (const agent of ['claude', 'omnimancer'] as const) {
+      expect(() => brokeredModelAccess(agent, { endpoint: 'aws-bedrock', model: '', region: 'us-east-1' }, null)).toThrow(/No AWS Bedrock API key/)
+      expect(() => brokeredModelAccess(agent, { endpoint: 'aws-bedrock', model: '' }, 'ABSKreal')).toThrow(/needs a region/)
+    }
   })
 })
 
@@ -162,6 +187,7 @@ describe('agent steps', () => {
     expect(step.output).toMatchObject({ costUsd: 0.0421, model: 'claude-sonnet-5', changes: false })
     expect(detail.run.costUsd).toBeCloseTo(0.0421)
     expect(events.map((e) => e.type)).toEqual(expect.arrayContaining(['agent.init', 'agent.tool_call', 'agent.tool_result', 'agent.result', 'cost']))
+    expect(events.filter((e) => e.type === 'step.placement').map((e) => e.data)).toEqual([{ target: 'sandbox', host: expect.any(String) }])
   })
 
   it('opens a pull request from the worker after the container pushes', async () => {
@@ -221,6 +247,39 @@ describe('agent steps', () => {
       ANTHROPIC_API_KEY: '',
       ROUTINI_MODEL: 'anthropic/claude-opus-5',
     })
+  })
+
+  it('wires AWS Bedrock natively with a Bedrock API key and region', async () => {
+    await u.put(`${base()}/settings`, { ai: { agents: { claude: { endpoint: 'aws-bedrock', region: 'eu-west-1', model: 'eu.anthropic.claude-test' } } }, endpointApiKeys: { 'aws-bedrock': 'ABSKbedrockkey0123456789' } })
+    await run({})
+    expect(fake.spawned[0]!.env).toMatchObject({
+      CLAUDE_CODE_USE_BEDROCK: '1',
+      AWS_REGION: 'eu-west-1',
+      AWS_BEARER_TOKEN_BEDROCK: 'ABSKbedrockkey0123456789',
+      ANTHROPIC_API_KEY: '',
+      ROUTINI_MODEL: 'eu.anthropic.claude-test',
+    })
+  })
+
+  it('passes Omnimancer its Bedrock endpoint, key and region', async () => {
+    const t2 = await makeTestApp({ engine: { executors: { agent: agentExecutor({ docker: fake.docker, images: { omnimancer: 'routini/agent-omnimancer:test' } }) } } })
+    try {
+      const u2 = await t2.signup('omni@example.com')
+      const base2 = `/api/orgs/${u2.orgSlug}`
+      await u2.put(`${base2}/settings`, { ai: { agents: { omnimancer: { endpoint: 'aws-bedrock', region: 'us-west-2', model: 'us.anthropic.claude-test' } } }, endpointApiKeys: { 'aws-bedrock': 'ABSKomnikey0123456789' } })
+      const job = await u2.post(`${base2}/jobs`, { name: 'Omni', steps: [{ name: 'agent', kind: 'agent', config: { agent: 'omnimancer', prompt: 'Fix it' } }] })
+      await u2.post(`${base2}/jobs/${job.body.job.id}/run`)
+      await new Worker(t2.ctx, t2.ctx.engine, { heartbeatMs: 20 }).drain()
+      expect(fake.spawned[0]!.env).toMatchObject({
+        ROUTINI_ENDPOINT: 'aws-bedrock',
+        ROUTINI_ENDPOINT_KEY: 'ABSKomnikey0123456789',
+        ROUTINI_ENDPOINT_REGION: 'us-west-2',
+        ROUTINI_MODEL: 'us.anthropic.claude-test',
+      })
+      expect(fake.spawned[0]!.env).not.toHaveProperty('ANTHROPIC_API_KEY')
+    } finally {
+      await t2.close()
+    }
   })
 
   it('refuses to start without a model key or an image', async () => {

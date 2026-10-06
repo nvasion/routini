@@ -3,7 +3,7 @@
 
 import { describe, it, expect } from 'vitest'
 import { pgConfig, poolMax } from '../server/src/db/drivers'
-import { dockerOptions } from '../server/src/services/dockerClient'
+import { dockerHostLabel, dockerOptions } from '../server/src/services/dockerClient'
 import { clientIpFromHeader } from '../server/src/app'
 import { loadConfig } from '../server/src/config'
 import type { Request, Response } from 'express'
@@ -57,6 +57,16 @@ describe('dockerOptions', () => {
   it('refuses partial or misplaced TLS settings', () => {
     expect(() => dockerOptions({ ROUTINI_DOCKER_TLS_CA: 'ca', DOCKER_HOST: 'tcp://h:2376' })).toThrow(/must be set together/)
     expect(() => dockerOptions({ ...tls, DOCKER_HOST: 'unix:///var/run/docker.sock' })).toThrow(/tcp:\/\//)
+  })
+})
+
+describe('dockerHostLabel', () => {
+  it('names the agent host by its pinned TLS name, else DOCKER_HOST, else the local daemon', () => {
+    expect(dockerHostLabel({ DOCKER_HOST: 'tcp://10.124.0.9:2376', ROUTINI_DOCKER_TLS_SERVER_NAME: 'routini-agents' })).toBe('routini-agents')
+    expect(dockerHostLabel({ DOCKER_HOST: 'tcp://10.124.0.9:2376' })).toBe('10.124.0.9')
+    expect(dockerHostLabel({ DOCKER_HOST: 'ssh://deploy@agents.example.com' })).toBe('agents.example.com')
+    expect(dockerHostLabel({ DOCKER_HOST: 'unix:///var/run/docker.sock' })).toBe('local Docker')
+    expect(dockerHostLabel({})).toBe('local Docker')
   })
 })
 

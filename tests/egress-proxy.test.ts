@@ -6,7 +6,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import http from 'node:http'
 import https from 'node:https'
 import tls from 'node:tls'
-import type { AddressInfo } from 'node:net'
+import net, { type AddressInfo } from 'node:net'
 import { EgressProxy } from '../server/src/egress/proxy'
 import { generateCa, LeafIssuer } from '../server/src/egress/ca'
 import { PLACEHOLDER, type EgressSession } from '../server/src/egress/types'
@@ -79,6 +79,25 @@ function viaProxy(host: string, token: string | null, trust: string, headers: Re
   })
 }
 
+/** Sends a raw CONNECT and returns the proxy's reply head and body, read until the proxy closes. */
+function rawConnect(target: string, token: string | null): Promise<{ status: number; headers: Record<string, string>; body: string }> {
+  return new Promise((resolve, reject) => {
+    const s = net.connect(ports.proxyPort, '127.0.0.1', () => {
+      const auth = token ? `Proxy-Authorization: Basic ${Buffer.from(`routini:${token}`).toString('base64')}\r\n` : ''
+      s.write(`CONNECT ${target} HTTP/1.1\r\nHost: ${target}\r\n${auth}\r\n`)
+    })
+    let raw = ''
+    s.on('data', (c) => (raw += c))
+    s.on('error', reject)
+    s.on('close', () => {
+      const [head = '', body = ''] = raw.split('\r\n\r\n')
+      const [statusLine = '', ...lines] = head.split('\r\n')
+      const headers = Object.fromEntries(lines.map((l) => [l.slice(0, l.indexOf(':')).toLowerCase(), l.slice(l.indexOf(':') + 1).trim()]))
+      resolve({ status: Number(statusLine.split(' ')[1]), headers, body })
+    })
+  })
+}
+
 beforeAll(async () => {
   upstream = https.createServer({ SNICallback: (name, cb) => cb(null, upstreamIssuer.contextFor(name)) }, (req, res) => {
     res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ host: req.headers.host, authorization: req.headers['authorization'] ?? null, xApiKey: req.headers['x-api-key'] ?? null }))
@@ -92,7 +111,8 @@ beforeAll(async () => {
     secret: SECRET,
     ca: routiniCa,
     upstreamCa: [upstreamCa.certPem],
-    resolve: (host, port) => ({ host: '127.0.0.1', port: host === 'plain.example' ? plainPort : port === 443 ? upstreamPort : port }),
+    // down.example points at a port nothing listens on (1 is privileged and unused here).
+    resolve: (host, port) => ({ host: '127.0.0.1', port: host === 'plain.example' ? plainPort : host === 'down.example' ? 1 : port === 443 ? upstreamPort : port }),
     log: () => {},
   })
   ports = await proxy.listen(0, 0, '127.0.0.1')
@@ -126,6 +146,34 @@ describe('proxying', () => {
   it('demands a valid session', async () => {
     expect((await viaProxy('api.github.com', null, routiniCa.certPem)).connectStatus).toBe(407)
     expect((await viaProxy('api.github.com', 'c'.repeat(32), routiniCa.certPem)).connectStatus).toBe(407)
+  })
+
+  // libcurl with CURLAUTH_ANY (git's default) sends CONNECT without credentials,
+  // and retries with them only if the 407 is a complete response. Before this
+  // was length-delimited, git failed every clone with "Proxy CONNECT aborted".
+  it('answers refusals with complete responses, so challenge-first clients can retry', async () => {
+    const challenge = await rawConnect('github.com:443', null)
+    expect(challenge.status).toBe(407)
+    expect(challenge.headers['proxy-authenticate']).toBe('Basic realm="routini"')
+    expect(challenge.headers['content-length']).toBe('0')
+    expect(challenge.headers['connection']).toBe('close')
+
+    const blocked = await rawConnect('evil.example:443', token)
+    expect(blocked.status).toBe(403)
+    expect(Number(blocked.headers['content-length'])).toBe(Buffer.byteLength(blocked.body))
+    expect(blocked.body).toContain('evil.example is blocked by Routini egress policy')
+
+    // The retry, on a new connection with credentials, gets its tunnel.
+    const r = await viaProxy('tunnel.example', token, upstreamCa.certPem)
+    expect(r.status).toBe(200)
+  })
+
+  it('reports an unreachable upstream as a complete 502', async () => {
+    await control('PUT', `/sessions/${token}`, session(token, { allowedHosts: [...session(token).allowedHosts, 'down.example'] }))
+    const r = await rawConnect('down.example:443', token)
+    expect(r.status).toBe(502)
+    expect(Number(r.headers['content-length'])).toBe(Buffer.byteLength(r.body))
+    expect(r.body).toContain('could not reach down.example:443')
   })
 
   it('blocks hosts that are not allowed and reports them', async () => {

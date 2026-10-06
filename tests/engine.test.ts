@@ -158,6 +158,10 @@ describe('runs', () => {
     const statuses = events.filter((e) => e.type === 'status').map((e) => e.data['status'])
     expect(statuses).toEqual(['queued', 'running', 'succeeded'])
     expect(events.some((e) => e.type === 'log' && String(e.data['message']).includes('Response status: 200'))).toBe(true)
+    expect(events.filter((e) => e.type === 'step.placement').map((e) => e.data)).toEqual([
+      { target: 'routini', host: 'Routini worker' },
+      { target: 'routini', host: 'Routini worker' },
+    ])
     expect(finished.map((r) => r.status)).toEqual(['succeeded'])
   })
 
@@ -452,6 +456,8 @@ describe('hosts and ssh steps', () => {
     expect(sshCommands).toEqual(['df -h / | tail -1'])
     const events = JSON.stringify((await u.get(`${base()}/runs/${run.id}/events`)).body.events)
     expect(events).toContain('ran: df -h / | tail -1')
+    const placement = (JSON.parse(events) as Array<{ type: string; stepIdx: number; data: unknown }>).filter((e) => e.type === 'step.placement')
+    expect(placement).toEqual([expect.objectContaining({ stepIdx: 0, data: { target: 'fleet', via: 'ssh', host: host.name, hostId: host.id } })])
     expect(events).not.toContain('supersecretkeymaterial')
     expect(events).toContain('[REDACTED]')
   })

@@ -259,7 +259,7 @@ const ENDPOINT_LABEL: Record<AIEndpoint, string> = {
   gateway: 'Model gateway',
 }
 const AGENT_ENDPOINTS: Record<AgentId, AIEndpoint[]> = {
-  claude: ['anthropic', 'openrouter', 'gateway'],
+  claude: ['anthropic', 'openrouter', 'aws-bedrock', 'gateway'],
   opencode: ['anthropic', 'openai', 'openrouter'],
   omnimancer: ['anthropic', 'openrouter', 'digitalocean', 'aws-bedrock', 'openai', 'google', 'azure'],
 }
@@ -310,7 +310,16 @@ function Models() {
             <div className="row">
               <Field label="Endpoint">
                 {(id) => (
-                  <select id={id} className="select" value={agents[a].endpoint} onChange={(e) => setAgents({ ...agents, [a]: { ...agents[a], endpoint: e.target.value as AIEndpoint } })}>
+                  <select
+                    id={id}
+                    className="select"
+                    value={agents[a].endpoint}
+                    onChange={(e) => {
+                      const endpoint = e.target.value as AIEndpoint
+                      const region = endpoint === 'aws-bedrock' && !agents[a].region ? { region: 'us-east-1' } : {}
+                      setAgents({ ...agents, [a]: { ...agents[a], endpoint, ...region } })
+                    }}
+                  >
                     {AGENT_ENDPOINTS[a].map((ep) => (
                       <option key={ep} value={ep}>
                         {ENDPOINT_LABEL[ep]}
@@ -319,9 +328,14 @@ function Models() {
                   </select>
                 )}
               </Field>
-              <Field label="Model" hint="Blank = the agent's default.">
+              <Field label="Model" hint={agents[a].endpoint === 'aws-bedrock' ? 'Bedrock model or inference profile ID (e.g. us.anthropic.…). Blank = the agent\'s default.' : "Blank = the agent's default."}>
                 {(id) => <input id={id} className="input mono" value={agents[a].model} onChange={(e) => setAgents({ ...agents, [a]: { ...agents[a], model: e.target.value } })} />}
               </Field>
+              {agents[a].endpoint === 'aws-bedrock' && (
+                <Field label="AWS region" hint="Where your Bedrock models are enabled. The key is a Bedrock API key.">
+                  {(id) => <input id={id} className="input mono" value={agents[a].region ?? ''} placeholder="us-east-1" onChange={(e) => setAgents({ ...agents, [a]: { ...agents[a], region: e.target.value } })} />}
+                </Field>
+              )}
               {agents[a].endpoint === 'gateway' && (
                 <Field label="Gateway URL">
                   {(id) => <input id={id} className="input" value={agents[a].gatewayUrl ?? ''} placeholder="http://gateway:8080" onChange={(e) => setAgents({ ...agents, [a]: { ...agents[a], gatewayUrl: e.target.value } })} />}
