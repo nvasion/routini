@@ -32,12 +32,13 @@ test-client:
 test-pg:
 	cd server && NODE_ENV=test npx vitest run ../tests/pg-real.test.ts
 test-docker:
-	cd server && ROUTINI_E2E_DOCKER=1 NODE_ENV=test npx vitest run ../tests/agent-docker.e2e.test.ts ../tests/environments-docker.e2e.test.ts ../tests/broker-docker.e2e.test.ts ../tests/runner-docker.e2e.test.ts
+	cd server && ROUTINI_E2E_DOCKER=1 NODE_ENV=test npx vitest run ../tests/agent-docker.e2e.test.ts ../tests/environments-docker.e2e.test.ts ../tests/broker-docker.e2e.test.ts ../tests/runner-docker.e2e.test.ts ../tests/agent-omnimancer-docker.e2e.test.ts
 
 # Agent images (see agents/README.md)
 agents:
 	cd agents && docker build -f claude-code/Dockerfile -t routini/agent-claude:latest .
 	cd agents && docker build -f fake/Dockerfile -t routini/agent-fake:test .
+	cd agents && docker build -f omnimancer/Dockerfile -t routini/agent-omnimancer:latest .
 
 # Full stack in Docker (needs .env; see .env.example)
 up:

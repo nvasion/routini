@@ -27,6 +27,33 @@ describe('AgentStreamParser', () => {
     expect(p.facts).toMatchObject({ model: 'claude-sonnet-5', costUsd: 0.0421, turns: 3, resultIsError: false })
   })
 
+  it('reads Omnimancer stream-json (string content, top-level tool lines, error)', () => {
+    // Shapes from omnimancer/cli/headless.py HeadlessOutputEmitter.
+    const p = new AgentStreamParser()
+    const lines = [
+      { type: 'system', subtype: 'init', model: 'us.anthropic.claude-test', session_id: 's1' },
+      { type: 'assistant', message: { model: 'us.anthropic.claude-test', content: 'Checking disk usage.', stop_reason: 'tool_use' }, session_id: 's1' },
+      { type: 'tool_use', tool: { name: 'execute_command', arguments: { command: 'df -h /' } }, session_id: 's1' },
+      { type: 'tool_result', tool: { name: 'execute_command', content: '91% used', error: null }, session_id: 's1' },
+      { type: 'tool_result', tool: { name: 'read_file', content: '', error: 'No such file' }, session_id: 's1' },
+      { type: 'h2l', subtype: 'plan', stories: 2, session_id: 's1' },
+      { type: 'result', subtype: 'success', is_error: false, result: 'Capped journald at 500M.', model: 'm', provider: 'bedrock', num_turns: 4, usage: {}, total_cost_usd: 0.012, stop_reason: 'end_turn', stop_cause: null, session_id: 's1' },
+    ].map((l) => JSON.stringify(l))
+    const events = lines.flatMap((l) => p.line(l))
+    expect(events.map((e) => e.type)).toEqual(['agent.init', 'agent.message', 'agent.tool_call', 'agent.tool_result', 'agent.tool_result', 'agent.result', 'cost'])
+    expect(events[1]!.data).toEqual({ text: 'Checking disk usage.' })
+    expect(events[2]!.data).toEqual({ id: null, name: 'execute_command', input: '{"command":"df -h /"}' })
+    expect(events[3]!.data).toMatchObject({ name: 'execute_command', ok: true, output: '91% used' })
+    expect(events[4]!.data).toMatchObject({ name: 'read_file', ok: false, output: 'No such file' })
+    expect(p.facts).toMatchObject({ model: 'us.anthropic.claude-test', costUsd: 0.012, turns: 4, resultIsError: false, resultText: 'Capped journald at 500M.' })
+
+    const failed = new AgentStreamParser()
+    failed.line(JSON.stringify({ type: 'error', is_error: true, message: 'Bedrock: 403 not authorized for model', model: 'm', provider: 'bedrock' }))
+    failed.line('::routini::{"type":"error","message":"agent exited with code 1"}')
+    expect(failed.facts.errors[0]).toBe('Bedrock: 403 not authorized for model')
+    expect(failed.facts.resultIsError).toBe(true)
+  })
+
   it('reads control lines and keeps a tail of plain output', () => {
     const p = new AgentStreamParser()
     p.line('::routini::{"type":"check","exitCode":2}')
