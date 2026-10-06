@@ -3,8 +3,9 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { makeTestApp, type TestApp, type TestUser } from './helpers/testApp'
 import { Worker } from '../server/src/engine/worker'
-import { evaluatePolicy, parseRules, PolicyError, type PolicyRule } from '../server/src/engine/policy'
+import { evaluatePolicy, parseRules, PolicyError, stepFacts, type PolicyRule } from '../server/src/engine/policy'
 import { hostAllowed, parseEgress } from '../server/src/repos/policy'
+import type { AgentConfig, Step } from '../server/src/engine/spec'
 import type { SshExecutor } from '../server/src/services/ssh'
 import type { FetchFn } from '../server/src/services/http'
 
@@ -27,9 +28,24 @@ describe('rules', () => {
     expect(evaluatePolicy([{ id: 'all', name: 'all', match: {}, effect: 'deny' }], { kind: 'approval' }).effect).toBe('allow')
   })
 
+  it('matches agent steps on where they run, with the fleet host tags', () => {
+    const fleet: PolicyRule[] = [{ id: 'fleet-prod', name: 'Agents on prod fleet hosts', match: { kinds: ['agent'], agentPlacements: ['fleet'], hostTags: ['prod'] }, effect: 'require_approval' }]
+    expect(evaluatePolicy(fleet, { kind: 'agent', agentPlacement: 'fleet', host: { tags: ['web', 'prod'], group: 'build' } }).rule?.id).toBe('fleet-prod')
+    expect(evaluatePolicy(fleet, { kind: 'agent', agentPlacement: 'sandbox' }).effect).toBe('allow')
+    expect(evaluatePolicy(fleet, { kind: 'agent', agentPlacement: 'fleet', host: { tags: ['staging'], group: 'build' } }).effect).toBe('allow')
+    expect(evaluatePolicy(fleet, { kind: 'agent', agentPlacement: 'fleet' }).effect).toBe('allow') // host gone: the tag rule can't match
+    const sandboxOnly: PolicyRule[] = [{ id: 'sandboxed', name: 'Sandbox agents', match: { agentPlacements: ['sandbox'] }, effect: 'deny' }]
+    expect(evaluatePolicy(sandboxOnly, { kind: 'agent', agentPlacement: 'sandbox' }).rule?.id).toBe('sandboxed')
+    expect(evaluatePolicy(sandboxOnly, { kind: 'agent', agentPlacement: 'fleet' }).effect).toBe('allow')
+    expect(evaluatePolicy(sandboxOnly, { kind: 'action', actionType: 'http' }).effect).toBe('allow')
+  })
+
   it('validates rule payloads with exact paths', () => {
     expect(() => parseRules([{ id: 'x', name: 'x', effect: 'nope', match: {} }])).toThrow(/rules\[0\]\.effect/)
     expect(() => parseRules([{ id: 'x', name: 'x', effect: 'allow', match: { actionTypes: ['ftp'] } }])).toThrow(/actionTypes values/)
+    expect(() => parseRules([{ id: 'x', name: 'x', effect: 'allow', match: { agentPlacements: ['vm'] } }])).toThrow(/agentPlacements values must be among: sandbox, fleet/)
+    expect(() => parseRules([{ id: 'x', name: 'x', effect: 'allow', match: { agentPlacements: 'fleet' } }])).toThrow(/agentPlacements must be a list of strings/)
+    expect(parseRules([{ id: 'x', name: 'x', effect: 'allow', match: { agentPlacements: ['fleet', 'fleet'] } }])[0]!.match.agentPlacements).toEqual(['fleet'])
     expect(() => parseRules([{ id: 'a', name: 'a', effect: 'allow' }, { id: 'a', name: 'b', effect: 'allow' }])).toThrow(/used twice/)
     expect(() => parseRules([{ id: 'x', name: 'x', effect: 'require_approval', minRole: 'viewer' }])).toThrow(PolicyError)
     expect(parseRules([{ id: 'x', name: ' Deny all ', effect: 'deny', match: {} }])).toEqual([{ id: 'x', name: 'Deny all', match: {}, effect: 'deny', reason: 'Blocked by org policy' }])
@@ -153,6 +169,39 @@ describe('enforcement', () => {
       { stepId: 'a', effect: 'allow', rule: null },
       { stepId: 'b', effect: 'require_approval', rule: { id: 'prod', name: 'Prod changes', minRole: 'owner' } },
     ])
+  })
+
+  it('gates agent steps that run on a fleet host by that host’s tags', async () => {
+    const enrollRunner = async (name: string, tags: string[]): Promise<string> => {
+      const e = await u.post(`${base()}/runners/enrollments`, { name, group: 'build', tags })
+      expect(e.status).toBe(201)
+      const r = await t.request.post('/api/runner/enroll').send({ token: e.body.token, hostname: `${name}.example`, os: 'linux', arch: 'amd64', version: '0.1.0' })
+      expect(r.status).toBe(201)
+      return r.body.hostId as string
+    }
+    const prodHostId = await enrollRunner('agents-prod', ['prod'])
+    const plainHostId = await enrollRunner('agents-lab', [])
+    const rules: PolicyRule[] = [{ id: 'fleet-prod', name: 'Agents on prod hosts', match: { kinds: ['agent'], agentPlacements: ['fleet'], hostTags: ['prod'] }, effect: 'require_approval' }]
+    const agentStep = (config: Partial<AgentConfig>): Step => ({ id: 'fix', name: 'Fix', kind: 'agent', when: 'on_success', retries: 0, config: { agent: 'claude', prompt: 'fix the flaky test', ...config } })
+    const factsFor = (step: Step) => t.ctx.db.org(u.orgId, (q) => stepFacts(q, u.orgId, step))
+
+    const onProd = await factsFor(agentStep({ runOn: { hostId: prodHostId } }))
+    expect(onProd).toMatchObject({ kind: 'agent', agentPlacement: 'fleet', host: { tags: ['prod'], group: 'build' } })
+    expect(evaluatePolicy(rules, onProd).rule?.id).toBe('fleet-prod')
+
+    const inSandbox = await factsFor(agentStep({}))
+    expect(inSandbox.agentPlacement).toBe('sandbox')
+    expect(inSandbox.host).toBeUndefined()
+    expect(evaluatePolicy(rules, inSandbox).effect).toBe('allow')
+
+    const onPlain = await factsFor(agentStep({ runOn: { hostId: plainHostId } }))
+    expect(onPlain).toMatchObject({ agentPlacement: 'fleet', host: { tags: [], group: 'build' } })
+    expect(evaluatePolicy(rules, onPlain).effect).toBe('allow')
+
+    // An alert-resolved step before prepare has no host yet, but still counts as fleet.
+    const onAlertHost = await factsFor(agentStep({ runOn: { host: 'alert' } }))
+    expect(onAlertHost).toMatchObject({ agentPlacement: 'fleet' })
+    expect(onAlertHost.host).toBeUndefined()
   })
 
   it('only admins edit policy; bad payloads are rejected whole', async () => {

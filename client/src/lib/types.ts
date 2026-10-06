@@ -286,6 +286,7 @@ export interface PolicyMatch {
   hostTags?: string[]
   hostGroups?: string[]
   agentOutputs?: Array<'pr' | 'branch' | 'none'>
+  agentPlacements?: Array<'sandbox' | 'fleet'>
   inEnvironment?: boolean
   repoHosts?: string[]
 }
