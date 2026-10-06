@@ -10,7 +10,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import Dockerode from 'dockerode'
-import { dockerFromEnv } from './dockerClient.js'
+import { dockerFromEnv, sandboxHostConfig } from './dockerClient.js'
 import { randomUUID } from 'node:crypto'
 import type { Duplex } from 'node:stream'
 import { createDemuxer, lineSplitter } from './docker.js'
@@ -112,6 +112,7 @@ export class DockerEnvRuntime implements EnvRuntime {
         NanoCpus: Math.round(spec.cpus * 1e9),
         CapDrop: ['ALL'],
         SecurityOpt: ['no-new-privileges:true'],
+        ...sandboxHostConfig(),
         Init: true,
         Mounts: [{ Type: 'volume', Source: spec.volume, Target: WORKSPACE }],
       },

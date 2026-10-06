@@ -165,6 +165,8 @@ stored secrets cannot be decrypted.
 | `ROUTINI_EGRESS_PROXY_HOST`, `ROUTINI_EGRESS_PROXY_PORT` | `routini-egress`, `3128` | The proxy as sandboxed containers see it (a network alias). |
 | `ROUTINI_EGRESS_CONTAINER` | `routini-egress` | Proxy container, attached to each org's sandbox network. |
 | `ROUTINI_SANDBOX_NETWORK_PREFIX` | `routini-sb` | Per-org internal Docker networks. |
+| `ROUTINI_CONTAINER_RUNTIME` | Docker's default | OCI runtime for agent and environment containers. `runsc` (gVisor) gives each one its own kernel; install it on the Docker host first. |
+| `ROUTINI_CONTAINER_PIDS_LIMIT` | `512` | Process cap per agent or environment container. |
 | `ROUTINI_EGRESS_CA_DIR` | — | Egress proxy only: where its CA persists (ephemeral if unset). |
 | `SEED_EMAIL`, `SEED_PASSWORD` | dev: admin@routini.dev / changeme | First account on an empty database. |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASS` | — | Outgoing mail: email verification, password reset, and run-finished emails (per-org settings decide who gets those). Without `SMTP_HOST`, nothing is sent. |

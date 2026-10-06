@@ -24,7 +24,7 @@ class FakeBroker {
     return `tok${this.sessions.length + 1}`.padEnd(32, '0')
   }
   async network(orgId: string) {
-    return `routini-sb-${orgId.slice(0, 8)}`
+    return `routini-sb-${orgId}`
   }
   async open(s: EgressSession) {
     if (this.failOpen) throw new Error('connect ECONNREFUSED')
@@ -91,7 +91,7 @@ describe('agent steps through the credential broker', () => {
     const { detail, events } = await agentRun({ repo: { url: 'https://gitlab.com/acme/app', baseBranch: 'main' }, output: 'none' })
     expect(detail.run.status).toBe('succeeded')
     const spawned = fake.spawned[0]!
-    expect(spawned.network).toBe(`routini-sb-${u.orgId.slice(0, 8)}`)
+    expect(spawned.network).toBe(`routini-sb-${u.orgId}`)
     expect(spawned.env).toMatchObject({ ANTHROPIC_API_KEY: PLACEHOLDER, GITHUB_TOKEN: PLACEHOLDER, HTTPS_PROXY: expect.stringContaining('@routini-egress:3128'), ROUTINI_CA_PEM: expect.stringContaining('BEGIN CERTIFICATE') })
     const dump = JSON.stringify(spawned.env)
     expect(dump).not.toContain(ANTHROPIC)
