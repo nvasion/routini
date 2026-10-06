@@ -34,6 +34,7 @@ those agents' steps fail with a clear message.
 | `ROUTINI_OUTPUT` | `pr`, `branch` or `none`. |
 | `ROUTINI_COMMIT_MESSAGE` | Commit message for the agent's changes. |
 | `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` | Model endpoint, from the org's AI settings. |
+| `CLAUDE_CODE_USE_BEDROCK` / `AWS_REGION` / `AWS_BEARER_TOKEN_BEDROCK` | Model endpoint when the org routes Claude Code through AWS Bedrock (Bedrock API key). |
 | `GITHUB_TOKEN`, `SLACK_BOT_TOKEN`, … | Connected integrations whose scope includes this agent. |
 
 **Output (stdout)**

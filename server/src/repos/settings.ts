@@ -18,7 +18,8 @@ export const KEYED_ENDPOINTS = AI_ENDPOINTS.filter((e) => e !== 'gateway')
 
 /**
  * Which endpoints each agent can reach. Claude Code speaks the Anthropic
- * Messages API, so it reaches the rest through claude-code-model-gateway.
+ * Messages API and Bedrock natively; it reaches the rest through
+ * claude-code-model-gateway.
  */
 export const AGENT_ALLOWED_ENDPOINTS: Record<AgentId, readonly AIEndpoint[]> = {
   claude: ['anthropic', 'openrouter', 'digitalocean', 'aws-bedrock', 'gateway'],
@@ -31,6 +32,8 @@ export interface AgentEndpointConfig {
   /** Model id for the endpoint; empty string = the agent's own default. */
   model: string
   gatewayUrl?: string
+  /** AWS region, for the aws-bedrock endpoint. */
+  region?: string
 }
 
 export interface AiSettings {
@@ -68,7 +71,10 @@ export const DEFAULT_NOTIFICATIONS: NotificationSettings = {
   notifyOnFailure: true,
 }
 
-export const aiKeyName = (endpoint: string) => `ai.key.${endpoint}`
+/** e.g. us-east-1, eu-central-2, us-gov-west-1. Also keeps the Bedrock hostnames derived from it safe. */
+export const AWS_REGION_RE = /^[a-z]{2}(-gov)?-[a-z]+-\d{1,2}$/
+
+export const aiKeyName =(endpoint: string) => `ai.key.${endpoint}`
 
 export class SettingsValidationError extends Error {}
 
@@ -150,6 +156,14 @@ export function parseSettingsPatch(raw: unknown, current: OrgSettings): Settings
         if (cfg['gatewayUrl'] !== undefined) {
           if (typeof cfg['gatewayUrl'] !== 'string') fail(`ai.agents.${id}.gatewayUrl must be a string`)
           merged.gatewayUrl = (cfg['gatewayUrl'] as string).trim()
+        }
+        if (cfg['region'] !== undefined) {
+          if (typeof cfg['region'] !== 'string') fail(`ai.agents.${id}.region must be a string`)
+          merged.region = (cfg['region'] as string).trim()
+          if (merged.region && !AWS_REGION_RE.test(merged.region)) fail(`ai.agents.${id}.region must be an AWS region such as us-east-1`)
+        }
+        if (id === 'claude' && merged.endpoint === 'aws-bedrock' && !merged.region) {
+          fail(`ai.agents.${id}: the aws-bedrock endpoint requires a region`)
         }
         if (merged.endpoint === 'gateway') {
           let ok = false

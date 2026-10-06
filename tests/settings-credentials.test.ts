@@ -52,6 +52,14 @@ describe('settings', () => {
     expect((await u.put(`${base()}/settings`, { ai: { agents: { nope: { endpoint: 'anthropic' } } } })).status).toBe(400)
   })
 
+  it('lets Claude use AWS Bedrock with a valid region', async () => {
+    expect((await u.put(`${base()}/settings`, { ai: { agents: { claude: { endpoint: 'aws-bedrock' } } } })).status).toBe(400)
+    expect((await u.put(`${base()}/settings`, { ai: { agents: { claude: { endpoint: 'aws-bedrock', region: 'evil.com/x' } } } })).status).toBe(400)
+    const res = await u.put(`${base()}/settings`, { ai: { agents: { claude: { endpoint: 'aws-bedrock', region: ' us-gov-west-1 ' } } } })
+    expect(res.status).toBe(200)
+    expect(res.body.ai.agents.claude).toMatchObject({ endpoint: 'aws-bedrock', region: 'us-gov-west-1' })
+  })
+
   it('stores endpoint keys write-only', async () => {
     const secret = 'sk-ant-api03-very-secret-value'
     const res = await u.put(`${base()}/settings`, { endpointApiKeys: { anthropic: secret } })

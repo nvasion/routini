@@ -233,7 +233,7 @@ export interface Integration {
 export type AIEndpoint = 'anthropic' | 'openrouter' | 'digitalocean' | 'aws-bedrock' | 'openai' | 'google' | 'azure' | 'gateway'
 
 export interface OrgSettings {
-  ai: { defaultAgent: AgentId; agents: Record<AgentId, { endpoint: AIEndpoint; model: string; gatewayUrl?: string }> }
+  ai: { defaultAgent: AgentId; agents: Record<AgentId, { endpoint: AIEndpoint; model: string; gatewayUrl?: string; region?: string }> }
   notifications: { enabled: boolean; recipientEmail: string; notifyOnSuccess: boolean; notifyOnFailure: boolean }
   endpointKeys: Record<string, boolean>
 }
