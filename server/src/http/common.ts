@@ -15,6 +15,7 @@ import { DockerEnvRuntime, type EnvRuntime } from '../services/envRuntime.js'
 import { BrokerClient, brokerConfigFromEnv } from '../egress/client.js'
 import { RunnerGateway, type GatewayOptions } from '../runner/gateway.js'
 import type { ApiToken } from '../repos/apiTokens.js'
+import type { MailTransporter } from '../services/email.js'
 
 function brokerFromEnv(): BrokerClient | null {
   const cfg = brokerConfigFromEnv()
@@ -35,6 +36,8 @@ export interface AppContext {
   runners: RunnerGateway
   /** Test doubles for http/ssh/imap (shared by the engine and the host check). */
   actions?: EngineOptions['actions']
+  /** Mail transport for account emails; undefined = from SMTP_* env, null = none (tests). */
+  mailer?: MailTransporter | null
 }
 
 export function createContext(
@@ -45,7 +48,7 @@ export function createContext(
   const ctx = { ...base, actions: engineOpts.actions } as AppContext
   ctx.hub = new EventHub(base.db)
   ctx.broker = extra.broker === undefined ? brokerFromEnv() : extra.broker
-  ctx.envs = createEnvManager({ db: base.db, box: base.box, runtime: extra.envRuntime ?? new DockerEnvRuntime(), broker: ctx.broker, mode: base.config.mode })
+  ctx.envs = createEnvManager({ db: base.db, box: base.box, runtime: extra.envRuntime ?? new DockerEnvRuntime(), broker: ctx.broker, mode: base.config.mode, requireVerifiedEmail: base.config.requireVerifiedEmail })
   ctx.engine = createEngine(ctx, engineOpts)
   ctx.runners = new RunnerGateway(ctx, extra.gateway)
   return ctx

@@ -9,9 +9,10 @@ export function LoginPage({ initialMode = 'login' }: { initialMode?: 'login' | '
   const { session, login, signup } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
-  const providers = useApi<{ oidc: { name: string } | null; signupOpen?: boolean }>('/api/auth/providers')
+  const providers = useApi<{ oidc: { name: string } | null; signupOpen?: boolean; mail?: boolean }>('/api/auth/providers')
   const callbackError = new URLSearchParams(location.search).get('error')
-  const next = (location.state as { from?: string } | null)?.from ?? '/'
+  const state = location.state as { from?: string; notice?: string } | null
+  const next = state?.from ?? '/'
   const [mode, setMode] = useState<'login' | 'signup'>(initialMode)
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -71,6 +72,11 @@ export function LoginPage({ initialMode = 'login' }: { initialMode?: 'login' | '
             </div>
           </>
         )}
+        {state?.notice && (
+          <div className="banner info" role="status">
+            {state.notice}
+          </div>
+        )}
         <form className="stack" style={{ gap: 14 }} onSubmit={submit}>
           <Field label="Email">{(id) => <input id={id} className="input" type="email" autoComplete="email" required value={email} onChange={(e) => setEmail(e.target.value)} />}</Field>
           <Field label="Password" hint={mode === 'signup' ? 'At least 8 characters.' : undefined}>
@@ -94,6 +100,11 @@ export function LoginPage({ initialMode = 'login' }: { initialMode?: 'login' | '
                 {(id) => <input id={id} className="input" value={orgName} onChange={(e) => setOrgName(e.target.value)} />}
               </Field>
             </>
+          )}
+          {mode === 'login' && providers.data?.mail && (
+            <Link to="/forgot-password" className="muted" style={{ fontSize: 13, alignSelf: 'flex-end' }}>
+              Forgot password?
+            </Link>
           )}
           <ErrorBanner error={error} />
           <button type="submit" className="btn primary" disabled={busy}>

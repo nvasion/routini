@@ -14,6 +14,8 @@
  *   HostConfig.CapDrop          ["ALL"]  (default)       Remove all Linux caps
  *   HostConfig.Memory           512 MiB (default)        Prevent OOM on host
  *   HostConfig.NanoCpus         1 × 10⁹ (1 CPU, default) Prevent CPU starvation
+ *   HostConfig.PidsLimit        512 (sandboxHostConfig)  Stop fork bombs
+ *   HostConfig.Runtime          ROUTINI_CONTAINER_RUNTIME Optional gVisor (runsc)
  *   AutoRemove                  false (explicit remove)  Guaranteed cleanup
  *
  * All defaults are applied inside `runContainer` and are configurable via
@@ -38,7 +40,7 @@
  */
 
 import Dockerode from 'dockerode'
-import { dockerFromEnv } from './dockerClient.js'
+import { dockerFromEnv, sandboxHostConfig } from './dockerClient.js'
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -193,6 +195,7 @@ export class DockerService {
           NanoCpus: Math.round(cpuCount * 1e9),
           CapDrop: capDrop,
           SecurityOpt: ['no-new-privileges:true'],
+          ...sandboxHostConfig(),
           AutoRemove: false,  // We manage removal explicitly for full control.
         },
       })
@@ -302,6 +305,7 @@ export class DockerService {
           NanoCpus: Math.round(cpuCount * 1e9),
           CapDrop: capDrop,
           SecurityOpt: ['no-new-privileges:true'],
+          ...sandboxHostConfig(),
           AutoRemove: false,
         },
       })

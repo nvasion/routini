@@ -22,6 +22,8 @@ export class ApiError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    /** The response body, for errors that carry more than a message. */
+    readonly data: unknown = null,
   ) {
     super(message)
   }
@@ -48,7 +50,7 @@ export async function api<T = unknown>(path: string, init: { method?: string; bo
   }
   if (!res.ok) {
     const msg = data && typeof data === 'object' && 'error' in data ? String((data as { error: unknown }).error) : `Request failed (${res.status})`
-    throw new ApiError(res.status, msg)
+    throw new ApiError(res.status, msg, data)
   }
   return data as T
 }

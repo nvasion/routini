@@ -82,7 +82,7 @@ export async function seedFirstAccount(ctx: AppContext): Promise<boolean> {
   return ctx.db.tx(async (q) => {
     await q.query('LOCK TABLE users IN SHARE ROW EXCLUSIVE MODE')
     if ((await countUsers(q)) > 0) return false
-    const user = await createUser(q, { email: seed.email, passwordHash: hash, displayName: 'Admin' })
+    const user = await createUser(q, { email: seed.email, passwordHash: hash, displayName: 'Admin', emailVerified: true })
     await addIdentity(q, user.id, 'local', user.email.toLowerCase())
     const org = await createOrg(q, { name: 'Default', slugBase: 'default', plan: ctx.config.mode === 'hosted' ? 'free' : 'selfhost' })
     await addMembership(q, org.id, user.id, 'owner')

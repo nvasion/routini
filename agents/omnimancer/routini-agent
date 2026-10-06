@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# Routini launcher for Omnimancer: maps the agent contract (agents/README.md)
+# onto `omn` headless mode. Run by entrypoint.sh from the work tree.
+#
+# In:  ROUTINI_PROMPT, ROUTINI_SYSTEM_PROMPT, ROUTINI_MODEL, ROUTINI_ENDPOINT,
+#      ROUTINI_ENDPOINT_KEY, ROUTINI_ENDPOINT_REGION, ROUTINI_MCP_FILE
+# Out: Omnimancer stream-json on stdout (Routini's parser reads it).
+# Exit: 0 success · 6 stopped early (iteration cap / repeated call) · other failure.
+#       Omnimancer's own 3 is remapped: 3 means "check failed" to Routini.
+set -uo pipefail
+
+# Failures go out as control lines, so the run shows the reason, not just the exit code.
+ctl_error() { printf '::routini::%s\n' "$(jq -cn --arg m "$1" '{type: "error", message: $m}')"; }
+die() { ctl_error "$1"; exit 1; }
+
+endpoint="${ROUTINI_ENDPOINT:-}"
+case "$endpoint" in
+  anthropic) provider=claude ;;
+  openrouter | digitalocean | openai | azure) provider="$endpoint" ;;
+  aws-bedrock) provider=bedrock ;;
+  google) provider=gemini ;;
+  '') die "ROUTINI_ENDPOINT is not set" ;;
+  *) die "Omnimancer does not support the \"$endpoint\" endpoint" ;;
+esac
+[ -n "${ROUTINI_ENDPOINT_KEY:-}" ] || die "no API key for the $endpoint endpoint"
+if [ "$provider" = bedrock ]; then
+  [ -n "${ROUTINI_ENDPOINT_REGION:-}" ] || die "the aws-bedrock endpoint needs a region"
+  [ -n "${ROUTINI_MODEL:-}" ] || die "Omnimancer on Bedrock needs a model id (Settings → Models, or the step's model)"
+fi
+
+cfg_dir="$HOME/.omnimancer"
+mkdir -p "$cfg_dir" || die "cannot create $cfg_dir"
+
+# Config file: provider, model and (Bedrock) region. The key stays in the
+# environment (OMNIMANCER_<PROVIDER>_API_KEY) — a key in the file would win
+# over the env and land on disk.
+jq -n \
+  --arg provider "$provider" \
+  --arg storage "$cfg_dir" \
+  --arg model "${ROUTINI_MODEL:-}" \
+  --arg region "${ROUTINI_ENDPOINT_REGION:-}" \
+  '{config_version: "2.0", default_provider: $provider, storage_path: $storage,
+    providers: {($provider): ({model: $model} + (if $region != "" then {aws_region: $region} else {} end))}}' \
+  > "$cfg_dir/config.json" || die "cannot write $cfg_dir/config.json"
+
+export "OMNIMANCER_$(printf '%s' "$provider" | tr '[:lower:]-' '[:upper:]_')_API_KEY=$ROUTINI_ENDPOINT_KEY"
+
+# Routini's system prompt: Omnimancer has no flag for one; it reads user
+# instructions from ~/.omnimancer/OMNIMANCER.md.
+if [ -n "${ROUTINI_SYSTEM_PROMPT:-}" ]; then
+  printf '%s\n' "$ROUTINI_SYSTEM_PROMPT" > "$cfg_dir/OMNIMANCER.md"
+fi
+
+if [ -n "${ROUTINI_MCP_FILE:-}" ]; then
+  printf 'routini-agent: Omnimancer does not load MCP servers in headless mode; the connected servers are unavailable to this run\n' >&2
+fi
+
+args=(-p "$ROUTINI_PROMPT" --output-format stream-json --dangerously-skip-permissions --provider "$provider")
+[ -n "${ROUTINI_MODEL:-}" ] && args+=(--model "$ROUTINI_MODEL")
+
+export OMNIMANCER_MAX_ITERATIONS="${OMNIMANCER_MAX_ITERATIONS:-200}"
+omn "${args[@]}"
+code=$?
+if [ "$code" -eq 3 ]; then
+  ctl_error 'Omnimancer stopped early (iteration cap or repeated tool call); the result is partial'
+  exit 6
+fi
+exit "$code"

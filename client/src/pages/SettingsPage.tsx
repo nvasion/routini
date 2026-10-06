@@ -1,4 +1,5 @@
-// Org settings: general & limits, members, models & keys, hosts, credentials, policy, alerts, notifications.
+// Org settings: general & limits, members, models & keys, hosts, credentials, policy, alerts, notifications;
+// plus your own account (AccountPanel).
 
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import { Link, NavLink, useParams } from 'react-router-dom'
@@ -12,6 +13,7 @@ import { PolicyPanel } from './PolicyPanel'
 import { AlertsPanel } from './AlertsPanel'
 import { TokensPanel } from './TokensPanel'
 import { TynhubLink } from './TynhubLink'
+import { AccountPanel } from './AccountPanel'
 
 const TABS: Array<[string, string]> = [
   ['general', 'General'],
@@ -23,6 +25,7 @@ const TABS: Array<[string, string]> = [
   ['alerts', 'Alerts'],
   ['tokens', 'API tokens'],
   ['notifications', 'Notifications'],
+  ['account', 'Your account'],
 ]
 
 export function SettingsPage() {
@@ -55,6 +58,7 @@ export function SettingsPage() {
       {tab === 'alerts' && <AlertsPanel />}
       {tab === 'tokens' && <TokensPanel />}
       {tab === 'notifications' && <Notifications />}
+      {tab === 'account' && <AccountPanel />}
     </>
   )
 }

@@ -364,6 +364,20 @@ describe('DockerService.runContainer', () => {
     expect(opts.HostConfig?.SecurityOpt).toContain('no-new-privileges:true')
   })
 
+  it('caps the number of processes', async () => {
+    const container = makeMockContainer()
+    const mockDocker = {
+      createContainer: vi.fn().mockResolvedValue(container),
+    } as unknown as Dockerode
+    const service = new DockerService(mockDocker)
+
+    await service.runContainer(BASE_CONFIG, 60_000)
+
+    const opts = (mockDocker.createContainer as ReturnType<typeof vi.fn>).mock.calls[0][0] as Dockerode.ContainerCreateOptions
+    expect(opts.HostConfig?.PidsLimit).toBe(512)
+    expect(opts.HostConfig?.Runtime).toBeUndefined()
+  })
+
   it('runs as "nobody" user by default', async () => {
     const container = makeMockContainer()
     const mockDocker = {

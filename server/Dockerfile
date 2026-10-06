@@ -21,6 +21,7 @@ RUN mkdir -p /app/data && chown node:node /app/data
 ENV ROUTINI_DATA_DIR=/app/data/pg
 EXPOSE 3001
 USER node
-HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-  CMD node -e "fetch('http://localhost:'+(process.env.PORT||3001)+'/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+# No image HEALTHCHECK: this image runs as the API (:3001), the worker (no
+# port) and the credential broker (:3129), so each deployment checks its own
+# role (docker-compose.yml, App Platform's health_check, the agents host).
 CMD ["node", "dist/index.js"]

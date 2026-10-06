@@ -3,7 +3,7 @@
 
 import { describe, it, expect } from 'vitest'
 import { pgConfig, poolMax } from '../server/src/db/drivers'
-import { dockerHostLabel, dockerOptions } from '../server/src/services/dockerClient'
+import { dockerHostLabel, dockerOptions, sandboxHostConfig } from '../server/src/services/dockerClient'
 import { clientIpFromHeader } from '../server/src/app'
 import { loadConfig } from '../server/src/config'
 import type { Request, Response } from 'express'
@@ -92,5 +92,21 @@ describe('clientIpFromHeader', () => {
   it('is read from ROUTINI_CLIENT_IP_HEADER', () => {
     expect(loadConfig({ NODE_ENV: 'test', ROUTINI_CLIENT_IP_HEADER: 'DO-Connecting-IP' }).clientIpHeader).toBe('do-connecting-ip')
     expect(loadConfig({ NODE_ENV: 'test' }).clientIpHeader).toBeUndefined()
+  })
+})
+
+describe('sandboxHostConfig', () => {
+  it('caps processes by default and leaves the runtime to Docker', () => {
+    expect(sandboxHostConfig({})).toEqual({ PidsLimit: 512 })
+  })
+
+  it('selects gVisor and a custom PID cap from the environment', () => {
+    expect(sandboxHostConfig({ ROUTINI_CONTAINER_RUNTIME: 'runsc', ROUTINI_CONTAINER_PIDS_LIMIT: '256' })).toEqual({ PidsLimit: 256, Runtime: 'runsc' })
+  })
+
+  it('rejects unusable values', () => {
+    expect(() => sandboxHostConfig({ ROUTINI_CONTAINER_PIDS_LIMIT: '4' })).toThrow(/at least 16/)
+    expect(() => sandboxHostConfig({ ROUTINI_CONTAINER_PIDS_LIMIT: 'lots' })).toThrow(/at least 16/)
+    expect(() => sandboxHostConfig({ ROUTINI_CONTAINER_RUNTIME: 'runsc; rm -rf /' })).toThrow(/Invalid ROUTINI_CONTAINER_RUNTIME/)
   })
 })

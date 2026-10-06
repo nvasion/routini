@@ -31,6 +31,12 @@ services:
     expose: ["3001"]
     depends_on:
       postgres: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3001/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
     environment: &server-env
       NODE_ENV: production
       DATABASE_URL: "postgres://routini:${POSTGRES_PASSWORD:-routini}@postgres:5432/routini"

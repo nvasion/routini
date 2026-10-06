@@ -62,12 +62,13 @@ const me = (session: string) => t.request.get('/api/auth/me').set('Cookie', sess
 describe('sign in with TynHub', () => {
   it('advertises the provider and creates a new account from verified claims', async () => {
     await app({ signup: 'open' })
-    expect((await t.request.get('/api/auth/providers')).body).toEqual({ oidc: { name: 'TynHub' }, signupOpen: true })
+    expect((await t.request.get('/api/auth/providers')).body).toEqual({ oidc: { name: 'TynHub' }, signupOpen: true, mail: false, emailVerification: false })
     const { cb, location, session } = await signIn({ sub: 'u-1', email: 'Ada@Example.com', email_verified: true, name: 'Ada' }, { next: '/o/x/inbox' })
     expect(cb.status).toBe(302)
     expect(location).toBe('http://console.test/o/x/inbox')
     const who = (await me(session!)).body
-    expect(who.user).toMatchObject({ email: 'ada@example.com', displayName: 'Ada' })
+    // The provider verified the email, so Routini counts it as verified.
+    expect(who.user).toMatchObject({ email: 'ada@example.com', displayName: 'Ada', emailVerified: true })
     expect(who.orgs).toHaveLength(1)
     expect(who.orgs[0].role).toBe('owner')
     // No password: password login is not possible for this account.
