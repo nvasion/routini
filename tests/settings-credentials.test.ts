@@ -60,6 +60,13 @@ describe('settings', () => {
     expect(res.body.ai.agents.claude).toMatchObject({ endpoint: 'aws-bedrock', region: 'us-gov-west-1' })
   })
 
+  it('requires a region for every agent on AWS Bedrock', async () => {
+    expect((await u.put(`${base()}/settings`, { ai: { agents: { omnimancer: { endpoint: 'aws-bedrock' } } } })).status).toBe(400)
+    const res = await u.put(`${base()}/settings`, { ai: { agents: { omnimancer: { endpoint: 'aws-bedrock', region: 'ap-southeast-2' } } } })
+    expect(res.status).toBe(200)
+    expect(res.body.ai.agents.omnimancer).toMatchObject({ endpoint: 'aws-bedrock', region: 'ap-southeast-2' })
+  })
+
   it('stores endpoint keys write-only', async () => {
     const secret = 'sk-ant-api03-very-secret-value'
     const res = await u.put(`${base()}/settings`, { endpointApiKeys: { anthropic: secret } })
