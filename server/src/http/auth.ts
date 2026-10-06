@@ -8,6 +8,9 @@
 //   – Programmatic clients send it as a Bearer token; CSRF does not apply.
 //   – Logout revokes the jti in Postgres, so revocation survives restarts.
 //
+// A password reset (http/account.ts) sets users.sessions_valid_after, which
+// invalidates every session issued before it.
+//
 // Signup policy (config.signup): 'open' (hosted), 'first-user-only' (self-host
 // default: whoever installs it creates the first account), or 'closed'.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -19,6 +22,7 @@ import rateLimit from 'express-rate-limit'
 import { randomBytes, randomUUID } from 'node:crypto'
 import type { IncomingHttpHeaders } from 'node:http'
 import { API_TOKEN_PREFIX, resolveApiToken, type ApiToken } from '../repos/apiTokens.js'
+import { accountMail } from './accountMail.js'
 import { ah, badRequest, currentUser, HttpError, type AppContext } from './common.js'
 import {
   addIdentity,
@@ -38,13 +42,16 @@ import {
 export const COOKIE_NAME = 'routini_token'
 const CSRF_HEADER = 'x-csrf-token'
 const TOKEN_TTL_SEC = 24 * 60 * 60
-const MIN_PASSWORD = 8
-const MAX_PASSWORD = 200
+export const MIN_PASSWORD = 8
+export const MAX_PASSWORD = 200
 
 interface TokenPayload {
   sub: string
   jti: string
   csrf: string
+  /** Issue time in milliseconds (JWT's iat is whole seconds). Absent on sessions from before it existed. */
+  iatMs?: number
+  iat?: number
   exp?: number
 }
 
@@ -64,6 +71,8 @@ export interface Auth {
   authenticate: (headers: IncomingHttpHeaders) => Promise<Session | null>
   /** Starts a console session (cookie) for a user; used by external sign-in (OIDC). */
   issueSession: (res: Response, userId: string) => { token: string; csrfToken: string }
+  /** Clears the session cookie. */
+  clearSession: (res: Response) => void
 }
 
 export function publicMemberships(ms: OrgMembership[]) {
@@ -88,7 +97,7 @@ export function createAuth(ctx: AppContext): Auth {
 
   function issueSession(res: Response, userId: string) {
     const csrf = randomBytes(32).toString('hex')
-    const token = jwt.sign({ sub: userId, jti: randomUUID(), csrf }, config.jwtSecret, { expiresIn: TOKEN_TTL_SEC })
+    const token = jwt.sign({ sub: userId, jti: randomUUID(), csrf, iatMs: Date.now() }, config.jwtSecret, { expiresIn: TOKEN_TTL_SEC })
     res.cookie(COOKIE_NAME, token, { ...cookieOpts, maxAge: TOKEN_TTL_SEC * 1000 })
     return { token, csrfToken: csrf }
   }
@@ -149,6 +158,9 @@ export function createAuth(ctx: AppContext): Auth {
       })
 
       const session = issueSession(res, result.user.id)
+      void accountMail(ctx)
+        .sendVerification(result.user.id, result.user.email)
+        .catch((err) => console.error('[auth] verification email failed:', (err as Error).message))
       res.status(201).json({ ...session, user: publicUser(result.user), orgs: publicMemberships(result.orgs) })
     }),
   )
@@ -200,6 +212,8 @@ export function createAuth(ctx: AppContext): Auth {
     const payload = await verify(token)
     const user = payload ? await findUserById(db, payload.sub) : null
     if (!payload || !user) return null
+    // Revoked by a password reset (both times come from this server's clock).
+    if (user.sessionsValidAfter && (payload.iatMs ?? (payload.iat ?? 0) * 1000) <= Date.parse(user.sessionsValidAfter)) return null
     return { user: publicUser(user), viaCookie: Boolean(cookieToken), csrf: payload.csrf }
   }
 
@@ -243,7 +257,9 @@ export function createAuth(ctx: AppContext): Auth {
     }),
   )
 
-  return { router, requireAuth, requireCsrf, authenticate, issueSession }
+  const clearSession = (res: Response) => void res.clearCookie(COOKIE_NAME, cookieOpts)
+
+  return { router, requireAuth, requireCsrf, authenticate, issueSession, clearSession }
 }
 
 function bearer(req: Request): string | null {

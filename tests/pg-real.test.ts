@@ -6,7 +6,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { openDb, type Db } from '../server/src/db/index'
 import { withOwnerClient } from '../server/src/db/drivers'
-import { createOrg } from '../server/src/repos/identity'
+import { createOrg, deleteOrg } from '../server/src/repos/identity'
 import { getSecret, putSecret } from '../server/src/repos/credentials'
 import { createSecretBox } from '../server/src/crypto/secrets'
 import { TEST_MASTER_KEY } from './helpers/testApp'
@@ -134,5 +134,16 @@ describe.skipIf(!url)('real Postgres (non-superuser owner)', () => {
     for (let i = 0; i < 50 && got.length === 0; i++) await new Promise((r) => setTimeout(r, 20))
     await stop()
     expect(got).toEqual(['hi'])
+  })
+
+  // Account deletion: as the app role, deleting an org cascades through its
+  // RLS-forced tenant rows (foreign-key actions run as the table owner).
+  it('deleting an org removes its tenant rows and only those', async () => {
+    const c = (await db.tx((q) => createOrg(q, { name: 'C', slugBase: 'pg-c', plan: 'free' }))).id
+    await db.org(c, (q) => putSecret(q, box, c, 'kc', 'vc', null))
+    await db.tx((q) => deleteOrg(q, c))
+    expect(await db.query('SELECT 1 FROM orgs WHERE id = $1', [c])).toHaveLength(0)
+    expect(await db.system((q) => q.query('SELECT 1 FROM credentials WHERE org_id = $1', [c]))).toHaveLength(0)
+    expect(await db.org(a, (q) => getSecret(q, box, a, 'ka'))).toBe('va')
   })
 })

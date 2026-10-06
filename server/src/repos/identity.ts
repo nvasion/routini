@@ -17,11 +17,15 @@ export interface User {
   id: string
   email: string
   displayName: string
+  /** The user proved they own `email` (a link we sent, or an identity provider that verified it). */
+  emailVerified: boolean
   createdAt: string
 }
 
 export interface UserWithHash extends User {
   passwordHash: string | null
+  /** Sessions issued before this are invalid (set by a password reset). */
+  sessionsValidAfter: string | null
 }
 
 export interface OrgLimits {
@@ -61,6 +65,8 @@ interface UserRow {
   email: string
   display_name: string
   password_hash: string | null
+  email_verified_at: Date | string | null
+  sessions_valid_after: Date | string | null
   created_at: Date | string
 }
 
@@ -77,7 +83,15 @@ interface OrgRow {
 const iso = (v: Date | string): string => (v instanceof Date ? v.toISOString() : new Date(v).toISOString())
 
 function toUser(r: UserRow): UserWithHash {
-  return { id: r.id, email: r.email, displayName: r.display_name, passwordHash: r.password_hash, createdAt: iso(r.created_at) }
+  return {
+    id: r.id,
+    email: r.email,
+    displayName: r.display_name,
+    emailVerified: r.email_verified_at !== null,
+    passwordHash: r.password_hash,
+    sessionsValidAfter: r.sessions_valid_after === null ? null : iso(r.sessions_valid_after),
+    createdAt: iso(r.created_at),
+  }
 }
 
 export function effectiveLimits(plan: string, overrides: Partial<OrgLimits> | null | undefined): OrgLimits {
@@ -99,7 +113,7 @@ function toOrg(r: OrgRow): Org {
   return { id: r.id, slug: r.slug, name: r.name, plan: r.plan, limits: effectiveLimits(r.plan, r.limits), createdAt: iso(r.created_at), tynhubOrg: r.tynhub_org }
 }
 
-const USER_COLS = 'id, email, display_name, password_hash, created_at'
+const USER_COLS = 'id, email, display_name, password_hash, email_verified_at, sessions_valid_after, created_at'
 const ORG_COLS = 'id, slug, name, plan, limits, created_at, tynhub_org'
 
 // ── Users ────────────────────────────────────────────────────────────────────
@@ -111,11 +125,12 @@ export async function countUsers(q: Queryable): Promise<number> {
 
 export async function createUser(
   q: Queryable,
-  input: { email: string; passwordHash: string | null; displayName?: string },
+  input: { email: string; passwordHash: string | null; displayName?: string; emailVerified?: boolean },
 ): Promise<UserWithHash> {
   const [row] = await q.query<UserRow>(
-    `INSERT INTO users (email, password_hash, display_name) VALUES ($1, $2, $3) RETURNING ${USER_COLS}`,
-    [input.email.trim(), input.passwordHash, input.displayName?.trim() ?? ''],
+    `INSERT INTO users (email, password_hash, display_name, email_verified_at)
+     VALUES ($1, $2, $3, CASE WHEN $4 THEN now() END) RETURNING ${USER_COLS}`,
+    [input.email.trim(), input.passwordHash, input.displayName?.trim() ?? '', input.emailVerified === true],
   )
   return toUser(row!)
 }
@@ -134,6 +149,24 @@ export async function setPasswordHash(q: Queryable, userId: string, hash: string
   await q.query('UPDATE users SET password_hash = $2 WHERE id = $1', [userId, hash])
 }
 
+export async function markEmailVerified(q: Queryable, userId: string): Promise<void> {
+  await q.query('UPDATE users SET email_verified_at = coalesce(email_verified_at, now()) WHERE id = $1', [userId])
+}
+
+/**
+ * Invalidates every session issued so far (API tokens are separate and stay).
+ * The cut-off comes from the app's clock, which also stamps sessions, so a
+ * database clock that runs ahead can't reject a sign-in right after a reset.
+ */
+export async function revokeSessions(q: Queryable, userId: string, now: Date = new Date()): Promise<void> {
+  await q.query('UPDATE users SET sessions_valid_after = $2 WHERE id = $1', [userId, now])
+}
+
+/** Deletes a user; memberships, identities, API tokens and account tokens go with it. */
+export async function deleteUser(q: Queryable, userId: string): Promise<void> {
+  await q.query('DELETE FROM users WHERE id = $1', [userId])
+}
+
 export async function addIdentity(q: Queryable, userId: string, provider: string, subject: string): Promise<void> {
   await q.query(
     'INSERT INTO identities (provider, subject, user_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING',
@@ -142,7 +175,7 @@ export async function addIdentity(q: Queryable, userId: string, provider: string
 }
 
 export function publicUser(u: UserWithHash): User {
-  return { id: u.id, email: u.email, displayName: u.displayName, createdAt: u.createdAt }
+  return { id: u.id, email: u.email, displayName: u.displayName, emailVerified: u.emailVerified, createdAt: u.createdAt }
 }
 
 // ── Orgs ─────────────────────────────────────────────────────────────────────
@@ -202,6 +235,21 @@ export async function updateOrg(
   return row ? toOrg(row) : null
 }
 
+/** Deletes an org and, by cascade, every tenant row it owns. Docker resources are the caller's job. */
+export async function deleteOrg(q: Queryable, orgId: string): Promise<void> {
+  await q.query('DELETE FROM orgs WHERE id = $1', [orgId])
+}
+
+/** True when an owner of the org has a verified email (the gate on agent steps and environments). */
+export async function orgHasVerifiedOwner(q: Queryable, orgId: string): Promise<boolean> {
+  const rows = await q.query(
+    `SELECT 1 FROM memberships m JOIN users u ON u.id = m.user_id
+     WHERE m.org_id = $1 AND m.role = 'owner' AND u.email_verified_at IS NOT NULL LIMIT 1`,
+    [orgId],
+  )
+  return rows.length > 0
+}
+
 // ── Memberships ──────────────────────────────────────────────────────────────
 
 export async function addMembership(q: Queryable, orgId: string, userId: string, role: Role): Promise<void> {
@@ -242,7 +290,7 @@ export async function listOrgsForUser(q: Queryable, userId: string): Promise<Org
 
 export async function listMembers(q: Queryable, orgId: string): Promise<Array<User & { role: Role }>> {
   const rows = await q.query<UserRow & { role: Role }>(
-    `SELECT u.id, u.email, u.display_name, u.password_hash, u.created_at, m.role
+    `SELECT u.id, u.email, u.display_name, u.password_hash, u.email_verified_at, u.sessions_valid_after, u.created_at, m.role
      FROM memberships m JOIN users u ON u.id = m.user_id
      WHERE m.org_id = $1 ORDER BY m.created_at`,
     [orgId],

@@ -498,6 +498,29 @@ ALTER TABLE jobs ADD COLUMN hidden boolean NOT NULL DEFAULT false;
 ALTER TABLE orgs ADD COLUMN tynhub_org text;
 `,
   },
+  {
+    version: 8,
+    name: 'Email verification, password reset, session revocation',
+    sql: `
+ALTER TABLE users ADD COLUMN email_verified_at timestamptz;
+-- Sessions (JWTs) issued before this are rejected; a password reset sets it.
+ALTER TABLE users ADD COLUMN sessions_valid_after timestamptz;
+-- Users created by an identity provider signed in with a verified email.
+UPDATE users SET email_verified_at = created_at WHERE password_hash IS NULL;
+
+-- Single-use password-reset and verification tokens; only their SHA-256 is stored.
+CREATE TABLE auth_tokens (
+  id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id    uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  purpose    text NOT NULL CHECK (purpose IN ('reset', 'verify')),
+  token_hash text NOT NULL UNIQUE,
+  expires_at timestamptz NOT NULL,
+  used_at    timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX auth_tokens_user_idx ON auth_tokens (user_id, purpose, created_at);
+`,
+  },
 ]
 
 /** Grants the app role access to everything a migration created. Runs after every migration. */

@@ -29,7 +29,7 @@ import { INTEGRATIONS } from '../integrations/catalog.js'
 import type { BrokerClient } from '../egress/client.js'
 import { PLACEHOLDER, type CredentialBinding } from '../egress/types.js'
 import { getIntegrationCredentials } from '../repos/integrations.js'
-import { effectiveLimits, getOrgById } from '../repos/identity.js'
+import { effectiveLimits, getOrgById, orgHasVerifiedOwner } from '../repos/identity.js'
 import type { EnvRuntime } from '../services/envRuntime.js'
 import { redact } from '../utils/redact.js'
 
@@ -77,7 +77,15 @@ const CA_SETUP = [
 
 const ENV_SESSION_HOURS = 24
 
-export function createEnvManager(deps: { db: Db; box: SecretBox; runtime: EnvRuntime; broker?: BrokerClient | null; mode?: 'selfhost' | 'hosted' }): EnvManager {
+export function createEnvManager(deps: {
+  db: Db
+  box: SecretBox
+  runtime: EnvRuntime
+  broker?: BrokerClient | null
+  mode?: 'selfhost' | 'hosted'
+  /** Starting needs an org owner with a verified email (config.requireVerifiedEmail). */
+  requireVerifiedEmail?: boolean
+}): EnvManager {
   const { db, box, runtime } = deps
   const broker = deps.broker ?? null
 
@@ -120,6 +128,9 @@ export function createEnvManager(deps: { db: Db; box: SecretBox; runtime: EnvRun
   }
 
   async function checkCapacity(env: Environment): Promise<void> {
+    if (deps.requireVerifiedEmail && !(await orgHasVerifiedOwner(db, env.orgId))) {
+      throw new EnvError(403, 'Verify your email address (Settings → Account) before starting environments')
+    }
     const org = await getOrgById(db, env.orgId)
     const limit = effectiveLimits(org?.plan ?? 'free', org?.limits).maxRunningEnvironments
     const running = await db.org(env.orgId, (q) => countRunningEnvironments(q, env.orgId, env.id))
