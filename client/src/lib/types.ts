@@ -66,6 +66,8 @@ export interface AgentConfig {
   check?: { command: string }
   model?: string
   environmentId?: string
+  /** Run on a fleet host (routini-runner) instead of the Routini sandbox. */
+  runOn?: { hostId: string } | { host: 'alert' }
   /** Routini's own MCP tools for the agent. */
   routini?: boolean
 }

@@ -57,6 +57,8 @@ export interface AgentConfig {
   model?: string
   /** Run inside this persistent environment (and its repository) instead of a fresh container. */
   environmentId?: string
+  /** Run on this fleet host (routini-runner with the agents capability) instead of the Routini sandbox. */
+  runOn?: { hostId: string } | { host: 'alert' }
   /** Give the agent Routini's own MCP tools (fleet commands, runs, incidents) with a run-scoped token. */
   routini?: boolean
   resources?: { cpus?: number; memoryMb?: number }
@@ -253,6 +255,17 @@ function parseAction(c: Record<string, unknown>, p: string): ActionConfig {
   }
 }
 
+/** `runOn` names exactly one target: a fleet host id, or the alert's host. */
+function parseRunOn(raw: unknown, p: string): NonNullable<AgentConfig['runOn']> {
+  const bad = (): never => fail(`${p}.runOn must be { hostId } or { host: 'alert' }`)
+  if (!isObj(raw)) return bad()
+  const hostId = raw['hostId']
+  const host = raw['host']
+  if ((hostId === undefined) === (host === undefined)) return bad()
+  if (hostId !== undefined) return typeof hostId === 'string' && UUID_RE.test(hostId) ? { hostId } : bad()
+  return host === 'alert' ? { host: 'alert' } : bad()
+}
+
 function parseAgent(c: Record<string, unknown>, p: string): AgentConfig {
   if (!AGENT_IDS.includes(c['agent'] as AgentId)) fail(`${p}.agent must be one of: ${AGENT_IDS.join(', ')}`)
   const cfg: AgentConfig = { agent: c['agent'] as AgentId, prompt: str(c['prompt'], `${p}.prompt`, 50_000)! }
@@ -271,6 +284,11 @@ function parseAgent(c: Record<string, unknown>, p: string): AgentConfig {
     if (!UUID_RE.test(envId)) fail(`${p}.environmentId must be an environment id`)
     if (cfg.repo) fail(`${p}: use either environmentId (its repository) or repo, not both`)
     cfg.environmentId = envId
+  }
+  if (c['runOn'] !== undefined) {
+    const runOn = parseRunOn(c['runOn'], p)
+    if (cfg.environmentId) fail(`${p}: run on a fleet host or in an environment, not both`)
+    cfg.runOn = runOn
   }
   if (c['output'] !== undefined) {
     if (!['pr', 'branch', 'none'].includes(c['output'] as string)) fail(`${p}.output must be one of: pr, branch, none`)
