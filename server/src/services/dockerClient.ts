@@ -61,6 +61,24 @@ export function dockerHostLabel(env: NodeJS.ProcessEnv = process.env): string {
   return 'local Docker'
 }
 
+const DEFAULT_PIDS_LIMIT = 512
+
+/**
+ * HostConfig every sandbox container (agent runs, environments) gets on top of
+ * its own limits: a PID cap so a fork bomb can't starve other tenants, and the
+ * OCI runtime when ROUTINI_CONTAINER_RUNTIME is set (e.g. `runsc` for gVisor,
+ * which gives each container its own kernel). ROUTINI_CONTAINER_PIDS_LIMIT
+ * overrides the cap.
+ */
+export function sandboxHostConfig(env: NodeJS.ProcessEnv = process.env): { PidsLimit: number; Runtime?: string } {
+  const raw = env['ROUTINI_CONTAINER_PIDS_LIMIT']?.trim()
+  const pids = raw ? Number(raw) : DEFAULT_PIDS_LIMIT
+  if (!Number.isInteger(pids) || pids < 16) throw new Error('ROUTINI_CONTAINER_PIDS_LIMIT must be an integer of at least 16')
+  const runtime = env['ROUTINI_CONTAINER_RUNTIME']?.trim()
+  if (runtime && !/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(runtime)) throw new Error(`Invalid ROUTINI_CONTAINER_RUNTIME: "${runtime}"`)
+  return { PidsLimit: pids, ...(runtime ? { Runtime: runtime } : {}) }
+}
+
 let shared: Dockerode | undefined
 
 /** One client per process, built from the environment on first use. */

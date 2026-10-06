@@ -59,7 +59,8 @@ export class BrokerClient {
 
   /** Ensures the org's internal network exists and the proxy is attached to it. Returns its name. */
   network(orgId: string): Promise<string> {
-    const name = `${this.cfg.networkPrefix}-${orgId.slice(0, 8)}`
+    // The full org id: a prefix could collide and put two orgs on one network.
+    const name = `${this.cfg.networkPrefix}-${orgId}`
     let p = this.ready.get(name)
     if (!p) {
       p = this.ensureNetwork(name, orgId).catch((err) => {
