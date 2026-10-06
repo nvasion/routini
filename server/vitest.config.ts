@@ -15,8 +15,11 @@ export default defineConfig({
     include: ['tests/**/*.test.ts', 'server/tests/**/*.test.ts', 'server/src/**/*.test.ts'],
     environment: 'node',
     // Each test file boots embedded Postgres (PGlite) and clones a migrated snapshot;
-    // under full-suite parallelism that can exceed vitest's 5s default.
-    testTimeout: 30_000,
+    // under full-suite parallelism that can exceed vitest's 5s default. The first
+    // test in a file pays that boot (~11s alone, more when the whole suite is
+    // competing for cores) while later ones reuse the snapshot in ~1.5s, so the
+    // budget has to cover the cold start, not the steady state.
+    testTimeout: 60_000,
     hookTimeout: 60_000,
   },
   resolve: {
