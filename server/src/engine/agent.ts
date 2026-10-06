@@ -9,16 +9,26 @@
 //            (check, commit, pushed, no_changes, error)
 //   exit     0 success · 3 check failed · anything else failure
 // The worker — not the container — opens the pull request.
+//
+// Three places an agent can run, all sharing the stream parser and everything
+// after the container exits (facts, cost, pull request):
+//   sandbox      a fresh container on Routini's Docker host (the default)
+//   environment  a persistent container on that same host
+//   fleet        config.runOn: a container the org's own routini-runner starts
+//                on one of its hosts, behind that host's egress proxy
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { randomUUID } from 'node:crypto'
+import { randomBytes, randomUUID } from 'node:crypto'
 import { DockerService } from '../services/docker.js'
+import type { Queryable } from '../db/index.js'
 import { getOrgSettings, getEndpointKey, type AgentEndpointConfig } from '../repos/settings.js'
 import { getBrokeredIntegrationAccess, getIntegrationCredentials, getScopedIntegrationEnv } from '../repos/integrations.js'
-import { mcpAccessFor } from '../repos/mcp.js'
+import { mcpAccessFor, type ExtraMcpServer } from '../repos/mcp.js'
 import { createApiToken, revokeApiToken, runActor } from '../repos/apiTokens.js'
 import { getPolicy } from '../repos/policy.js'
-import { PLACEHOLDER, type CredentialBinding } from '../egress/types.js'
+import { getHost, type Host } from '../repos/hosts.js'
+import { PLACEHOLDER, type CredentialBinding, type EgressSession } from '../egress/types.js'
+import { sandboxNetworkName, sandboxNetworkPrefix } from '../egress/client.js'
 import { usageToday } from '../repos/runs.js'
 import { createPullRequest, parseGithubRepo } from '../integrations/github.js'
 import type { FetchFn } from '../integrations/providers.js'
@@ -29,14 +39,18 @@ import { addEnvironmentEvent, type Environment } from '../repos/environments.js'
 import type { AgentConfig } from './spec.js'
 import type { StepContext, StepExecutor, StepResult } from './types.js'
 import { emitPlacement } from './placement.js'
-import { dockerHostLabel } from '../services/dockerClient.js'
+import { dockerHostLabel, sandboxHostConfig } from '../services/dockerClient.js'
 import { orgHasVerifiedOwner } from '../repos/identity.js'
+import { runAgentOnRunner, type RunnerAgentOutcome } from '../runner/agent.js'
+import { NO_AGENTS_ERROR } from '../runner/gateway.js'
 
 export const DEFAULT_AGENT_TIMEOUT_SEC = 30 * 60
 const DEFAULT_CPUS = 2
 const DEFAULT_MEMORY_MB = 4096
 /** uid:gid of the non-root `agent` user baked into Routini's agent images. */
 const AGENT_USER = '1000:1000'
+/** How long the run-scoped token and the egress session outlive the step's own timeout. */
+const GRACE_SEC = 600
 
 export const SYSTEM_PROMPT = [
   'You are running unattended inside Routini, an automation platform. No human is watching this session.',
@@ -51,6 +65,13 @@ export interface AgentRunnerOptions {
   docker?: AgentDocker
   /** Image per agent. Defaults from ROUTINI_AGENT_IMAGE_<AGENT>, else routini/agent-claude:latest for claude. */
   images?: Partial<Record<AgentId, string>>
+  /** Image per agent on a fleet host. Defaults from ROUTINI_FLEET_AGENT_IMAGE_<AGENT>. */
+  fleetImages?: Partial<Record<AgentId, string>>
+  /** Egress proxy image a fleet host runs beside the agent. Default: ROUTINI_FLEET_EGRESS_IMAGE. */
+  fleetEgressImage?: string
+  /** Fleet agents: how long to wait for an offline runner, and the result poll interval. */
+  runnerOfflineGraceMs?: number
+  runnerPollMs?: number
   /** fetch for the GitHub API (tests). */
   fetchImpl?: FetchFn
 }
@@ -61,6 +82,22 @@ export function defaultAgentImages(env: NodeJS.ProcessEnv = process.env): Partia
     omnimancer: env['ROUTINI_AGENT_IMAGE_OMNIMANCER'] || undefined,
     opencode: env['ROUTINI_AGENT_IMAGE_OPENCODE'] || undefined,
   }
+}
+
+/**
+ * Images a fleet host pulls for `runOn` steps. Separate from the sandbox's:
+ * a runner pulls from a registry, while the sandbox may use a local build.
+ */
+export function fleetAgentImages(env: NodeJS.ProcessEnv = process.env): Partial<Record<AgentId, string>> {
+  return {
+    claude: env['ROUTINI_FLEET_AGENT_IMAGE_CLAUDE'] || 'ghcr.io/nvasion/routini-agent-claude:latest',
+    omnimancer: env['ROUTINI_FLEET_AGENT_IMAGE_OMNIMANCER'] || undefined,
+    opencode: env['ROUTINI_FLEET_AGENT_IMAGE_OPENCODE'] || undefined,
+  }
+}
+
+export function fleetEgressImage(env: NodeJS.ProcessEnv = process.env): string {
+  return env['ROUTINI_FLEET_EGRESS_IMAGE']?.trim() || 'ghcr.io/nvasion/routini-egress:latest'
 }
 
 class StepFailure extends Error {}
@@ -109,9 +146,97 @@ function routiniEndpointEnv(cfg: AgentEndpointConfig, key: string): Record<strin
   return env
 }
 
+/** When a brokered credential stops working: the step's own timeout plus a grace period. */
+const egressExpiry = (timeoutSec: number) => new Date(Date.now() + (timeoutSec + GRACE_SEC) * 1000).toISOString()
+
+/** Logs and emits what an egress proxy refused, wherever the agent ran. */
+async function reportBlockedEgress(ctx: StepContext, blocked: string[] | undefined): Promise<void> {
+  if (!blocked?.length) return
+  await ctx.log(`Blocked outbound connections (not on the org's allow-list): ${blocked.join(', ')}`)
+  await ctx.emit('egress.blocked', { hosts: blocked })
+}
+
+/**
+ * The fleet host a `runOn` step names, with the runner that starts the
+ * container on it. Every failure names the host and what to do about it.
+ */
+async function fleetTarget(ctx: StepContext, hostId: string): Promise<{ host: Host; runnerId: string }> {
+  const orgId = ctx.org.id
+  const host = await ctx.app.db.org(orgId, (q) => getHost(q, orgId, hostId))
+  if (!host) throw new StepFailure(`The host this agent step runs on (${hostId}) has left the fleet; point the step at another host`)
+  if (host.transport !== 'runner') {
+    throw new StepFailure(`Host "${host.name}" is reached over SSH; agents need it connected with routini-runner`)
+  }
+  if (!host.runner || host.runner.revoked) {
+    throw new StepFailure(`Host "${host.name}" has no active runner; install routini-runner on it (Fleet → Add server)`)
+  }
+  if (!host.runner.capabilities.includes('agents')) throw new StepFailure(`Host "${host.name}": ${NO_AGENTS_ERROR}`)
+  return { host, runnerId: host.runner.id }
+}
+
+/**
+ * A runner outcome in the shape the code after the run reads. A non-zero exit
+ * is left to it (it knows about failed checks and what the agent printed);
+ * anything else the runner reported — offline, disconnected, timed out — is
+ * already a sentence for the user.
+ */
+function fleetResult(outcome: RunnerAgentOutcome, aborted: boolean): { error?: string; exitCode: number | null; timedOut: boolean; aborted: boolean } {
+  const unexplained = !outcome.ok && outcome.exitCode === null && !aborted
+  return { exitCode: outcome.exitCode, timedOut: false, aborted, ...(unexplained ? { error: outcome.error } : {}) }
+}
+
+interface AgentAccess {
+  env: Record<string, string>
+  bindings: CredentialBinding[]
+  hosts: string[]
+  secrets: string[]
+}
+
+/**
+ * What the agent may reach: its model endpoint, in-scope integrations and MCP
+ * servers. Brokered means the container sees placeholders while an egress proxy
+ * holds the real values and binds them per host; direct puts them in the env.
+ * A parameter, not a look at ctx.app.broker: fleet steps are always brokered,
+ * by the proxy their own host runs.
+ */
+async function agentAccess(
+  q: Queryable,
+  ctx: StepContext,
+  cfg: AgentConfig,
+  o: { brokered: boolean; routiniMcp: ExtraMcpServer[]; repoUrl?: string },
+): Promise<AgentAccess> {
+  const orgId = ctx.org.id
+  const box = ctx.app.box
+  const settings = await getOrgSettings(q, orgId)
+  const endpointCfg = settings.ai.agents[cfg.agent]
+  const key = endpointCfg.endpoint === 'gateway' ? await getEndpointKey(q, box, orgId, 'anthropic') : await getEndpointKey(q, box, orgId, endpointCfg.endpoint)
+  const model = cfg.model ?? endpointCfg.model
+  const mcp = await mcpAccessFor(q, box, orgId, cfg.agent, o.brokered, o.routiniMcp)
+  const common = { ...(model ? { ROUTINI_MODEL: model } : {}), ...(mcp.config ? { ROUTINI_MCP_CONFIG: JSON.stringify(mcp.config) } : {}) }
+  if (!o.brokered) {
+    const integrationEnv = await getScopedIntegrationEnv(q, box, orgId, cfg.agent)
+    const modelEnv = cfg.agent === 'claude' ? claudeEndpointEnv(endpointCfg, key) : routiniEndpointEnv(endpointCfg, key ?? '')
+    const env: Record<string, string> = { ...integrationEnv, ...modelEnv, ...common }
+    return { env, bindings: [], hosts: [], secrets: [...Object.values(integrationEnv), ...Object.values(modelEnv), ...mcp.secrets] }
+  }
+  const integ = await getBrokeredIntegrationAccess(q, box, orgId, cfg.agent)
+  const modelAccess = brokeredModelAccess(cfg.agent, endpointCfg, key)
+  const policy = await getPolicy(q, orgId, ctx.app.config.mode)
+  const hosts = new Set([...policy.egress.allowedHosts, ...integ.hosts, ...modelAccess.hosts, ...mcp.hosts])
+  if (o.repoUrl) hosts.add(new URL(o.repoUrl).hostname)
+  return {
+    env: { ...integ.env, ...modelAccess.env, ...common } as Record<string, string>,
+    bindings: [...integ.bindings, ...modelAccess.bindings, ...mcp.bindings],
+    hosts: [...hosts],
+    secrets: [...integ.secrets, ...modelAccess.secrets, ...mcp.secrets],
+  }
+}
+
 export function agentExecutor(opts: AgentRunnerOptions = {}): StepExecutor {
   const docker = opts.docker ?? new DockerService()
   const images = { ...defaultAgentImages(), ...opts.images }
+  const fleetImages = { ...fleetAgentImages(), ...opts.fleetImages }
+  const egressImage = opts.fleetEgressImage ?? fleetEgressImage()
 
   return {
     async execute(ctx: StepContext): Promise<StepResult> {
@@ -123,20 +248,26 @@ export function agentExecutor(opts: AgentRunnerOptions = {}): StepExecutor {
         if (ctx.app.config.requireVerifiedEmail && !(await orgHasVerifiedOwner(db, orgId))) {
           throw new StepFailure('email_unverified — verify your email address (Settings → Account) before running agent steps')
         }
+        // After prepare, runOn is always { hostId }: one of the org's own hosts runs this step.
+        const runOnHostId = cfg.runOn && 'hostId' in cfg.runOn ? cfg.runOn.hostId : null
         const usage = await db.org(orgId, (q) => usageToday(q, orgId))
         const { agentMinutesPerDay, dailyBudgetUsd } = ctx.org.limits
-        if (agentMinutesPerDay !== null && usage.agentSeconds >= agentMinutesPerDay * 60) {
+        // Fleet agents spend the org's own server time, so the agent-minute budget does not apply.
+        if (!runOnHostId && agentMinutesPerDay !== null && usage.agentSeconds >= agentMinutesPerDay * 60) {
           throw new StepFailure(`limit_exceeded:agent_minutes — this org used its ${agentMinutesPerDay} agent minutes for today (UTC)`)
         }
         if (dailyBudgetUsd !== null && usage.costUsd >= dailyBudgetUsd) {
           throw new StepFailure(`limit_exceeded:daily_budget — this org reached its $${dailyBudgetUsd} model budget for today (UTC)`)
         }
         let timeoutSec = ctx.step.timeoutSec ?? DEFAULT_AGENT_TIMEOUT_SEC
-        if (agentMinutesPerDay !== null) timeoutSec = Math.min(timeoutSec, agentMinutesPerDay * 60 - usage.agentSeconds)
+        if (!runOnHostId && agentMinutesPerDay !== null) timeoutSec = Math.min(timeoutSec, agentMinutesPerDay * 60 - usage.agentSeconds)
 
-        // ── Where it runs: a persistent environment, or a fresh container ─
+        // ── Where it runs: a fleet host, a persistent environment, or a fresh container ─
+        const fleet = runOnHostId ? await fleetTarget(ctx, runOnHostId) : null
         let environment: Environment | null = null
-        if (cfg.environmentId) {
+        // `runOn` and `environmentId` are mutually exclusive (see spec.ts), so a
+        // fleet step never has one — and must not wake a container it won't use.
+        if (cfg.environmentId && !fleet) {
           try {
             environment = await ctx.app.envs.ensureRunning(orgId, cfg.environmentId)
           } catch (err) {
@@ -144,13 +275,22 @@ export function agentExecutor(opts: AgentRunnerOptions = {}): StepExecutor {
             throw err
           }
         }
-        const image = environment ? environment.image : images[cfg.agent]
-        if (!image) throw new StepFailure(`No runner image is configured for the ${cfg.agent} agent on this server`)
+        const image = fleet ? fleetImages[cfg.agent] : environment ? environment.image : images[cfg.agent]
+        if (!image) {
+          throw new StepFailure(
+            fleet
+              ? `No fleet image is configured for the ${cfg.agent} agent; set ROUTINI_FLEET_AGENT_IMAGE_${cfg.agent.toUpperCase()} on this server`
+              : `No runner image is configured for the ${cfg.agent} agent on this server`,
+          )
+        }
         const repo = cfg.repo ?? (environment?.repo ? { url: environment.repo.url, baseBranch: environment.repo.branch } : undefined)
 
         // ── Credentials: brokered (placeholders + proxy bindings) or direct env ─
-        const broker = ctx.app.broker
-        if (!broker && ctx.app.config.mode === 'hosted') {
+        // A fleet step is always brokered, by the egress proxy the runner starts
+        // on its host; this server's own broker has nothing to do with it.
+        const broker = fleet ? null : ctx.app.broker
+        const brokered = fleet !== null || broker !== null
+        if (!fleet && !broker && ctx.app.config.mode === 'hosted') {
           throw new StepFailure('Agent steps on this server require the credential broker, which is not configured; ask the operator')
         }
         // Routini's own tools: a run-scoped token, revoked when the step ends (expires anyway).
@@ -163,7 +303,7 @@ export function agentExecutor(opts: AgentRunnerOptions = {}): StepExecutor {
               name: `run #${ctx.run.number} step ${ctx.idx + 1}`,
               role: 'member',
               runId: ctx.run.id,
-              expiresAt: new Date(Date.now() + (timeoutSec + 600) * 1000),
+              expiresAt: new Date(Date.now() + (timeoutSec + GRACE_SEC) * 1000),
             })
             return { id: apiToken.id, token }
           })
@@ -174,31 +314,7 @@ export function agentExecutor(opts: AgentRunnerOptions = {}): StepExecutor {
           if (routiniToken) await db.org(orgId, (q) => revokeApiToken(q, orgId, routiniToken!.id)).catch(() => {})
         }
 
-        const access = await db.org(orgId, async (q) => {
-          const settings = await getOrgSettings(q, orgId)
-          const endpointCfg = settings.ai.agents[cfg.agent]
-          const key = endpointCfg.endpoint === 'gateway' ? await getEndpointKey(q, box, orgId, 'anthropic') : await getEndpointKey(q, box, orgId, endpointCfg.endpoint)
-          const model = cfg.model ?? endpointCfg.model
-          const mcp = await mcpAccessFor(q, box, orgId, cfg.agent, Boolean(broker), routiniMcp)
-          const common = { ...(model ? { ROUTINI_MODEL: model } : {}), ...(mcp.config ? { ROUTINI_MCP_CONFIG: JSON.stringify(mcp.config) } : {}) }
-          if (!broker) {
-            const integrationEnv = await getScopedIntegrationEnv(q, box, orgId, cfg.agent)
-            const modelEnv = cfg.agent === 'claude' ? claudeEndpointEnv(endpointCfg, key) : routiniEndpointEnv(endpointCfg, key ?? '')
-            const env: Record<string, string> = { ...integrationEnv, ...modelEnv, ...common }
-            return { env, bindings: [] as CredentialBinding[], hosts: [] as string[], secrets: [...Object.values(integrationEnv), ...Object.values(modelEnv), ...mcp.secrets] }
-          }
-          const integ = await getBrokeredIntegrationAccess(q, box, orgId, cfg.agent)
-          const modelAccess = brokeredModelAccess(cfg.agent, endpointCfg, key)
-          const policy = await getPolicy(q, orgId, ctx.app.config.mode)
-          const hosts = new Set([...policy.egress.allowedHosts, ...integ.hosts, ...modelAccess.hosts, ...mcp.hosts])
-          if (repo) hosts.add(new URL(repo.url).hostname)
-          return {
-            env: { ...integ.env, ...modelAccess.env, ...common } as Record<string, string>,
-            bindings: [...integ.bindings, ...modelAccess.bindings, ...mcp.bindings],
-            hosts: [...hosts],
-            secrets: [...integ.secrets, ...modelAccess.secrets, ...mcp.secrets],
-          }
-        })
+        const access = await db.org(orgId, (q) => agentAccess(q, ctx, cfg, { brokered, routiniMcp, repoUrl: repo?.url }))
         for (const s of access.secrets) ctx.addSecret(s)
         const env = access.env
 
@@ -236,7 +352,7 @@ export function agentExecutor(opts: AgentRunnerOptions = {}): StepExecutor {
               label: `run ${ctx.run.number} step ${ctx.idx + 1}`,
               allowedHosts: access.hosts,
               bindings: access.bindings,
-              expiresAt: new Date(Date.now() + (timeoutSec + 600) * 1000).toISOString(),
+              expiresAt: egressExpiry(timeoutSec),
             })
           } catch (err) {
             throw new StepFailure(`The credential broker is unavailable: ${(err as Error).message}`)
@@ -249,45 +365,84 @@ export function agentExecutor(opts: AgentRunnerOptions = {}): StepExecutor {
           if (!broker || !session) return
           const stats = await broker.close(session.token)
           session = null
-          if (stats?.blocked.length) {
-            await ctx.log(`Blocked outbound connections (not on the org's allow-list): ${stats.blocked.join(', ')}`)
-            await ctx.emit('egress.blocked', { hosts: stats.blocked })
-          }
+          await reportBlockedEgress(ctx, stats?.blocked)
         }
 
+        const labels = { 'routini.managed': 'true', 'routini.org': orgId, 'routini.run': ctx.run.id, 'routini.step': String(ctx.idx) }
         let result: { error?: string; exitCode: number | null; timedOut: boolean; aborted: boolean }
+        /** A fleet host's proxy reports its counters with the agent's exit, not on close. */
+        let fleetEgress: RunnerAgentOutcome['egress'] = null
         try {
-        await emitPlacement(ctx, { target: 'sandbox', host: dockerHostLabel(), ...(environment ? { environment: environment.name } : {}) })
-        if (environment) {
-          await ctx.log(`Starting ${cfg.agent} agent in environment "${environment.name}"${repo ? ` (worktree ${workBranch} from ${repo.baseBranch})` : ''}`)
-          await ctx.app.envs.touch(orgId, environment.id)
-          await ctx.app.db.org(orgId, (q) => addEnvironmentEvent(q, orgId, environment!.id, 'agent.run', null, { runNumber: ctx.run.number, step: ctx.step.name }))
-          result = await ctx.app.envs.runtime.exec(environment.containerId!, ['routini-entrypoint'], { env, timeoutMs: timeoutSec * 1000, signal: ctx.signal, onLine })
-          await ctx.app.envs.touch(orgId, environment.id)
-          if (result.exitCode === 127) result.error = `The environment's image (${environment.image}) has no routini-entrypoint; use a Routini agent image`
-        } else {
-          await ctx.log(`Starting ${cfg.agent} agent (${image})${repo ? ` on ${repo.url}@${repo.baseBranch}` : ''}`)
-          result = await docker.runStreaming(
-            {
-              image,
-              name: `routini-${ctx.run.number}-${ctx.idx}-${randomUUID().slice(0, 8)}`,
-              env,
-              user: AGENT_USER,
-              cpuCount: cfg.resources?.cpus ?? DEFAULT_CPUS,
-              memoryBytes: (cfg.resources?.memoryMb ?? DEFAULT_MEMORY_MB) * 1024 * 1024,
-              labels: { 'routini.managed': 'true', 'routini.org': orgId, 'routini.run': ctx.run.id, 'routini.step': String(ctx.idx) },
-              network,
-            },
-            { timeoutMs: timeoutSec * 1000, signal: ctx.signal, onLine },
-          )
-        }
+          if (fleet) {
+            await emitPlacement(ctx, { target: 'fleet', via: 'runner', host: fleet.host.name, hostId: fleet.host.id })
+            await ctx.log(`Starting ${cfg.agent} agent (${image}) on ${fleet.host.name} via routini-runner`)
+            // The real credentials travel sealed, in the session the host's own egress proxy holds.
+            const egressSession: EgressSession = {
+              token: randomBytes(24).toString('hex'),
+              orgId,
+              label: `run ${ctx.run.number} step ${ctx.idx + 1}`,
+              allowedHosts: access.hosts,
+              bindings: access.bindings,
+              expiresAt: egressExpiry(timeoutSec),
+            }
+            ctx.addSecret(egressSession.token)
+            const outcome = await runAgentOnRunner(ctx, {
+              runnerId: fleet.runnerId,
+              hostName: fleet.host.name,
+              payload: {
+                type: 'agent',
+                image,
+                pull: 'missing',
+                user: AGENT_USER,
+                cpus: cfg.resources?.cpus ?? DEFAULT_CPUS,
+                memoryMb: cfg.resources?.memoryMb ?? DEFAULT_MEMORY_MB,
+                pidsLimit: sandboxHostConfig().PidsLimit,
+                timeoutSec,
+                labels,
+                egressImage,
+                network: sandboxNetworkName(sandboxNetworkPrefix(), orgId),
+              },
+              secret: { env, session: egressSession },
+              onLine,
+              offlineGraceMs: opts.runnerOfflineGraceMs,
+              pollMs: opts.runnerPollMs,
+            })
+            fleetEgress = outcome.egress
+            result = fleetResult(outcome, ctx.signal.aborted)
+          } else if (environment) {
+            await emitPlacement(ctx, { target: 'sandbox', host: dockerHostLabel(), environment: environment.name })
+            await ctx.log(`Starting ${cfg.agent} agent in environment "${environment.name}"${repo ? ` (worktree ${workBranch} from ${repo.baseBranch})` : ''}`)
+            await ctx.app.envs.touch(orgId, environment.id)
+            await ctx.app.db.org(orgId, (q) => addEnvironmentEvent(q, orgId, environment!.id, 'agent.run', null, { runNumber: ctx.run.number, step: ctx.step.name }))
+            result = await ctx.app.envs.runtime.exec(environment.containerId!, ['routini-entrypoint'], { env, timeoutMs: timeoutSec * 1000, signal: ctx.signal, onLine })
+            await ctx.app.envs.touch(orgId, environment.id)
+            if (result.exitCode === 127) result.error = `The environment's image (${environment.image}) has no routini-entrypoint; use a Routini agent image`
+          } else {
+            await emitPlacement(ctx, { target: 'sandbox', host: dockerHostLabel() })
+            await ctx.log(`Starting ${cfg.agent} agent (${image})${repo ? ` on ${repo.url}@${repo.baseBranch}` : ''}`)
+            result = await docker.runStreaming(
+              {
+                image,
+                name: `routini-${ctx.run.number}-${ctx.idx}-${randomUUID().slice(0, 8)}`,
+                env,
+                user: AGENT_USER,
+                cpuCount: cfg.resources?.cpus ?? DEFAULT_CPUS,
+                memoryBytes: (cfg.resources?.memoryMb ?? DEFAULT_MEMORY_MB) * 1024 * 1024,
+                labels,
+                network,
+              },
+              { timeoutMs: timeoutSec * 1000, signal: ctx.signal, onLine },
+            )
+          }
         } finally {
           await emitting
           await closeSession()
+          await reportBlockedEgress(ctx, fleetEgress?.blocked)
           await revokeRoutiniToken()
         }
         const facts = parser.facts
-        await ctx.addUsage({ costUsd: facts.costUsd, agentSeconds: (Date.now() - started) / 1000 })
+        // Fleet minutes are the org's own server time, so only the sandbox adds agent seconds.
+        await ctx.addUsage({ costUsd: facts.costUsd, ...(fleet ? {} : { agentSeconds: (Date.now() - started) / 1000 }) })
 
         // ── Outcome ─────────────────────────────────────────────────────
         const base = { costUsd: facts.costUsd, model: facts.model ?? null, turns: facts.turns ?? null, summary: facts.resultText ?? null }
