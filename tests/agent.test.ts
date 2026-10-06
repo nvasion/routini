@@ -6,7 +6,8 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { makeTestApp, type TestApp, type TestUser } from './helpers/testApp'
 import { Worker } from '../server/src/engine/worker'
-import { agentExecutor, type AgentDocker } from '../server/src/engine/agent'
+import { agentExecutor, brokeredModelAccess, type AgentDocker } from '../server/src/engine/agent'
+import { PLACEHOLDER } from '../server/src/egress/types'
 import { AgentStreamParser } from '../server/src/engine/agentStream'
 import { createDemuxer, lineSplitter } from '../server/src/services/docker'
 import type { FetchFn } from '../server/src/integrations/providers'
@@ -48,6 +49,21 @@ describe('AgentStreamParser', () => {
     const big = 'x'.repeat(10_000)
     const [ev] = p.line(JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't', content: big }] } }))
     expect(String(ev!.data['output']).length).toBeLessThan(2100)
+  })
+})
+
+describe('brokeredModelAccess', () => {
+  it('gives Claude on Bedrock a placeholder token and binds both Bedrock hosts', () => {
+    const access = brokeredModelAccess('claude', { endpoint: 'aws-bedrock', model: '', region: 'us-west-2' }, 'ABSKreal')
+    expect(access.env).toEqual({ CLAUDE_CODE_USE_BEDROCK: '1', AWS_REGION: 'us-west-2', AWS_BEARER_TOKEN_BEDROCK: PLACEHOLDER, ANTHROPIC_API_KEY: '' })
+    expect(access.hosts).toEqual(['bedrock-runtime.us-west-2.amazonaws.com', 'bedrock.us-west-2.amazonaws.com'])
+    expect(access.bindings).toEqual(access.hosts.map((host) => ({ host, header: 'authorization', format: 'bearer', secret: 'ABSKreal' })))
+    expect(access.secrets).toEqual(['ABSKreal'])
+  })
+
+  it('refuses Bedrock without a key or a region', () => {
+    expect(() => brokeredModelAccess('claude', { endpoint: 'aws-bedrock', model: '', region: 'us-east-1' }, null)).toThrow(/No AWS Bedrock API key/)
+    expect(() => brokeredModelAccess('claude', { endpoint: 'aws-bedrock', model: '' }, 'ABSKreal')).toThrow(/needs a region/)
   })
 })
 
@@ -220,6 +236,18 @@ describe('agent steps', () => {
       ANTHROPIC_AUTH_TOKEN: 'sk-or-v1-abcdefgh12345678',
       ANTHROPIC_API_KEY: '',
       ROUTINI_MODEL: 'anthropic/claude-opus-5',
+    })
+  })
+
+  it('wires AWS Bedrock natively with a Bedrock API key and region', async () => {
+    await u.put(`${base()}/settings`, { ai: { agents: { claude: { endpoint: 'aws-bedrock', region: 'eu-west-1', model: 'eu.anthropic.claude-test' } } }, endpointApiKeys: { 'aws-bedrock': 'ABSKbedrockkey0123456789' } })
+    await run({})
+    expect(fake.spawned[0]!.env).toMatchObject({
+      CLAUDE_CODE_USE_BEDROCK: '1',
+      AWS_REGION: 'eu-west-1',
+      AWS_BEARER_TOKEN_BEDROCK: 'ABSKbedrockkey0123456789',
+      ANTHROPIC_API_KEY: '',
+      ROUTINI_MODEL: 'eu.anthropic.claude-test',
     })
   })
 
