@@ -119,6 +119,8 @@ export class BrokerClient {
       http_proxy: proxy,
       NO_PROXY: '',
       no_proxy: '',
+      // git probes the proxy without credentials by default (anyauth); send Basic up front.
+      GIT_HTTP_PROXY_AUTHMETHOD: 'basic',
       ROUTINI_CA_PEM: await this.caPem(),
     }
   }
