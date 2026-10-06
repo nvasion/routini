@@ -7,7 +7,7 @@ import { api } from '../lib/api'
 import { useApi } from '../lib/hooks'
 import type { Environment, Host, Job, PolicyDecision, StepKind } from '../lib/types'
 import { useOrg } from '../shell/OrgContext'
-import { ALERT_HOST, emptyJob, emptyStep, fromJob, toPayload, type JobForm, type StepForm } from './jobForm'
+import { ALERT_HOST, emptyJob, emptyStep, fromJob, runOnOptions, toPayload, type JobForm, type StepForm } from './jobForm'
 
 export function JobEditorPage() {
   const org = useOrg()
@@ -264,7 +264,7 @@ function StepEditor(props: {
   index: number
   step: StepForm
   hosts: Host[]
-  /** The job is alert-triggered, so command steps may target the alert's host. */
+  /** The job is alert-triggered, so command and agent steps may target the alert's host. */
   alertTrigger: boolean
   environments: Environment[]
   decision?: PolicyDecision
@@ -443,19 +443,40 @@ function StepEditor(props: {
             </Field>
             <Field label="Model" hint="Blank uses the org default.">{(id) => <input id={id} className="input mono" value={s.model} onChange={(e) => set({ model: e.target.value })} />}</Field>
           </div>
-          <Field label="Runs in" hint={s.environmentId ? 'Works in its own git worktree inside the environment; your checkout is not touched.' : 'A fresh container, removed afterwards.'}>
-            {(id) => (
-              <select id={id} className="select" value={s.environmentId} onChange={(e) => set({ environmentId: e.target.value })}>
-                <option value="">A fresh container</option>
-                {props.environments.map((env) => (
-                  <option key={env.id} value={env.id}>
-                    Environment: {env.name}
-                    {env.repo ? ` (${env.repo.url.replace(/^https:\/\//, '')})` : ''}
-                  </option>
-                ))}
-              </select>
-            )}
-          </Field>
+          <div className="row">
+            <Field label="Runs in" hint={s.environmentId ? 'Works in its own git worktree inside the environment; your checkout is not touched.' : 'A fresh container, removed afterwards.'}>
+              {(id) => (
+                // An environment and a fleet host are two different machines:
+                // picking one clears the other.
+                <select id={id} className="select" value={s.environmentId} onChange={(e) => set({ environmentId: e.target.value, ...(e.target.value ? { runOnHostId: '' } : {}) })}>
+                  <option value="">A fresh container</option>
+                  {props.environments.map((env) => (
+                    <option key={env.id} value={env.id}>
+                      Environment: {env.name}
+                      {env.repo ? ` (${env.repo.url.replace(/^https:\/\//, '')})` : ''}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </Field>
+            <Field label="Run on" hint={s.environmentId ? 'The environment decides where this runs.' : 'A fleet host runs the agent in Docker on that server, with its own files and network.'}>
+              {(id) => (
+                <select
+                  id={id}
+                  className="select"
+                  value={s.runOnHostId}
+                  disabled={!!s.environmentId}
+                  onChange={(e) => set({ runOnHostId: e.target.value, ...(e.target.value ? { environmentId: '' } : {}) })}
+                >
+                  {runOnOptions({ hosts: props.hosts, alertTrigger: props.alertTrigger, selected: s.runOnHostId }).map((o) => (
+                    <option key={o.value} value={o.value} disabled={o.disabled}>
+                      {o.label}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </Field>
+          </div>
           <div className="row">
             {!s.environmentId && (
               <>

@@ -6,7 +6,7 @@ import { ErrorBanner, RunBadge, StatusDot } from '../components/ui'
 import { api } from '../lib/api'
 import { duration, money, relativeTime, stepStatusLabel } from '../lib/format'
 import { useApi, useEventStream, useTick } from '../lib/hooks'
-import type { Approval, RunDetail, RunEvent, RunStep, Step } from '../lib/types'
+import type { AgentConfig, Approval, Host, RunDetail, RunEvent, RunStep, Step } from '../lib/types'
 import { useDock } from '../shell/Dock'
 import { useOrg } from '../shell/OrgContext'
 import { buildTimeline, mergeEvents, placementLabel } from './timeline'
@@ -19,6 +19,7 @@ export function RunPage() {
   const navigate = useNavigate()
   const { run: ref = '' } = useParams()
   const detail = useApi<RunDetail>(org.api(`/runs/${ref}`))
+  const fleet = useApi<{ hosts: Host[] }>(org.api('/hosts'))
   const [events, setEvents] = useState<RunEvent[]>([])
   const [actionError, setActionError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -53,6 +54,11 @@ export function RunPage() {
 
   const timeline = useMemo(() => buildTimeline(events), [events])
   const d = detail.data
+
+  // Agent steps pinned to a fleet host are stored by host id; only the id and
+  // the name are kept here, so no other host field can leak into the page.
+  const hostNames = useMemo(() => new Map((fleet.data?.hosts ?? []).map((h) => [h.id, h.name] as const)), [fleet.data])
+  const pinned = (d?.run.jobSnapshot.steps ?? []).some((s) => s.kind === 'agent' && s.config.runOn !== undefined)
 
   async function act(path: string, body: unknown = {}) {
     setBusy(true)
@@ -131,6 +137,11 @@ export function RunPage() {
       </div>
       {run.error && run.status === 'failed' && <div className="banner">{run.error}</div>}
       <ErrorBanner error={actionError} />
+      {pinned && fleet.error && (
+        <p className="meta" role="status">
+          Fleet host names could not be loaded, so steps pinned to a host show a generic label.
+        </p>
+      )}
 
       <ol className="timeline" aria-label="Steps">
         {d.steps.map((s, i) => (
@@ -138,6 +149,7 @@ export function RunPage() {
             key={s.idx}
             step={s}
             spec={run.jobSnapshot.steps[s.idx]}
+            hostNames={hostNames}
             events={timeline.byStep.get(s.idx) ?? []}
             approval={[...d.approvals].reverse().find((a) => a.stepIdx === s.idx)}
             last={i === d.steps.length - 1}
@@ -169,7 +181,15 @@ export function RunPage() {
   )
 }
 
-function stepSummary(spec: Step | undefined): string {
+/** " · on <where>" for an agent step pinned to a fleet host, else ''. */
+function runOnSummary(runOn: AgentConfig['runOn'], hostNames: Map<string, string>): string {
+  if (!runOn) return ''
+  if ('host' in runOn) return " · on alert's host"
+  return ` · on ${hostNames.get(runOn.hostId) ?? 'a fleet host'}`
+}
+
+/** @param hostNames Fleet host names by id, for agent steps pinned to a host. */
+function stepSummary(spec: Step | undefined, hostNames: Map<string, string>): string {
   if (!spec) return ''
   if (spec.kind === 'action') {
     const c = spec.config
@@ -178,13 +198,15 @@ function stepSummary(spec: Step | undefined): string {
     if (c.type === 'factory') return c.operation === 'prd' ? `factory: execute PRD ${c.prdId}` : `factory: orchestrate ${c.projectId} · ${c.runtime ?? 'claude-code'}${c.model ? ` · ${c.model}` : ''}`
     return `imap: ${c.username}@${c.host}`
   }
-  if (spec.kind === 'agent') return `${spec.config.agent}${spec.config.environmentId ? ' · in an environment' : spec.config.repo ? ` · ${spec.config.repo.url}@${spec.config.repo.baseBranch}` : ''}`
+  if (spec.kind === 'agent')
+    return `${spec.config.agent}${spec.config.environmentId ? ' · in an environment' : spec.config.repo ? ` · ${spec.config.repo.url}@${spec.config.repo.baseBranch}` : ''}${runOnSummary(spec.config.runOn, hostNames)}`
   return spec.config.message
 }
 
 function StepItem(props: {
   step: RunStep
   spec: Step | undefined
+  hostNames: Map<string, string>
   events: RunEvent[]
   approval: Approval | undefined
   last: boolean
@@ -214,7 +236,7 @@ function StepItem(props: {
           {placement && <span className="badge" title="Where this step executed">{placement}</span>}
         </div>
         <div className="mono muted" style={{ fontSize: 12 }}>
-          {stepSummary(spec)}
+          {stepSummary(spec, props.hostNames)}
         </div>
         {spec?.kind === 'agent' && <details><summary className="muted">Prompt</summary><pre className="code">{spec.config.prompt}</pre></details>}
 
