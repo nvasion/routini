@@ -167,7 +167,9 @@ stored secrets cannot be decrypted.
 | `ROUTINI_SANDBOX_NETWORK_PREFIX` | `routini-sb` | Per-org internal Docker networks. |
 | `ROUTINI_EGRESS_CA_DIR` | — | Egress proxy only: where its CA persists (ephemeral if unset). |
 | `SEED_EMAIL`, `SEED_PASSWORD` | dev: admin@routini.dev / changeme | First account on an empty database. |
-| `SMTP_*` | — | Run-finished emails (per-org settings decide who gets them). |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASS` | — | Outgoing mail: email verification, password reset, and run-finished emails (per-org settings decide who gets those). Without `SMTP_HOST`, nothing is sent. |
+| `SMTP_FROM`, `SMTP_FROM_NAME` | `noreply@routini.dev`, — | Sender address and display name. |
+| `ROUTINI_REQUIRE_VERIFIED_EMAIL` | on in hosted mode with `SMTP_HOST` | Agent steps and environments need an org owner with a verified email. |
 
 ## Multi-tenancy and security
 

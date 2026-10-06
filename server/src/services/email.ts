@@ -315,3 +315,59 @@ export async function sendTaskOutcomeNotification(
     throw new Error('Failed to send task notification email')
   }
 }
+
+// ── Account emails (verification, password reset) ─────────────────────────────
+
+export interface AccountEmail {
+  to: string
+  subject: string
+  /** One paragraph above the button. */
+  intro: string
+  /** Button label. */
+  action: string
+  /** The link (carries a single-use token). */
+  url: string
+  /** One line below the button. */
+  outro: string
+}
+
+/** Plain-text and HTML bodies for an account email: a paragraph, one button, a footnote. */
+export function buildAccountEmail(msg: AccountEmail): { text: string; html: string } {
+  const text = [msg.intro, '', `${msg.action}: ${msg.url}`, '', msg.outro, '', '— Routini'].join('\n')
+  const url = escapeHtml(msg.url)
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:24px;font-family:Arial,Helvetica,sans-serif;color:#1a1a1a;background:#f9f9f9">
+  <div style="max-width:560px;margin:0 auto;background:#fff;border-radius:6px;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,.12)">
+    <div style="background:#0b0b0c;padding:18px 24px">
+      <h1 style="margin:0;font-size:18px;color:#fff;letter-spacing:.3px">Routini</h1>
+    </div>
+    <div style="padding:24px">
+      <p style="margin:0 0 20px;line-height:1.5">${escapeHtml(msg.intro)}</p>
+      <p style="margin:0 0 20px"><a href="${url}" style="display:inline-block;background:#e8590c;color:#fff;text-decoration:none;padding:10px 18px;border-radius:4px;font-weight:600">${escapeHtml(msg.action)}</a></p>
+      <p style="margin:0 0 8px;font-size:12px;color:#666">Or paste this link into your browser:</p>
+      <p style="margin:0 0 20px;font-size:12px;word-break:break-all"><a href="${url}" style="color:#b85c00">${url}</a></p>
+      <p style="margin:0;font-size:13px;color:#666">${escapeHtml(msg.outro)}</p>
+    </div>
+  </div>
+</body>
+</html>`
+  return { text, html }
+}
+
+/** Sends an account email. Throws a credential-free error when the transport fails. */
+export async function sendAccountEmail(msg: AccountEmail, transporter: MailTransporter): Promise<void> {
+  if (!isValidEmail(msg.to)) throw new Error('Invalid recipient email address')
+  const address = process.env['SMTP_FROM'] ?? 'noreply@routini.dev'
+  const name = process.env['SMTP_FROM_NAME']?.trim()
+  const from = name ? `"${name.replace(/["\\<>]/g, '')}" <${address}>` : address
+  const { text, html } = buildAccountEmail(msg)
+  try {
+    await transporter.sendMail({ from, to: msg.to, subject: msg.subject, text, html })
+  } catch (err) {
+    // As above: transport errors can echo credentials, so only the log sees them.
+    console.error('[email] Transport error sending account email:', err)
+    throw new Error('Failed to send account email')
+  }
+}

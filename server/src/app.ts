@@ -26,6 +26,7 @@ import { alertIntakeRouter, incidentsRouter } from './routes/incidents.js'
 import { tokensRouter } from './routes/tokens.js'
 import { mcpRouter as routiniMcpRouter } from './mcp/server.js'
 import { identitiesRouter, oidcRouter } from './http/oidc.js'
+import { accountRouter } from './http/account.js'
 import type { ProviderTestContext } from './integrations/providers.js'
 
 export interface AppOptions {
@@ -85,7 +86,7 @@ export function createApp(ctx: AppContext, opts: AppOptions = {}): Express {
   // The terminal WebSocket (http/terminal.ts) authenticates upgrades with the same session logic.
   app.locals['auth'] = auth
   app.use('/api/auth', auth.router)
-  app.use('/api/auth', oidcRouter(ctx, auth), identitiesRouter(ctx, auth))
+  app.use('/api/auth', oidcRouter(ctx, auth), identitiesRouter(ctx, auth), accountRouter(ctx, auth))
 
   // Routini as an MCP server (API tokens only).
   app.use(

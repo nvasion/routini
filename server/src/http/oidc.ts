@@ -1,7 +1,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Sign in with TynHub (or any OIDC provider): Authorization Code + PKCE.
 //
-//   GET /api/auth/providers            { oidc: { name } | null }  (login page)
+//   GET /api/auth/providers            { oidc: { name } | null, signupOpen, mail, emailVerification }  (login page, console)
 //   GET /api/auth/oidc/start?next=…    → the provider            (&link=1: link to the signed-in account)
 //   GET /api/auth/oidc/callback        ← the provider → console
 //
@@ -102,7 +102,7 @@ export async function signInWithClaims(
       const signupOpen = ctx.config.signup === 'open' || (ctx.config.signup === 'first-user-only' && (await countUsers(q)) === 0)
       if (!signupOpen && linkedOrgs.length === 0) throw new OidcError('Signup is closed on this server; ask an admin to link your TynHub org')
       const displayName = (claims.name ?? claims.preferred_username ?? '').slice(0, 100)
-      const user = await createUser(q, { email, passwordHash: null, displayName })
+      const user = await createUser(q, { email, passwordHash: null, displayName, emailVerified: true })
       await addIdentity(q, user.id, provider, claims.sub)
       userId = user.id
       created = true
@@ -111,6 +111,11 @@ export async function signInWithClaims(
         const org = await createOrg(q, { name: displayName || email.split('@')[0]!, slugBase: email.split('@')[0]!, plan: ctx.config.mode === 'hosted' ? 'free' : 'selfhost' })
         await q.query(`INSERT INTO memberships (org_id, user_id, role) VALUES ($1, $2, 'owner')`, [org.id, user.id])
       }
+    }
+
+    // A provider that verified this same address verifies it for Routini too.
+    if (!created && claims.email_verified === true && claims.email) {
+      await q.query('UPDATE users SET email_verified_at = coalesce(email_verified_at, now()) WHERE id = $1 AND lower(email) = lower($2)', [userId, claims.email.trim()])
     }
 
     // Join linked orgs (never change or remove existing memberships).
@@ -151,11 +156,13 @@ export function oidcRouter(ctx: AppContext, auth: Auth): Router {
   // What the login and landing pages offer: an identity provider, and whether
   // email signup is open (open, or first-user-only on a server with no users yet).
   r.get('/providers', (_req, res) => {
+    // Whether account emails go out (password reset needs it).
+    const mail = ctx.mailer !== undefined ? ctx.mailer !== null : Boolean(process.env['SMTP_HOST']?.trim())
     void (async () => {
       const signup = ctx.config.signup
       const signupOpen = signup === 'open' || (signup === 'first-user-only' && (await countUsers(ctx.db)) === 0)
-      res.json({ oidc: cfg ? { name: cfg.name } : null, signupOpen })
-    })().catch(() => res.json({ oidc: cfg ? { name: cfg.name } : null, signupOpen: false }))
+      res.json({ oidc: cfg ? { name: cfg.name } : null, signupOpen, mail, emailVerification: ctx.config.requireVerifiedEmail })
+    })().catch(() => res.json({ oidc: cfg ? { name: cfg.name } : null, signupOpen: false, mail, emailVerification: ctx.config.requireVerifiedEmail }))
   })
 
   r.get('/oidc/start', (req: Request, res: Response) => {

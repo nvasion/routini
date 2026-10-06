@@ -10,6 +10,8 @@ export interface User {
   id: string
   email: string
   displayName: string
+  /** Absent from servers older than Phase 5. */
+  emailVerified?: boolean
   createdAt: string
 }
 

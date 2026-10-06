@@ -11,6 +11,7 @@ import { THEMES, useTheme } from '../lib/theme'
 import type { Host, Inbox, Job } from '../lib/types'
 import { Dock, DOCK_TABS, DockProvider, useDock, type DockTab } from './Dock'
 import { OrgProvider, useOrg } from './OrgContext'
+import { VerifyEmailBanner } from '../pages/AccountPanel'
 
 export function OrgShell() {
   const { org: slug = '' } = useParams()
@@ -23,6 +24,7 @@ export function OrgShell() {
           <div className="body">
             <LeftNav />
             <main className="main" id="main">
+              <VerifyEmailBanner />
               <Outlet />
             </main>
             <Dock />

@@ -16,6 +16,7 @@ import { FleetPage } from './pages/FleetPage'
 import { IncidentPage, IncidentsPage } from './pages/IncidentsPage'
 import { LandingPage } from './pages/public/LandingPage'
 import { GettingStartedPage } from './pages/public/GettingStartedPage'
+import { ForgotPasswordPage, ResetPasswordPage, VerifyEmailPage } from './pages/AccountPages'
 
 function RequireAuth({ children }: { children: ReactNode }) {
   const { session, loading } = useAuth()
@@ -50,6 +51,9 @@ export function AppRoutes() {
     <Routes>
       <Route path="/login" element={<LoginPage />} />
       <Route path="/signup" element={<LoginPage initialMode="signup" />} />
+      <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+      <Route path="/reset-password" element={<ResetPasswordPage />} />
+      <Route path="/verify-email" element={<VerifyEmailPage />} />
       <Route path="/docs/getting-started" element={<GettingStartedPage />} />
       <Route path="/" element={<Front />} />
       <Route

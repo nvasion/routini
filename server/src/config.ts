@@ -38,6 +38,12 @@ export interface Config {
   /** Sign-in with an OIDC provider (TynHub), or null. */
   oidc: { issuer: string; clientId: string; clientSecret: string; name: string; scopes: string } | null
   signup: SignupPolicy
+  /**
+   * Agent steps and environments need an org owner with a verified email
+   * (ROUTINI_REQUIRE_VERIFIED_EMAIL; default on in hosted mode once SMTP_HOST is
+   * set, since without mail nobody could verify).
+   */
+  requireVerifiedEmail: boolean
   /** Header the platform edge sets to the client address (ROUTINI_CLIENT_IP_HEADER, e.g. do-connecting-ip). */
   clientIpHeader?: string
   /** Run the scheduler and queue worker inside the API process. Required with embedded Postgres. */
@@ -77,6 +83,9 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): Config {
       ? signupRaw
       : mode === 'hosted' ? 'open' : 'first-user-only'
 
+  const verifyRaw = nonEmpty('ROUTINI_REQUIRE_VERIFIED_EMAIL')
+  const requireVerifiedEmail = verifyRaw ? verifyRaw === 'true' || verifyRaw === '1' : mode === 'hosted' && Boolean(nonEmpty('SMTP_HOST'))
+
   const databaseUrl = nonEmpty('DATABASE_URL')
   const dataDir = nonEmpty('ROUTINI_DATA_DIR') ?? (env === 'test' ? ':memory:' : resolve('data/pg'))
 
@@ -115,6 +124,7 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): Config {
     agentApiUrl: (nonEmpty('ROUTINI_AGENT_API_URL') ?? publicUrl).replace(/\/+$/, ''),
     oidc: oidcFromEnv(nonEmpty),
     signup,
+    requireVerifiedEmail,
     clientIpHeader: nonEmpty('ROUTINI_CLIENT_IP_HEADER')?.toLowerCase(),
     inlineWorker,
     seed,

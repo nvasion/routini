@@ -30,6 +30,7 @@ import type { AgentConfig } from './spec.js'
 import type { StepContext, StepExecutor, StepResult } from './types.js'
 import { emitPlacement } from './placement.js'
 import { dockerHostLabel } from '../services/dockerClient.js'
+import { orgHasVerifiedOwner } from '../repos/identity.js'
 
 export const DEFAULT_AGENT_TIMEOUT_SEC = 30 * 60
 const DEFAULT_CPUS = 2
@@ -119,6 +120,9 @@ export function agentExecutor(opts: AgentRunnerOptions = {}): StepExecutor {
       const orgId = ctx.org.id
       try {
         // ── Limits ───────────────────────────────────────────────────────
+        if (ctx.app.config.requireVerifiedEmail && !(await orgHasVerifiedOwner(db, orgId))) {
+          throw new StepFailure('email_unverified — verify your email address (Settings → Account) before running agent steps')
+        }
         const usage = await db.org(orgId, (q) => usageToday(q, orgId))
         const { agentMinutesPerDay, dailyBudgetUsd } = ctx.org.limits
         if (agentMinutesPerDay !== null && usage.agentSeconds >= agentMinutesPerDay * 60) {
