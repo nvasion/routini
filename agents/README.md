@@ -20,6 +20,31 @@ Omnimancer and OpenCode use the same contract. Point `ROUTINI_AGENT_IMAGE_OMNIMA
 or `ROUTINI_AGENT_IMAGE_OPENCODE` at an image that follows it; without one,
 those agents' steps fail with a clear message.
 
+Images for other agents reuse `entrypoint.sh` (clone, broker CA, check, commit,
+push) and add an executable `/usr/local/bin/routini-agent`. When it exists, the
+entrypoint runs it in place of `claude`. It reads the same environment
+(`ROUTINI_MCP_FILE` points at the MCP config, when there is one), prints
+stream-json on stdout, and exits non-zero on failure. `omnimancer/` is one.
+
+### Omnimancer (`omnimancer/`)
+
+```bash
+docker build -f omnimancer/Dockerfile -t routini/agent-omnimancer:latest .   # --build-arg OMNIMANCER_REF=<branch|tag|sha>
+# then on the server: ROUTINI_AGENT_IMAGE_OMNIMANCER=routini/agent-omnimancer:latest
+```
+
+The launcher runs `omn -p … --output-format stream-json --dangerously-skip-permissions`.
+It writes `~/.omnimancer/config.json` (provider, model, Bedrock `aws_region`),
+passes the key as `OMNIMANCER_<PROVIDER>_API_KEY` (never on disk), and puts
+`ROUTINI_SYSTEM_PROMPT` in `~/.omnimancer/OMNIMANCER.md`. Routini's parser reads
+Omnimancer's stream-json variant directly.
+
+- Endpoints: anthropic, openrouter, digitalocean, aws-bedrock, openai, google, azure. Not gateway.
+- Bedrock needs a model id (Omnimancer has no default for it) and a region.
+- MCP servers are not available: Omnimancer does not load them in headless mode.
+- Iteration cap defaults to 200 (`OMNIMANCER_MAX_ITERATIONS`). When Omnimancer stops
+  early it exits 3; the launcher reports that and exits 6, since 3 means "check failed" here.
+
 ## Contract
 
 **Input (environment)**

@@ -4,7 +4,9 @@
 // Three kinds of lines:
 //   ::routini::{json}   control lines from the entrypoint (check, commit, pushed,
 //                       no_changes, error)
-//   {"type": …}         Claude Code --output-format stream-json messages
+//   {"type": …}         Claude Code --output-format stream-json messages, or
+//                       Omnimancer's variant of it (string content, top-level
+//                       tool_use / tool_result / error lines)
 //   anything else       plain log output
 // The parser turns each line into zero or more timeline events and keeps the
 // facts the executor needs at the end (cost, check result, pushed branch…).
@@ -110,6 +112,10 @@ export class AgentStreamParser {
 
     if (type === 'assistant' || type === 'user') {
       const message = msg['message'] as { content?: unknown } | undefined
+      // Omnimancer: the assistant's text as a plain string.
+      if (typeof message?.content === 'string') {
+        return message.content.trim() ? [{ type: 'agent.message', data: { text: clip(message.content, 8000) } }] : []
+      }
       const content = Array.isArray(message?.content) ? (message!.content as Array<Record<string, unknown>>) : []
       const out: TimelineEvent[] = []
       for (const block of content) {
@@ -128,6 +134,24 @@ export class AgentStreamParser {
         }
       }
       return out
+    }
+
+    // Omnimancer: one line per tool call and per result, without ids.
+    if (type === 'tool_use' || type === 'tool_result') {
+      const tool = (msg['tool'] && typeof msg['tool'] === 'object' ? msg['tool'] : {}) as Record<string, unknown>
+      const name = String(tool['name'] ?? 'tool')
+      if (type === 'tool_use') return [{ type: 'agent.tool_call', data: { id: null, name, input: clip(JSON.stringify(tool['arguments'] ?? {})) } }]
+      const error = typeof tool['error'] === 'string' && tool['error'] ? tool['error'] : null
+      return [{ type: 'agent.tool_result', data: { id: null, name, ok: !error, output: clip(error ?? textOf(tool['content'])) } }]
+    }
+
+    // Omnimancer: a run-ending error (it then exits non-zero).
+    if (type === 'error') {
+      const message = typeof msg['message'] === 'string' && msg['message'] ? msg['message'] : 'unknown error'
+      this.facts.errors.push(message)
+      this.facts.resultIsError = true
+      this.facts.resultText = message
+      return [{ type: 'log', data: { message: `Error: ${clip(message, 500)}` } }]
     }
 
     if (type === 'result') {

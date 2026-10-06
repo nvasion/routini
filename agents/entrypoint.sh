@@ -5,7 +5,8 @@
 #      REPO_URL + BASE_BRANCH + WORK_BRANCH (optional), CHECK_COMMAND (optional),
 #      ROUTINI_OUTPUT = pr | branch | none, ROUTINI_COMMIT_MESSAGE,
 #      GITHUB_TOKEN (used for clone/push on github.com when present).
-# Out: the agent's stdout (Claude Code stream-json) plus control lines
+# Out: the agent's stdout (Claude Code stream-json, or a launcher's — see
+#      /usr/local/bin/routini-agent below) plus control lines
 #      "::routini::{json}" for check / commit / pushed / no_changes / error.
 # Exit: 0 success · 3 check failed · other = failure.
 set -uo pipefail
@@ -30,11 +31,12 @@ if [ -n "${ROUTINI_CA_PEM:-}" ]; then
     REQUESTS_CA_BUNDLE="$rdir/bundle.pem" CURL_CA_BUNDLE="$rdir/bundle.pem"
 fi
 
-# MCP servers connected for this agent (Claude Code --mcp-config).
+# MCP servers connected for this agent (Claude Code --mcp-config format).
 mcp_args=()
 if [ -n "${ROUTINI_MCP_CONFIG:-}" ]; then
-  printf '%s' "$ROUTINI_MCP_CONFIG" > "${HOME:-/tmp}/.routini-mcp.json"
-  mcp_args=(--mcp-config "${HOME:-/tmp}/.routini-mcp.json")
+  export ROUTINI_MCP_FILE="${HOME:-/tmp}/.routini-mcp.json"
+  printf '%s' "$ROUTINI_MCP_CONFIG" > "$ROUTINI_MCP_FILE"
+  mcp_args=(--mcp-config "$ROUTINI_MCP_FILE")
 fi
 mkdir -p /workspace && cd /workspace || fail "cannot enter /workspace"
 
@@ -69,11 +71,17 @@ elif [ -n "${REPO_URL:-}" ]; then
   git checkout --quiet -b "${WORK_BRANCH:-routini/work}" || fail "cannot create branch ${WORK_BRANCH:-routini/work}"
 fi
 
-args=(-p "$ROUTINI_PROMPT" --output-format stream-json --verbose --dangerously-skip-permissions)
-[ -n "${ROUTINI_SYSTEM_PROMPT:-}" ] && args+=(--append-system-prompt "$ROUTINI_SYSTEM_PROMPT")
-[ -n "${ROUTINI_MODEL:-}" ] && args+=(--model "$ROUTINI_MODEL")
-args+=("${mcp_args[@]}")
-claude "${args[@]}"
+if [ -x /usr/local/bin/routini-agent ]; then
+  # Another agent: its image ships a launcher that maps the same env onto the
+  # agent's own CLI and prints stream-json to stdout.
+  routini-agent
+else
+  args=(-p "$ROUTINI_PROMPT" --output-format stream-json --verbose --dangerously-skip-permissions)
+  [ -n "${ROUTINI_SYSTEM_PROMPT:-}" ] && args+=(--append-system-prompt "$ROUTINI_SYSTEM_PROMPT")
+  [ -n "${ROUTINI_MODEL:-}" ] && args+=(--model "$ROUTINI_MODEL")
+  args+=("${mcp_args[@]}")
+  claude "${args[@]}"
+fi
 code=$?
 [ "$code" -eq 0 ] || fail "agent exited with code $code" "$code"
 
