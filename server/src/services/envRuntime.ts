@@ -10,6 +10,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import Dockerode from 'dockerode'
+import { dockerFromEnv } from './dockerClient.js'
 import { randomUUID } from 'node:crypto'
 import type { Duplex } from 'node:stream'
 import { createDemuxer, lineSplitter } from './docker.js'
@@ -75,7 +76,7 @@ const assertEnv = (env: Record<string, string>) => {
 }
 
 export class DockerEnvRuntime implements EnvRuntime {
-  constructor(private readonly docker: Dockerode = new Dockerode()) {}
+  constructor(private readonly docker: Dockerode = dockerFromEnv()) {}
 
   async ensureVolume(name: string, labels: Record<string, string>): Promise<void> {
     try {

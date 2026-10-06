@@ -38,6 +38,7 @@
  */
 
 import Dockerode from 'dockerode'
+import { dockerFromEnv } from './dockerClient.js'
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -145,7 +146,7 @@ export class DockerService {
    *                Pass a mock in tests to avoid requiring a real daemon.
    */
   constructor(docker?: Dockerode) {
-    this.docker = docker ?? new Dockerode()
+    this.docker = docker ?? dockerFromEnv()
   }
 
   async runContainer(
