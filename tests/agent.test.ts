@@ -178,6 +178,7 @@ describe('agent steps', () => {
     expect(step.output).toMatchObject({ costUsd: 0.0421, model: 'claude-sonnet-5', changes: false })
     expect(detail.run.costUsd).toBeCloseTo(0.0421)
     expect(events.map((e) => e.type)).toEqual(expect.arrayContaining(['agent.init', 'agent.tool_call', 'agent.tool_result', 'agent.result', 'cost']))
+    expect(events.filter((e) => e.type === 'step.placement').map((e) => e.data)).toEqual([{ target: 'sandbox', host: expect.any(String) }])
   })
 
   it('opens a pull request from the worker after the container pushes', async () => {

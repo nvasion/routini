@@ -28,6 +28,8 @@ import { EnvError } from './environments.js'
 import { addEnvironmentEvent, type Environment } from '../repos/environments.js'
 import type { AgentConfig } from './spec.js'
 import type { StepContext, StepExecutor, StepResult } from './types.js'
+import { emitPlacement } from './placement.js'
+import { dockerHostLabel } from '../services/dockerClient.js'
 
 export const DEFAULT_AGENT_TIMEOUT_SEC = 30 * 60
 const DEFAULT_CPUS = 2
@@ -243,6 +245,7 @@ export function agentExecutor(opts: AgentRunnerOptions = {}): StepExecutor {
 
         let result: { error?: string; exitCode: number | null; timedOut: boolean; aborted: boolean }
         try {
+        await emitPlacement(ctx, { target: 'sandbox', host: dockerHostLabel(), ...(environment ? { environment: environment.name } : {}) })
         if (environment) {
           await ctx.log(`Starting ${cfg.agent} agent in environment "${environment.name}"${repo ? ` (worktree ${workBranch} from ${repo.baseBranch})` : ''}`)
           await ctx.app.envs.touch(orgId, environment.id)

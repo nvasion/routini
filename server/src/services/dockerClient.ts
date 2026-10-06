@@ -45,6 +45,22 @@ export function dockerOptions(env: NodeJS.ProcessEnv = process.env): Dockerode.D
   return options
 }
 
+/** The Docker host's name for the timeline: the pinned TLS name, else DOCKER_HOST's host, else the local daemon. */
+export function dockerHostLabel(env: NodeJS.ProcessEnv = process.env): string {
+  const serverName = env['ROUTINI_DOCKER_TLS_SERVER_NAME']?.trim()
+  if (serverName) return serverName
+  const hostEnv = env['DOCKER_HOST']?.trim()
+  if (hostEnv && /^(tcp|ssh|https?):\/\//.test(hostEnv)) {
+    try {
+      const host = new URL(hostEnv).hostname
+      if (host) return host
+    } catch {
+      // fall through to the local daemon
+    }
+  }
+  return 'local Docker'
+}
+
 let shared: Dockerode | undefined
 
 /** One client per process, built from the environment on first use. */
