@@ -7,8 +7,10 @@
 // the system context.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { createHash, randomBytes } from 'node:crypto'
+import { createHash, randomBytes, randomUUID } from 'node:crypto'
+import type { SealedSecret, SecretBox } from '../crypto/secrets.js'
 import type { Queryable } from '../db/index.js'
+import type { EgressSession } from '../egress/types.js'
 import { createRunnerHost } from './hosts.js'
 
 export const ENROLL_PREFIX = 'rre_'
@@ -216,11 +218,44 @@ export interface ExecPayload {
   timeoutSec: number
 }
 
+/**
+ * A coding agent in a container on the runner host. Everything secret (the
+ * container env and the egress session with its credential bindings) lives in
+ * `sealed`, which only the gateway holding the runner's connection can open.
+ */
+export interface AgentPayload {
+  type: 'agent'
+  image: string
+  pull: 'missing' | 'always'
+  user: string
+  cpus: number
+  memoryMb: number
+  pidsLimit: number
+  timeoutSec: number
+  labels: Record<string, string>
+  egressImage: string
+  network: string
+  sealed: SealedSecret
+}
+
+export type RunnerPayload = ExecPayload | AgentPayload
+
+/** The plaintext an agent task's `sealed` blob holds. */
+export interface AgentSecret {
+  env: Record<string, string>
+  session: EgressSession
+}
+
+/** The AAD a task's sealed secret is bound to, so a copied row cannot decrypt. */
+export const sealedAad = (taskId: string) => `runner_task:${taskId}`
+
 export interface ExecResultData {
   exitCode: number | null
   timedOut: boolean
   canceled: boolean
   error: string | null
+  /** Agent tasks only: what the host's egress proxy saw. */
+  egress?: { requests: number; intercepted: number; blocked: string[] } | null
 }
 
 export interface RunnerTask {
@@ -229,7 +264,7 @@ export interface RunnerTask {
   runnerId: string
   runId: string | null
   stepIdx: number | null
-  payload: ExecPayload
+  payload: RunnerPayload
   status: RunnerTaskStatus
   cancelRequested: boolean
   result: ExecResultData | null
@@ -242,7 +277,7 @@ interface TaskRow {
   runner_id: string
   run_id: string | null
   step_idx: number | null
-  payload: ExecPayload
+  payload: RunnerPayload
   status: RunnerTaskStatus
   cancel_requested: boolean
   result: ExecResultData | null
@@ -262,21 +297,47 @@ const toTask = (r: TaskRow): RunnerTask => ({
   claimedBy: r.claimed_by,
 })
 
-export async function createRunnerTask(
-  q: Queryable,
-  orgId: string,
-  runnerId: string,
-  payload: ExecPayload,
-  link: { runId?: string; stepIdx?: number } = {},
-): Promise<RunnerTask> {
+export interface TaskLink {
+  runId?: string
+  stepIdx?: number
+}
+
+export async function createRunnerTask(q: Queryable, orgId: string, runnerId: string, payload: ExecPayload, link: TaskLink = {}): Promise<RunnerTask> {
   const [row] = await q.query<TaskRow>(
     `INSERT INTO runner_tasks (org_id, runner_id, run_id, step_idx, payload) VALUES ($1, $2, $3, $4, $5) RETURNING ${TASK_COLS}`,
     [orgId, runnerId, link.runId ?? null, link.stepIdx ?? null, JSON.stringify(payload)],
   )
   const task = toTask(row!)
-  await q.query('SELECT pg_notify($1, $2)', [RUNNER_CHANNEL, JSON.stringify({ op: 'start', taskId: task.id, runnerId })])
+  await notifyStart(q, task.id, runnerId)
   return task
 }
+
+/**
+ * Queues an agent task. The id is generated first so the secret can be sealed
+ * against it (AAD) before the row exists; the row is then inserted with that id.
+ */
+export async function createAgentRunnerTask(
+  q: Queryable,
+  box: SecretBox,
+  orgId: string,
+  runnerId: string,
+  plain: Omit<AgentPayload, 'sealed'>,
+  secret: AgentSecret,
+  link: TaskLink = {},
+): Promise<RunnerTask> {
+  const id = randomUUID()
+  const payload: AgentPayload = { ...plain, sealed: box.seal(JSON.stringify(secret), sealedAad(id)) }
+  const [row] = await q.query<TaskRow>(
+    `INSERT INTO runner_tasks (id, org_id, runner_id, run_id, step_idx, payload) VALUES ($1, $2, $3, $4, $5, $6) RETURNING ${TASK_COLS}`,
+    [id, orgId, runnerId, link.runId ?? null, link.stepIdx ?? null, JSON.stringify(payload)],
+  )
+  const task = toTask(row!)
+  await notifyStart(q, task.id, runnerId)
+  return task
+}
+
+const notifyStart = (q: Queryable, taskId: string, runnerId: string) =>
+  q.query('SELECT pg_notify($1, $2)', [RUNNER_CHANNEL, JSON.stringify({ op: 'start', taskId, runnerId })])
 
 export async function getRunnerTask(q: Queryable, orgId: string, id: string): Promise<RunnerTask | null> {
   const [row] = await q.query<TaskRow>(`SELECT ${TASK_COLS} FROM runner_tasks WHERE org_id = $1 AND id = $2`, [orgId, id])
@@ -298,9 +359,11 @@ export async function queuedTasksFor(q: Queryable, orgId: string, runnerId: stri
   return rows.map((r) => r.id)
 }
 
+/** Records a result and drops the task's sealed secret: it is of no use afterwards. */
 export async function finishRunnerTask(q: Queryable, orgId: string, id: string, status: 'done' | 'failed' | 'canceled', result: ExecResultData): Promise<boolean> {
   const rows = await q.query(
-    `UPDATE runner_tasks SET status = $3, result = $4, updated_at = now() WHERE org_id = $1 AND id = $2 AND status IN ('queued', 'sent') RETURNING id`,
+    `UPDATE runner_tasks SET status = $3, result = $4, payload = payload - 'sealed', updated_at = now()
+     WHERE org_id = $1 AND id = $2 AND status IN ('queued', 'sent') RETURNING id`,
     [orgId, id, status, JSON.stringify(result)],
   )
   if (rows.length) await q.query('SELECT pg_notify($1, $2)', [RUNNER_OUT_CHANNEL, JSON.stringify({ taskId: id, done: true })])
@@ -328,6 +391,8 @@ export async function cancelStepRunnerTasks(q: Queryable, orgId: string, runId: 
     [orgId, runId, stepIdx],
   )
   for (const t of rows) {
+    // Queued tasks are finished here (which also scrubs their sealed secret);
+    // sent ones are finished by the gateway when the runner answers the cancel.
     if (t.status === 'queued') await finishRunnerTask(q, orgId, t.id, 'canceled', { exitCode: null, timedOut: false, canceled: true, error: null })
     else await requestTaskCancel(q, orgId, t.id, t.runner_id)
   }

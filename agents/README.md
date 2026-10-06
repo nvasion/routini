@@ -87,10 +87,63 @@ GitHub App or org-level credential beyond the scoped integration env.
 
 Containers run as uid 1000 with all capabilities dropped and
 `no-new-privileges`. They default to 2 CPUs, 4 GB of memory and a 30-minute
-timeout (per-step `resources` / `timeoutSec`; the timeout is also capped by the
-org's remaining agent minutes for the day). The worker reaches Docker through
-`DOCKER_HOST`, so a remote runner host (`ssh://…` or `tcp://…`) works without
-code changes.
+timeout (per-step `resources` / `timeoutSec`; in the sandbox the timeout is
+also capped by the org's remaining agent minutes for the day). The worker
+reaches Docker through `DOCKER_HOST`, so a remote runner host (`ssh://…` or
+`tcp://…`) works without code changes.
+
+## Fleet agents (`runOn`)
+
+An agent step normally runs in the Routini sandbox: a container on the Docker
+host the server or worker points at (`DOCKER_HOST`). Give the step a `runOn` and
+it runs on one of your own fleet servers instead:
+
+```jsonc
+{ "type": "agent", "agent": "claude", "prompt": "…", "runOn": { "hostId": "…" } }
+{ "type": "agent", "agent": "claude", "prompt": "…", "runOn": { "host": "alert" } }
+```
+
+`{ host: "alert" }` resolves to the host the alert matched, like a command step
+does. `runOn` and `environmentId` are mutually exclusive: a step runs on a fleet
+host or in an environment, never both.
+
+The container, its egress proxy and the repository checkout all live on that
+host; Routini only streams the output. So the code never leaves your network,
+and the agent can reach what that server reaches.
+
+**What the host needs**
+
+- [routini-runner](https://github.com/nvasion/routini-runner) connected, with
+  `"capabilities": ["exec", "pty", "agents"]` in its `config.json` — without
+  `agents` the step fails with *This host's runner does not run agents; enable
+  "agents" in its config.json*.
+- Docker on that host, reachable by the runner's user. The runner starts the
+  agent container and the egress proxy beside it.
+- SSH hosts cannot run agents: the step is rejected when the job is saved.
+
+**Images the runner pulls** (set on the Routini server, not on the host):
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `ROUTINI_FLEET_AGENT_IMAGE_CLAUDE` | `ghcr.io/nvasion/routini-agent-claude:latest` | Claude Code on fleet hosts. |
+| `ROUTINI_FLEET_AGENT_IMAGE_OMNIMANCER` | — | Omnimancer; without it those steps fail with a clear message. |
+| `ROUTINI_FLEET_AGENT_IMAGE_OPENCODE` | — | OpenCode; same. |
+| `ROUTINI_FLEET_EGRESS_IMAGE` | `ghcr.io/nvasion/routini-egress:latest` | The egress proxy started next to the agent container. |
+
+These are separate from the `ROUTINI_AGENT_IMAGE_*` vars, which stay with the
+sandbox: a fleet host usually wants a published image it can pull, while the
+sandbox may use one you built locally.
+
+The images must be **public**. v1 sends no registry credentials, so a runner
+pulls anonymously; a private image fails at pull time. [images.yml](../.github/workflows/images.yml)
+publishes both to GHCR on every `v*` tag, multi-arch (amd64 and arm64) and
+tagged `X.Y.Z`, `X.Y` and `latest`.
+
+Policy still applies — rules can match agent steps by where they run (sandbox or
+fleet host) and by that host's tags and groups. **Fleet agent time does not
+count toward the org's `agentMinutesPerDay`**: that budget is for the Routini
+sandbox, and these minutes are your own server's. The per-step `timeoutSec`
+still bounds the run.
 
 ## Known gap (Phase 2)
 

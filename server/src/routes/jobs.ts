@@ -37,16 +37,33 @@ function parseOr400(raw: unknown, current?: JobSpec): JobSpec {
 
 /** References a spec makes to other org resources must exist in this org. */
 async function checkReferences(q: Queryable, orgId: string, spec: JobSpec): Promise<void> {
+  /** The host a step names, or a 400 naming the exact field. */
+  const hostOr400 = async (hostId: string | undefined, path: string) => {
+    const host = hostId ? await getHost(q, orgId, hostId) : null
+    if (!host) throw badRequest(`${path} does not match a host in this org`)
+    return host
+  }
   for (const [i, s] of spec.steps.entries()) {
+    const p = `steps[${i}].config`
     if (s.kind === 'action' && s.config.type === 'ssh') {
       if (s.config.host === 'alert') {
-        if (spec.trigger.kind !== 'alert') throw badRequest(`steps[${i}].config.host "alert" needs an alert trigger`)
-      } else if (!s.config.hostId || !(await getHost(q, orgId, s.config.hostId))) {
-        throw badRequest(`steps[${i}].config.hostId does not match a host in this org`)
+        if (spec.trigger.kind !== 'alert') throw badRequest(`${p}.host "alert" needs an alert trigger`)
+      } else {
+        await hostOr400(s.config.hostId, `${p}.hostId`)
       }
     }
-    if (s.kind === 'agent' && s.config.environmentId && !(await getEnvironment(q, orgId, s.config.environmentId))) {
-      throw badRequest(`steps[${i}].config.environmentId does not match an environment in this org`)
+    if (s.kind === 'agent') {
+      if (s.config.environmentId && !(await getEnvironment(q, orgId, s.config.environmentId))) {
+        throw badRequest(`${p}.environmentId does not match an environment in this org`)
+      }
+      const runOn = s.config.runOn
+      if (runOn && 'hostId' in runOn) {
+        // Agents need the runner's container tooling; SSH-only hosts cannot host them.
+        const host = await hostOr400(runOn.hostId, `${p}.runOn.hostId`)
+        if (host.transport === 'ssh') {
+          throw badRequest(`${p}.runOn: agents need a host connected with routini-runner; "${host.name}" uses SSH`)
+        }
+      }
     }
   }
 }

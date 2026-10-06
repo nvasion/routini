@@ -57,6 +57,29 @@ describe('fleet', () => {
     expect(within(main).getByText('3 servers · 1/2 runners online')).toBeTruthy()
   })
 
+  it('badges hosts whose runner can run agents, and shows the Docker version', async () => {
+    const agents = runnerHost({
+      id: 'h4',
+      name: 'build-01',
+      runner: { ...runnerHost().runner!, id: 'r4', capabilities: ['exec', 'pty', 'agents'], facts: { osPretty: 'Debian 12', docker: '27.1.1' } },
+    })
+    mockFetch(baseRoutes({ 'GET /api/orgs/acme/hosts': () => ({ hosts: [runnerHost(), agents] }) }))
+    renderAt('/o/acme/fleet')
+    const main = await screen.findByRole('main')
+    const build = await within(main).findByRole('article', { name: 'build-01' })
+    expect(within(build).getByText('agents')).toBeTruthy()
+    expect(within(build).getByText('docker 27.1.1')).toBeTruthy()
+
+    // web-01's runner has no agents capability and reported no Docker.
+    const web01 = within(main).getByRole('article', { name: 'web-01' })
+    expect(within(web01).queryByText('agents')).toBeNull()
+    expect(within(web01).queryByText(/^docker /)).toBeNull()
+
+    fireEvent.click(within(web01).getByRole('button', { name: 'Details' }))
+    const dialog = await screen.findByRole('dialog', { name: 'web-01' })
+    expect(within(dialog).getByText('not found')).toBeTruthy()
+  })
+
   it('adds a server: install commands, then waits for the runner to connect', async () => {
     let hosts: Host[] = []
     const log = mockFetch(
@@ -91,6 +114,71 @@ describe('fleet', () => {
     hosts = [runnerHost({ id: 'h9', name: 'db-01' })]
     await waitFor(() => expect(within(dialog).getByText('db-01')).toBeTruthy(), { timeout: 4000 })
     expect(within(dialog).getByText(/is connected/)).toBeTruthy()
+  })
+})
+
+describe('job editor: running an agent on a fleet host', () => {
+  const ENV = { id: 'e1', name: 'app', image: 'routini/agent', repo: null, status: 'running' as const, statusDetail: null, cpus: 2, memoryMb: 2048, idleMinutes: 30, lastActiveAt: '', createdAt: '' }
+  const AGENT_JOB: Job = {
+    id: 'j1',
+    name: 'Ship it',
+    description: '',
+    enabled: true,
+    trigger: { kind: 'manual' },
+    nextRunAt: null,
+    createdAt: '',
+    updatedAt: '',
+    steps: [{ id: 'fix', name: 'Fix', kind: 'agent', when: 'on_success', retries: 0, config: { agent: 'claude', prompt: 'Restart nginx' } }],
+  }
+
+  function editor() {
+    const noAgents = runnerHost({ id: 'h2', name: 'web-02', runner: { ...runnerHost().runner!, id: 'r2' } })
+    const ssh = runnerHost({ id: 'h3', name: 'lab-01', transport: 'ssh', runner: null })
+    return mockFetch(
+      baseRoutes({
+        'GET /api/orgs/acme/jobs/j1': () => ({ job: AGENT_JOB }),
+        'GET /api/orgs/acme/hosts': () => ({ hosts: [runnerHost({ runner: { ...runnerHost().runner!, capabilities: ['exec', 'agents'] } }), noAgents, ssh] }),
+        'GET /api/orgs/acme/environments': () => ({ environments: [ENV] }),
+        'PUT /api/orgs/acme/jobs/j1': ({ body }) => ({ job: { ...AGENT_JOB, ...(body as object) } }),
+      }),
+    )
+  }
+
+  it('lists runner hosts, disables the ones that cannot take agents, and saves runOn', async () => {
+    const log = editor()
+    renderAt('/o/acme/jobs/j1')
+    const main = await screen.findByRole('main')
+    const runOn = (await within(main).findByLabelText('Run on')) as HTMLSelectElement
+    expect([...runOn.options].map((o) => [o.textContent, o.disabled])).toEqual([
+      ['Routini sandbox', false],
+      ["The alert's host (alert-triggered jobs only)", true],
+      ['web-01', false],
+      ['web-02 (agents not enabled)', true],
+    ])
+
+    fireEvent.change(runOn, { target: { value: 'h1' } })
+    fireEvent.click(within(main).getByRole('button', { name: 'Save changes' }))
+    await waitFor(() => expect(log.calls.some((c) => c.method === 'PUT')).toBe(true))
+    const steps = (log.calls.find((c) => c.method === 'PUT')!.body as { steps: Array<{ config: unknown }> }).steps
+    expect(steps[0]!.config).toEqual({ agent: 'claude', prompt: 'Restart nginx', runOn: { hostId: 'h1' } })
+  })
+
+  it('keeps the environment and the fleet host mutually exclusive', async () => {
+    editor()
+    renderAt('/o/acme/jobs/j1')
+    const main = await screen.findByRole('main')
+    const runOn = (await within(main).findByLabelText('Run on')) as HTMLSelectElement
+    const runsIn = within(main).getByLabelText('Runs in') as HTMLSelectElement
+
+    fireEvent.change(runOn, { target: { value: 'h1' } })
+    expect(runsIn.value).toBe('')
+    fireEvent.change(runsIn, { target: { value: 'e1' } })
+    expect(runOn.value).toBe('')
+    expect(runOn.disabled).toBe(true)
+
+    // Back to a fresh container: the host can be chosen again.
+    fireEvent.change(runsIn, { target: { value: '' } })
+    expect(runOn.disabled).toBe(false)
   })
 })
 

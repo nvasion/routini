@@ -25,7 +25,9 @@ export function hostState(h: Host): { status: 'ok' | 'warn' | 'fail' | 'off'; la
   return { status: 'ok', label: h.transport === 'runner' ? 'online' : 'healthy' }
 }
 
+// Runner facts are whatever the runner reported; read them defensively.
 const num = (v: unknown) => (typeof v === 'number' ? v : undefined)
+const str = (v: unknown) => (typeof v === 'string' && v ? v : undefined)
 
 export function FleetPage() {
   const org = useOrg()
@@ -159,17 +161,25 @@ function HostCard({ host: h, onTerminal, onDetails, onChecked }: { host: Host; o
             {h.name}
           </span>
         </span>
-        <span className={`badge${h.transport === 'runner' ? ' accent' : ''}`}>{h.transport === 'runner' ? `runner ${h.runner?.version ?? ''}`.trim() : 'ssh'}</span>
+        <span className="inline" style={{ gap: 6 }}>
+          {h.runner?.capabilities.includes('agents') && (
+            <span className="badge" title="This runner can run agent steps on the host">
+              agents
+            </span>
+          )}
+          <span className={`badge${h.transport === 'runner' ? ' accent' : ''}`}>{h.transport === 'runner' ? `runner ${h.runner?.version ?? ''}`.trim() : 'ssh'}</span>
+        </span>
       </div>
       <span className="meta">{state.label}</span>
       <div className="meta host-facts">
         <span>{h.transport === 'runner' ? h.runner?.hostname ?? h.address : `${h.username}@${h.address}:${h.port}`}</span>
-        <span>{(facts['osPretty'] as string | undefined) ?? h.lastCheck?.kernel ?? '—'}</span>
+        <span>{str(facts['osPretty']) ?? h.lastCheck?.kernel ?? '—'}</span>
         <span>{h.lastCheck?.uptime ?? '—'}</span>
         <span>
           {num(facts['load1']) !== undefined ? `load ${num(facts['load1'])!.toFixed(2)}` : '—'}
           {num(facts['cpus']) !== undefined ? ` · ${num(facts['cpus'])} cpu` : ''}
         </span>
+        {str(facts.docker) && <span>docker {str(facts.docker)}</span>}
       </div>
       {h.lastCheck?.ok && (state.status !== 'fail' || h.transport === 'ssh') && (
         <div className="stack" style={{ gap: 6 }}>
@@ -236,6 +246,8 @@ function HostDetails({ host: h, onClose, onRemoved }: { host: Host; onClose: () 
             <dd className="mono">{Array.isArray(facts['addresses']) ? (facts['addresses'] as string[]).join(', ') : h.address}</dd>
             <dt>Allows</dt>
             <dd>{h.runner?.capabilities.join(', ') || 'nothing'}</dd>
+            <dt>Docker</dt>
+            <dd className="mono">{str(facts.docker) ?? 'not found'}</dd>
             <dt>Last seen</dt>
             <dd>{h.runner?.lastSeenAt ? relativeTime(h.runner.lastSeenAt) : 'never'}</dd>
           </>

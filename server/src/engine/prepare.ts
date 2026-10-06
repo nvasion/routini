@@ -1,7 +1,8 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Turns a job's step spec into what actually runs: templates rendered from the
-// run's trigger and earlier steps, `host: 'alert'` resolved to the incident's
-// host, and the alert context put in front of agent prompts. Runs before
+// run's trigger and earlier steps, `host: 'alert'` (a command's target or an
+// agent's `runOn`) resolved to the incident's host, and the alert context put
+// in front of agent prompts. Runs before
 // policy, so rules see the real target host.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -39,6 +40,11 @@ export async function prepareStep(app: AppContext, run: Run, spec: Step, steps: 
     if (!t.hostId) return { error: 'This step targets the alert\'s host, but the alert did not match a host in the fleet' }
     const { host: _alias, ...rest } = step.config
     step = { ...step, config: { ...rest, hostId: t.hostId } }
+  }
+  if (step.kind === 'agent' && step.config.runOn && 'host' in step.config.runOn) {
+    if (t.kind !== 'alert') return { error: 'This agent step runs on the alert\'s host, but the run was not started by an alert' }
+    if (!t.hostId) return { error: 'This agent step runs on the alert\'s host, but the alert did not match a host in the fleet' }
+    step = { ...step, config: { ...step.config, runOn: { hostId: t.hostId } } }
   }
 
   step = renderStep(step, data)

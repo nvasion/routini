@@ -1,7 +1,7 @@
 // Job editor form model ⇄ API payload. Pure; see jobForm.test.ts.
 // The server validates everything again; this catches the obvious early.
 
-import type { AgentId, Job, Step, StepKind, When } from '../lib/types'
+import type { AgentId, Host, Job, Step, StepKind, When } from '../lib/types'
 
 export interface StepForm {
   key: string
@@ -45,6 +45,8 @@ export interface StepForm {
   model: string
   /** Run in this environment (its repository) instead of a fresh container. */
   environmentId: string
+  /** Run on a fleet host: a host id, or ALERT_HOST. Blank is the Routini sandbox. */
+  runOnHostId: string
   /** Give the agent Routini's MCP tools (fleet commands, runs, incidents). */
   routini: boolean
   // approval
@@ -68,6 +70,63 @@ export interface JobForm {
 
 /** Step host value meaning "the host the alert is about" (config `host: 'alert'`). */
 export const ALERT_HOST = 'alert'
+
+/** A spec's host fields as one form value: ALERT_HOST, a host id, or blank. */
+function hostValue(target: { hostId?: string; host?: 'alert' } | undefined): string {
+  if (!target) return ''
+  return target.host === 'alert' ? ALERT_HOST : target.hostId ?? ''
+}
+
+/** The form value back as the spec writes it: `host: 'alert'` or a host id. */
+function hostTarget(value: string): { host: 'alert' } | { hostId: string } {
+  return value === ALERT_HOST ? { host: 'alert' } : { hostId: value }
+}
+
+/** Only alert-triggered jobs can target the host an alert is about. */
+function checkAlertHost(value: string, form: JobForm, label: string, errors: string[]): void {
+  if (value === ALERT_HOST && form.triggerKind !== 'alert') errors.push(`${label}: only alert-triggered jobs can run on the alert's host.`)
+}
+
+/** One entry of the agent step's "Run on" select. */
+export interface RunOnOption {
+  value: string
+  label: string
+  /** Listed so the choice is visible, but not selectable; the label says why. */
+  disabled?: boolean
+}
+
+/**
+ * Why a fleet host cannot take agent work, or null when it can. Revoked and
+ * disconnected runners read the same ("offline"): either way nothing reaches them.
+ */
+export function runOnBlocked(host: Host): string | null {
+  const r = host.runner
+  if (!r || r.revoked || !r.online) return 'offline'
+  if (!r.capabilities.includes('agents')) return 'agents not enabled'
+  return null
+}
+
+/**
+ * The "Run on" choices for an agent step: the Routini sandbox (the default),
+ * the alert's host, and every runner host. Hosts that cannot run agents are
+ * listed but disabled so it is clear why they can't be picked.
+ */
+export function runOnOptions(opts: { hosts: Host[]; alertTrigger: boolean; selected: string }): RunOnOption[] {
+  const options: RunOnOption[] = [{ value: '', label: 'Routini sandbox' }]
+  // Always listed, so the choice is discoverable and a value saved under an
+  // alert trigger stays visible after the trigger changes — but only selectable
+  // on alert-triggered jobs, which is what toPayload enforces.
+  options.push({ value: ALERT_HOST, label: `The alert's host${opts.alertTrigger ? '' : ' (alert-triggered jobs only)'}`, disabled: !opts.alertTrigger })
+  for (const h of opts.hosts) {
+    if (h.transport !== 'runner') continue
+    const blocked = runOnBlocked(h)
+    options.push({ value: h.id, label: blocked ? `${h.name} (${blocked})` : h.name, disabled: blocked !== null })
+  }
+  // A host that has left the fleet: keep the saved value visible and named by
+  // its id, rather than silently moving the step back to the sandbox.
+  if (opts.selected && !options.some((o) => o.value === opts.selected)) options.push({ value: opts.selected, label: `Host ${opts.selected} (no longer in the fleet)`, disabled: true })
+  return options
+}
 
 let counter = 0
 const nextKey = () => `s${++counter}`
@@ -111,6 +170,7 @@ export function emptyStep(kind: StepKind, index: number): StepForm {
     checkCommand: '',
     model: '',
     environmentId: '',
+    runOnHostId: '',
     routini: false,
     message: '',
     minRole: 'member',
@@ -157,7 +217,7 @@ function fromStep(s: Step, i: number): StepForm {
     if (c.type === 'http') {
       Object.assign(f, { url: c.url, method: c.method ?? 'GET', expectStatus: c.expectStatus ? String(c.expectStatus) : '', headersJson: c.headers ? JSON.stringify(c.headers, null, 2) : '', body: c.body ?? '' })
     } else if (c.type === 'ssh') {
-      Object.assign(f, { hostId: c.host === 'alert' ? ALERT_HOST : c.hostId ?? '', command: c.command })
+      Object.assign(f, { hostId: hostValue(c), command: c.command })
     } else if (c.type === 'factory') {
       Object.assign(f, {
         factoryOperation: c.operation,
@@ -174,7 +234,18 @@ function fromStep(s: Step, i: number): StepForm {
     }
   } else if (s.kind === 'agent') {
     const c = s.config
-    Object.assign(f, { agent: c.agent, prompt: c.prompt, repoUrl: c.repo?.url ?? '', baseBranch: c.repo?.baseBranch ?? 'main', output: c.output ?? (c.repo || c.environmentId ? 'pr' : 'none'), checkCommand: c.check?.command ?? '', model: c.model ?? '', environmentId: c.environmentId ?? '', routini: c.routini === true })
+    Object.assign(f, {
+      agent: c.agent,
+      prompt: c.prompt,
+      repoUrl: c.repo?.url ?? '',
+      baseBranch: c.repo?.baseBranch ?? 'main',
+      output: c.output ?? (c.repo || c.environmentId ? 'pr' : 'none'),
+      checkCommand: c.check?.command ?? '',
+      model: c.model ?? '',
+      environmentId: c.environmentId ?? '',
+      runOnHostId: hostValue(c.runOn),
+      routini: c.routini === true,
+    })
   } else {
     Object.assign(f, { message: s.config.message, minRole: s.config.minRole ?? 'member' })
   }
@@ -215,9 +286,9 @@ export function toPayload(form: JobForm): PayloadResult {
         base['config'] = cfg
       } else if (s.actionType === 'ssh') {
         if (!s.hostId) errors.push(`${label}: choose a host.`)
-        if (s.hostId === ALERT_HOST && form.triggerKind !== 'alert') errors.push(`${label}: only alert-triggered jobs can run on the alert's host.`)
+        checkAlertHost(s.hostId, form, label, errors)
         if (!s.command.trim()) errors.push(`${label}: enter a command.`)
-        base['config'] = s.hostId === ALERT_HOST ? { type: 'ssh', host: 'alert', command: s.command } : { type: 'ssh', hostId: s.hostId, command: s.command }
+        base['config'] = { type: 'ssh', ...hostTarget(s.hostId), command: s.command }
       } else if (s.actionType === 'factory') {
         const idOk = (v: string) => /^[A-Za-z0-9_-]+$/.test(v.trim())
         if (s.factoryOperation === 'prd') {
@@ -249,6 +320,13 @@ export function toPayload(form: JobForm): PayloadResult {
       } else if (s.repoUrl.trim()) {
         cfg['repo'] = { url: s.repoUrl.trim(), baseBranch: s.baseBranch.trim() || 'main' }
         cfg['output'] = s.output
+      }
+      if (s.runOnHostId) {
+        // The server rejects both too; catching it here keeps the message next
+        // to the two fields that disagree.
+        if (s.environmentId) errors.push(`${label}: run on a fleet host or in an environment, not both.`)
+        checkAlertHost(s.runOnHostId, form, label, errors)
+        cfg['runOn'] = hostTarget(s.runOnHostId)
       }
       if (s.checkCommand.trim()) cfg['check'] = { command: s.checkCommand.trim() }
       if (s.model.trim()) cfg['model'] = s.model.trim()

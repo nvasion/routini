@@ -66,6 +66,8 @@ export interface AgentConfig {
   check?: { command: string }
   model?: string
   environmentId?: string
+  /** Run on a fleet host (routini-runner) instead of the Routini sandbox. */
+  runOn?: { hostId: string } | { host: 'alert' }
   /** Routini's own MCP tools for the agent. */
   routini?: boolean
 }
@@ -194,6 +196,12 @@ export interface Host {
   runner: HostRunner | null
 }
 
+/**
+ * What the runner reports about its machine (osPretty, load1, cpus, addresses…).
+ * `docker` is the Docker version it found, absent when Docker is not installed.
+ */
+export type RunnerFacts = Record<string, unknown> & { docker?: string }
+
 export interface HostRunner {
   id: string
   name: string
@@ -203,7 +211,7 @@ export interface HostRunner {
   connectedAt: string | null
   lastSeenAt: string | null
   capabilities: string[]
-  facts: Record<string, unknown> | null
+  facts: RunnerFacts | null
   revoked: boolean
 }
 
@@ -286,6 +294,7 @@ export interface PolicyMatch {
   hostTags?: string[]
   hostGroups?: string[]
   agentOutputs?: Array<'pr' | 'branch' | 'none'>
+  agentPlacements?: Array<'sandbox' | 'fleet'>
   inEnvironment?: boolean
   repoHosts?: string[]
 }

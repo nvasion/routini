@@ -30,6 +30,21 @@ export interface BrokerConfig {
 
 export class BrokerError extends Error {}
 
+export const DEFAULT_SANDBOX_NETWORK_PREFIX = 'routini-sb'
+
+/**
+ * Name of the internal network an org's sandboxed containers share — on
+ * Routini's Docker host, and on a fleet host where the runner creates it. The
+ * full org id: a prefix could collide and put two orgs on one network.
+ */
+export function sandboxNetworkName(prefix: string, orgId: string): string {
+  return `${prefix}-${orgId}`
+}
+
+export function sandboxNetworkPrefix(env: NodeJS.ProcessEnv = process.env): string {
+  return env['ROUTINI_SANDBOX_NETWORK_PREFIX']?.trim() || DEFAULT_SANDBOX_NETWORK_PREFIX
+}
+
 export class BrokerClient {
   private ca: string | null = null
   private readonly ready = new Map<string, Promise<string>>()
@@ -59,8 +74,7 @@ export class BrokerClient {
 
   /** Ensures the org's internal network exists and the proxy is attached to it. Returns its name. */
   network(orgId: string): Promise<string> {
-    // The full org id: a prefix could collide and put two orgs on one network.
-    const name = `${this.cfg.networkPrefix}-${orgId}`
+    const name = sandboxNetworkName(this.cfg.networkPrefix, orgId)
     let p = this.ready.get(name)
     if (!p) {
       p = this.ensureNetwork(name, orgId).catch((err) => {
@@ -137,6 +151,6 @@ export function brokerConfigFromEnv(env: NodeJS.ProcessEnv = process.env): Broke
     proxyHost: env['ROUTINI_EGRESS_PROXY_HOST']?.trim() || 'routini-egress',
     proxyPort: Number(env['ROUTINI_EGRESS_PROXY_PORT'] ?? 3128),
     proxyContainer: env['ROUTINI_EGRESS_CONTAINER']?.trim() || 'routini-egress',
-    networkPrefix: env['ROUTINI_SANDBOX_NETWORK_PREFIX']?.trim() || 'routini-sb',
+    networkPrefix: sandboxNetworkPrefix(env),
   }
 }

@@ -289,6 +289,15 @@ function RuleCard(props: { rule: RuleForm; index: number; count: number; onChang
             value={m.agentOutputs}
             onChange={(v) => setMatch({ agentOutputs: v })}
           />
+          <Checks
+            label="Where agents run"
+            options={[
+              ['sandbox', 'Sandbox'],
+              ['fleet', 'Fleet host'],
+            ]}
+            value={m.agentPlacements}
+            onChange={(v) => setMatch({ agentPlacements: v })}
+          />
           <div className="row">
             <Field label="Repository hosts" hint="e.g. github.com">
               {(id) => <input id={id} className="input mono" value={r.lists.repoHosts} onChange={(e) => setList('repoHosts', e.target.value)} />}

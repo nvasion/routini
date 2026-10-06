@@ -113,6 +113,63 @@ describe('run page', () => {
     expect(post).toMatchObject({ url: '/api/orgs/acme/runs/7/steps/1/approve', body: { comment: 'go ahead' } })
   })
 
+  it('says where agent steps pinned to a fleet host run', async () => {
+    const agent = (id: string, runOn: unknown): RunDetail['run']['jobSnapshot']['steps'][number] =>
+      ({ id, name: id, kind: 'agent', when: 'on_success', retries: 0, config: { agent: 'claude', prompt: 'Fix it', runOn } }) as RunDetail['run']['jobSnapshot']['steps'][number]
+    const detail: RunDetail = {
+      ...DETAIL,
+      run: { ...DETAIL.run, jobSnapshot: { name: '5xx triage', steps: [agent('known', { hostId: 'h1' }), agent('gone', { hostId: 'h-missing' }), agent('alert', { host: 'alert' })] } },
+      steps: [0, 1, 2].map((idx) => ({ idx, stepId: ['known', 'gone', 'alert'][idx]!, name: ['known', 'gone', 'alert'][idx]!, kind: 'agent' as const, status: 'succeeded' as const, attempt: 1, output: null, error: null, startedAt: null, finishedAt: null })),
+      approvals: [],
+    }
+    mockFetch(
+      baseRoutes({
+        'GET /api/orgs/acme/runs/7': () => detail,
+        'GET /api/orgs/acme/hosts': () => ({
+          hosts: [
+            {
+              id: 'h1',
+              name: 'web-01',
+              group: 'prod',
+              address: '10.0.0.11',
+              port: 22,
+              username: null,
+              auth: 'key',
+              credentialKey: null,
+              tags: [],
+              lastCheck: null,
+              transport: 'runner',
+              runner: { id: 'r1', name: 'web-01', version: '0.1.0', hostname: 'web-01', online: true, connectedAt: null, lastSeenAt: null, capabilities: ['exec', 'agents'], facts: {}, revoked: false },
+            },
+          ],
+        }),
+      }),
+    )
+    renderAt('/o/acme/runs/7')
+    const main = await screen.findByRole('main')
+    expect(await within(main).findByText('claude · on web-01')).toBeTruthy()
+    // A host the page cannot name (removed, or not visible) stays generic.
+    expect(within(main).getByText('claude · on a fleet host')).toBeTruthy()
+    expect(within(main).getByText("claude · on alert's host")).toBeTruthy()
+  })
+
+  it('warns when fleet host names cannot be loaded for a pinned step', async () => {
+    const detail: RunDetail = {
+      ...DETAIL,
+      run: {
+        ...DETAIL.run,
+        jobSnapshot: { name: '5xx triage', steps: [{ id: 'fix', name: 'Fix', kind: 'agent', when: 'on_success', retries: 0, config: { agent: 'claude', prompt: 'Fix it', runOn: { hostId: 'h1' } } }] },
+      },
+      steps: [{ idx: 0, stepId: 'fix', name: 'Fix', kind: 'agent', status: 'succeeded', attempt: 1, output: null, error: null, startedAt: null, finishedAt: null }],
+      approvals: [],
+    }
+    mockFetch(baseRoutes({ 'GET /api/orgs/acme/runs/7': () => detail, 'GET /api/orgs/acme/hosts': () => [500, { error: 'hosts unavailable' }] }))
+    renderAt('/o/acme/runs/7')
+    const main = await screen.findByRole('main')
+    expect(await within(main).findByText(/Fleet host names could not be loaded/)).toBeTruthy()
+    expect(within(main).getByText('claude · on a fleet host')).toBeTruthy()
+  })
+
   it('hides approve for a viewer and cancels for a member', async () => {
     mockFetch(
       baseRoutes({

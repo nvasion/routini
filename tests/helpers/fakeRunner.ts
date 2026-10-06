@@ -12,6 +12,34 @@ export interface ExecStart {
   timeoutSec: number
 }
 
+export interface AgentStart {
+  id: string
+  image: string
+  pull: 'missing' | 'always'
+  user: string
+  cpus: number
+  memoryMb: number
+  pidsLimit: number
+  timeoutSec: number
+  env: Record<string, string>
+  labels: Record<string, string>
+  egress: { image: string; network: string; session: Record<string, unknown> }
+}
+
+/** Counters an agent.exit may report about the host's egress proxy. */
+export interface EgressStats {
+  requests: number
+  intercepted: number
+  blocked: string[]
+}
+
+export interface ExitExtra {
+  timedOut?: boolean
+  canceled?: boolean
+  error?: string | null
+  egress?: EgressStats
+}
+
 export interface FakeRunnerOptions {
   baseUrl: string
   credential: string
@@ -20,6 +48,8 @@ export interface FakeRunnerOptions {
   facts?: Record<string, unknown>
   /** Default: print the command and exit 0. */
   onExec?: (start: ExecStart, r: FakeRunner) => void | Promise<void>
+  /** Only called when the runner advertises the `agents` capability. */
+  onAgent?: (start: AgentStart, r: FakeRunner) => void | Promise<void>
 }
 
 export class FakeRunner {
@@ -61,6 +91,7 @@ export class FakeRunner {
           resolve(f)
         }
         if (f['type'] === 'exec.start') void (this.o.onExec ?? defaultExec)(f as unknown as ExecStart, this)
+        if (f['type'] === 'agent.start' && this.o.onAgent) void this.o.onAgent(f as unknown as AgentStart, this)
       })
     })
   }
@@ -73,8 +104,16 @@ export class FakeRunner {
     this.send({ type: 'exec.output', id, stream, data })
   }
 
-  exit(id: string, exitCode: number | null, extra: { timedOut?: boolean; canceled?: boolean; error?: string | null } = {}): void {
-    this.send({ type: 'exec.exit', id, exitCode, timedOut: extra.timedOut ?? false, canceled: extra.canceled ?? false, error: extra.error ?? null })
+  exit(id: string, exitCode: number | null, extra: ExitExtra = {}): void {
+    this.send({ type: 'exec.exit', id, ...exitFields(exitCode, extra) })
+  }
+
+  agentOutput(id: string, data: string, stream: 'stdout' | 'stderr' = 'stdout'): void {
+    this.send({ type: 'agent.output', id, stream, data })
+  }
+
+  agentExit(id: string, exitCode: number | null, extra: ExitExtra = {}): void {
+    this.send({ type: 'agent.exit', id, ...exitFields(exitCode, extra), egress: extra.egress ?? null })
   }
 
   /** Waits for a frame of `type` (optionally matching `pred`). */
@@ -92,6 +131,13 @@ export class FakeRunner {
     this.ws.close(code)
   }
 }
+
+const exitFields = (exitCode: number | null, extra: ExitExtra) => ({
+  exitCode,
+  timedOut: extra.timedOut ?? false,
+  canceled: extra.canceled ?? false,
+  error: extra.error ?? null,
+})
 
 const defaultExec = (s: ExecStart, r: FakeRunner) => {
   r.output(s.id, `ran: ${s.command}`)

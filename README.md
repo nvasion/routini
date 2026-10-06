@@ -40,6 +40,12 @@ alert
 - **Agent steps** run Claude Code in an ephemeral container (see
   [agents/](agents/README.md)), stream what it does into the timeline, run your
   done-check (e.g. `npm test`), push a branch and open the pull request.
+- **Fleet agents:** an agent step with `runOn` (a host, or the alert's host)
+  runs on one of your own servers through its runner instead of in the Routini
+  sandbox, so the repository and the model traffic stay in your network. The
+  host's runner needs the `agents` capability and Docker, the images must be
+  public, and that time does not count toward the org's agent minutes — see
+  [agents/](agents/README.md#fleet-agents-runon).
 - Every log line, output and error is **redacted** against the secrets that
   step was given.
 - **Environments** are persistent workspaces: a container plus a `/workspace`
@@ -155,6 +161,9 @@ stored secrets cannot be decrypted.
 | `CLIENT_URL` | `http://localhost:5173` | Console origin (CORS). |
 | `DOCKER_HOST` | local socket | Where agent containers run. |
 | `ROUTINI_AGENT_IMAGE_CLAUDE` | `routini/agent-claude:latest` | Agent image (also `_OMNIMANCER`, `_OPENCODE`). |
+| `ROUTINI_FLEET_AGENT_IMAGE_CLAUDE` | `ghcr.io/nvasion/routini-agent-claude:latest` | Agent image a fleet host pulls for `runOn` steps. |
+| `ROUTINI_FLEET_AGENT_IMAGE_OMNIMANCER`, `…_OPENCODE` | — | The same for those agents; without one, their fleet steps fail with a clear message. |
+| `ROUTINI_FLEET_EGRESS_IMAGE` | `ghcr.io/nvasion/routini-egress:latest` | Egress proxy a fleet host runs beside the agent container. |
 | `ROUTINI_WORKER_CONCURRENCY` | `4` | Runs per worker process. |
 | `ROUTINI_ENV_IMAGES` | agent images | Hosted mode: images environments may use (comma separated). Self-host allows any image. |
 | `ROUTINI_PUBLIC_URL` | `CLIENT_URL` | Where runners and monitoring tools reach this server (install commands and the alert endpoint use it). |
@@ -187,6 +196,8 @@ stored secrets cannot be decrypted.
 - **Limits** per org: concurrent runs, agent minutes per day, model budget per
   day. Plans set the ceiling; admins can tighten it. Self-hosted orgs default to
   10 concurrent runs and no daily caps; hosted free orgs to 2 and 120 minutes.
+  Agent steps that run on a fleet host (`runOn`) burn your own server's time, so
+  they do not count toward agent minutes per day.
 - With the credential broker on, sandboxed containers never receive real
   credentials and can only reach allow-listed hosts. Without it (self-host
   default), agents get the keys they are scoped to as environment variables.

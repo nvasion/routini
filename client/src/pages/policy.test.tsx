@@ -4,7 +4,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { baseRoutes, FakeEventSource, mockFetch, renderAt } from '../test/harness'
-import type { Job, OrgPolicy, RunDetail } from '../lib/types'
+import type { Job, OrgPolicy, PolicyRule, RunDetail } from '../lib/types'
 
 beforeEach(() => {
   FakeEventSource.instances = []
@@ -55,6 +55,34 @@ describe('policy settings', () => {
       ],
       egress: { allowedHosts: ['api.anthropic.com', '*.example.com'] },
     })
+  })
+
+  it('matches agent steps by where they run', async () => {
+    const log = mockFetch(
+      baseRoutes({
+        'GET /api/orgs/acme/policy': () => ({ policy: { ...POLICY, rules: [{ id: 'fleet-prod', name: 'Agents on prod hosts', match: { kinds: ['agent'], agentPlacements: ['fleet'], hostTags: ['prod'] }, effect: 'require_approval', minRole: 'admin' }] }, brokerEnabled: true }),
+        'PUT /api/orgs/acme/policy': ({ body }) => ({ policy: { ...POLICY, ...(body as object), isDefault: false }, brokerEnabled: true }),
+      }),
+    )
+    renderAt('/o/acme/settings/policy')
+    const main = await screen.findByRole('main')
+    expect(await within(main).findByRole('group', { name: 'Where agents run' })).toBeTruthy()
+    const box = (name: string) => within(main).getByRole('checkbox', { name }) as HTMLInputElement
+    expect(box('Fleet host').checked).toBe(true)
+    expect(box('Sandbox').checked).toBe(false)
+
+    fireEvent.click(box('Sandbox'))
+    fireEvent.click(within(main).getByRole('button', { name: 'Save policy' }))
+    await within(main).findByText(/Policy saved/)
+    const matchOf = (i: number) => (log.calls.filter((c) => c.method === 'PUT')[i]!.body as { rules: PolicyRule[] }).rules[0]!.match
+    expect(matchOf(0)).toEqual({ kinds: ['agent'], agentPlacements: ['fleet', 'sandbox'], hostTags: ['prod'] })
+
+    // Clearing both checkboxes drops the condition: the rule then matches agents anywhere.
+    fireEvent.click(box('Sandbox'))
+    fireEvent.click(box('Fleet host'))
+    fireEvent.click(within(main).getByRole('button', { name: 'Save policy' }))
+    await waitFor(() => expect(log.calls.filter((c) => c.method === 'PUT')).toHaveLength(2))
+    expect(matchOf(1)).toEqual({ kinds: ['agent'], hostTags: ['prod'] })
   })
 
   it('is read-only for members', async () => {

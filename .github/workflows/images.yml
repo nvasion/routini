@@ -1,0 +1,113 @@
+# Publishes the images a fleet host pulls (see agents/README.md):
+#
+#   ghcr.io/nvasion/routini-agent-claude   the Claude Code agent image
+#   ghcr.io/nvasion/routini-egress         the credential broker / egress proxy
+#
+# Both are multi-arch (linux/amd64, linux/arm64) and tagged {X.Y.Z, X.Y, latest}
+# from a v* tag. Runners pull them without registry auth, so both packages must
+# be public — GHCR creates a package private on its first push, so set each
+# one's visibility to Public once after that.
+
+name: Images
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish, e.g. v1.4.2 (default: the tag this ran on).'
+        required: false
+        type: string
+
+# Least privilege by default; only the publish job may write packages.
+permissions:
+  contents: read
+
+concurrency:
+  group: images-${{ inputs.version || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # One place decides what {X.Y.Z, X.Y, latest} mean for this run, so every
+  # image in the matrix is published under exactly the same tags.
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      latest: ${{ steps.resolve.outputs.latest }}
+    steps:
+      - name: Resolve version
+        id: resolve
+        # Via env, never interpolated into the script: the input is untrusted.
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${INPUT_VERSION:-$REF_NAME}"
+          if [[ ! "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::'$version' is not a vX.Y.Z version; run this workflow on a v* tag or pass one as the version input."
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          # A prerelease (v1.4.2-rc.1) gets X.Y.Z and X.Y, but never latest.
+          if [[ "$version" == *-* ]]; then echo 'latest=false' >> "$GITHUB_OUTPUT"; else echo 'latest=true' >> "$GITHUB_OUTPUT"; fi
+          echo "Publishing $version" >> "$GITHUB_STEP_SUMMARY"
+
+  publish:
+    needs: version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: agent-claude
+            image: ghcr.io/nvasion/routini-agent-claude
+            context: agents
+            dockerfile: agents/claude-code/Dockerfile
+            target: ''
+          - name: egress
+            image: ghcr.io/nvasion/routini-egress
+            context: server
+            dockerfile: server/Dockerfile
+            target: egress
+    steps:
+      - uses: actions/checkout@v4
+
+      # arm64 is built under emulation; the runners are amd64.
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ matrix.image }}
+          tags: |
+            type=semver,pattern={{version}},value=${{ needs.version.outputs.version }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.version.outputs.version }}
+            type=raw,value=latest,enable=${{ needs.version.outputs.latest == 'true' }}
+          labels: |
+            org.opencontainers.image.title=routini-${{ matrix.name }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          target: ${{ matrix.target }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
