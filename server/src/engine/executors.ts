@@ -12,6 +12,7 @@ import type { ActionConfig, ApprovalConfig } from './spec.js'
 import { runFactoryAction } from './factory.js'
 import { execOnRunner, STDOUT_TAIL_BYTES } from '../runner/exec.js'
 import { shellExports } from './template.js'
+import { emitPlacement } from './placement.js'
 import type { EngineOptions, StepContext, StepExecutor, StepResult } from './types.js'
 
 interface ExecutorResult {
@@ -34,6 +35,7 @@ export function actionExecutor(opts: EngineOptions['actions'] = {}): StepExecuto
 
       switch (cfg.type) {
         case 'http': {
+          await emitPlacement(ctx, { target: 'routini', host: 'Routini worker' })
           const config: Record<string, string> = { url: cfg.url, method: cfg.method ?? 'GET' }
           if (cfg.expectStatus !== undefined) config['expectedStatus'] = String(cfg.expectStatus)
           if (cfg.timeoutMs !== undefined) config['timeout'] = String(cfg.timeoutMs)
@@ -50,6 +52,7 @@ export function actionExecutor(opts: EngineOptions['actions'] = {}): StepExecuto
 
           if (host.transport === 'runner') {
             if (!host.runner || host.runner.revoked) return { status: 'failed', error: `Host "${host.name}" has no active runner` }
+            await emitPlacement(ctx, { target: 'fleet', via: 'runner', host: host.name, hostId: host.id })
             await ctx.log(`Host ${host.name} via routini-runner${host.runner.online ? '' : ' (offline; waiting for it to reconnect)'}`)
             const r = await execOnRunner(ctx, {
               runnerId: host.runner.id,
@@ -76,6 +79,7 @@ export function actionExecutor(opts: EngineOptions['actions'] = {}): StepExecuto
               return undefined
             },
           }
+          await emitPlacement(ctx, { target: 'fleet', via: 'ssh', host: host.name, hostId: host.id })
           await ctx.log(`Host ${host.name} (${host.username}@${host.address}:${host.port})`)
           // Template values travel as exports we quote ourselves (SSH servers rarely accept env).
           const command = cfg.env && Object.keys(cfg.env).length ? shellExports(cfg.env) + cfg.command : cfg.command
@@ -87,9 +91,11 @@ export function actionExecutor(opts: EngineOptions['actions'] = {}): StepExecuto
         }
 
         case 'factory':
+          await emitPlacement(ctx, { target: 'factory', host: 'Factory' })
           return runFactoryAction(ctx, cfg, { fetchImpl: opts.factoryFetch, pollMs: opts.factoryPollMs })
 
         case 'imap': {
+          await emitPlacement(ctx, { target: 'routini', host: 'Routini worker' })
           const password = await ctx.secret(cfg.credentialKey)
           if (!password) return { status: 'failed', error: `Credential "${cfg.credentialKey}" is missing` }
           const config: Record<string, string> = { host: cfg.host, username: cfg.username }
