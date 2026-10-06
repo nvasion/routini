@@ -1,18 +1,18 @@
 import { useState, type FormEvent } from 'react'
-import { Navigate, useLocation, useNavigate } from 'react-router-dom'
+import { Link, Navigate, useLocation, useNavigate } from 'react-router-dom'
 import { ErrorBanner, Field } from '../components/ui'
 import { pickDefaultOrg, useAuth } from '../lib/auth'
 import { Mark } from '../components/Brand'
 import { useApi } from '../lib/hooks'
 
-export function LoginPage() {
+export function LoginPage({ initialMode = 'login' }: { initialMode?: 'login' | 'signup' } = {}) {
   const { session, login, signup } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
-  const providers = useApi<{ oidc: { name: string } | null }>('/api/auth/providers')
+  const providers = useApi<{ oidc: { name: string } | null; signupOpen?: boolean }>('/api/auth/providers')
   const callbackError = new URLSearchParams(location.search).get('error')
   const next = (location.state as { from?: string } | null)?.from ?? '/'
-  const [mode, setMode] = useState<'login' | 'signup'>('login')
+  const [mode, setMode] = useState<'login' | 'signup'>(initialMode)
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [displayName, setDisplayName] = useState('')
@@ -97,10 +97,18 @@ export function LoginPage() {
           )}
           <ErrorBanner error={error} />
           <button type="submit" className="btn primary" disabled={busy}>
-            {busy ? 'Working…' : mode === 'login' ? 'Sign in' : 'Create account'}
+            {busy ? 'Workingâ¦' : mode === 'login' ? 'Sign in' : 'Create account'}
           </button>
         </form>
+        {mode === 'signup' && providers.data?.signupOpen === false && (
+          <p className="muted" style={{ margin: 0, fontSize: 13 }}>
+            Signup is closed on this server. Ask an admin to add you{providers.data.oidc ? `, or continue with ${providers.data.oidc.name} if your org is linked` : ''}.
+          </p>
+        )}
       </div>
+      <Link className="auth-back" to="/">
+        New to Routini? See what it does →
+      </Link>
     </div>
   )
 }

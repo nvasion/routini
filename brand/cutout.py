@@ -95,3 +95,11 @@ if __name__ == '__main__':
     client = os.path.join(HERE, '..', 'client', 'src', 'brand')
     if os.path.isdir(client):
         emb.resize((256, 256), Image.LANCZOS).save(os.path.join(client, 'emblem.png'))
+        # The public pages show the art large, on its paper ground.
+        emb.resize((512, 512), Image.LANCZOS).save(os.path.join(client, 'emblem-lg.png'))
+        for f in ('wordmark.png', 'character.png'):
+            Image.open(f'{o}/{f}').save(os.path.join(client, f))
+        # WebP copies for the public pages (a fraction of the PNG size, with alpha).
+        for f in ('emblem-lg.png', 'wordmark.png', 'character.png'):
+            Image.open(os.path.join(client, f)).save(os.path.join(client, f.replace('.png', '.webp')), 'WEBP', quality=88, method=6)
+            os.remove(os.path.join(client, f))

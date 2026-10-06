@@ -148,8 +148,14 @@ export function oidcRouter(ctx: AppContext, auth: Auth): Router {
 
   const toLogin = (res: Response, message: string) => res.redirect(302, `${ctx.config.clientUrl}/login?error=${encodeURIComponent(message)}`)
 
+  // What the login and landing pages offer: an identity provider, and whether
+  // email signup is open (open, or first-user-only on a server with no users yet).
   r.get('/providers', (_req, res) => {
-    res.json({ oidc: cfg ? { name: cfg.name } : null })
+    void (async () => {
+      const signup = ctx.config.signup
+      const signupOpen = signup === 'open' || (signup === 'first-user-only' && (await countUsers(ctx.db)) === 0)
+      res.json({ oidc: cfg ? { name: cfg.name } : null, signupOpen })
+    })().catch(() => res.json({ oidc: cfg ? { name: cfg.name } : null, signupOpen: false }))
   })
 
   r.get('/oidc/start', (req: Request, res: Response) => {

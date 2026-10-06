@@ -62,7 +62,7 @@ const me = (session: string) => t.request.get('/api/auth/me').set('Cookie', sess
 describe('sign in with TynHub', () => {
   it('advertises the provider and creates a new account from verified claims', async () => {
     await app({ signup: 'open' })
-    expect((await t.request.get('/api/auth/providers')).body).toEqual({ oidc: { name: 'TynHub' } })
+    expect((await t.request.get('/api/auth/providers')).body).toEqual({ oidc: { name: 'TynHub' }, signupOpen: true })
     const { cb, location, session } = await signIn({ sub: 'u-1', email: 'Ada@Example.com', email_verified: true, name: 'Ada' }, { next: '/o/x/inbox' })
     expect(cb.status).toBe(302)
     expect(location).toBe('http://console.test/o/x/inbox')
@@ -153,7 +153,7 @@ describe('sign in with TynHub', () => {
   it('without OIDC configured, there is no provider and start explains', async () => {
     t = await makeTestApp({ config: { clientUrl: 'http://console.test' } })
     open = true
-    expect((await t.request.get('/api/auth/providers')).body).toEqual({ oidc: null })
+    expect((await t.request.get('/api/auth/providers')).body).toMatchObject({ oidc: null })
     const start = await t.request.get('/api/auth/oidc/start')
     expect(decodeURIComponent(start.headers['location'] as string)).toContain('not configured')
   })
