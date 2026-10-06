@@ -1,3 +1,14 @@
+<p align="center">
+  <a href="https://routini.tynhub.com"><img src="client/public/og.png" alt="Routini — Your AI engineer, on call." width="720"></a>
+</p>
+
+<p align="center">
+  <a href="https://routini.tynhub.com"><b>routini.tynhub.com</b></a> ·
+  <a href="https://routini.tynhub.com/docs/getting-started">Getting started</a> ·
+  <a href="https://github.com/nvasion/routini-runner">routini-runner</a> ·
+  <a href="brand/README.md">Brand</a>
+</p>
+
 # Routini
 
 **An AI engineer platform.** Routini runs jobs for you: scheduled checks, server
@@ -6,7 +17,7 @@ requests. Every run is recorded step by step, anything risky waits for a person
 to approve it, and you can watch it all happen live.
 
 Open source under the [AGPL-3.0](LICENSE). Self-host it, or use it hosted on
-TynHub at routini.tynhub.com.
+TynHub at [routini.tynhub.com](https://routini.tynhub.com) (alpha, open signup).
 
 ## How it works
 
