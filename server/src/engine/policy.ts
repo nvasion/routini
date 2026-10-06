@@ -18,12 +18,14 @@ export type ActionType = 'http' | 'ssh' | 'imap' | 'factory'
 export interface PolicyMatch {
   kinds?: Array<'action' | 'agent'>
   actionTypes?: ActionType[]
-  /** SSH steps: the target host has any of these tags. */
+  /** SSH steps, and agent steps that run on a fleet host: the target host has any of these tags. */
   hostTags?: string[]
-  /** SSH steps: the target host is in any of these groups. */
+  /** SSH steps, and agent steps that run on a fleet host: the target host is in any of these groups. */
   hostGroups?: string[]
   /** Agent steps: the result mode. */
   agentOutputs?: Array<'pr' | 'branch' | 'none'>
+  /** Agent steps: where the agent runs — Routini's sandbox or a fleet host. */
+  agentPlacements?: Array<'sandbox' | 'fleet'>
   /** Agent steps: running inside a persistent environment (true) or a fresh container (false). */
   inEnvironment?: boolean
   /** Agent steps: repository hostname is one of these. */
@@ -47,6 +49,8 @@ export interface StepFacts {
   actionType?: ActionType
   host?: { tags: string[]; group: string }
   agentOutput?: 'pr' | 'branch' | 'none'
+  /** Agent steps: 'fleet' when the step runs on a fleet host, 'sandbox' otherwise. */
+  agentPlacement?: 'sandbox' | 'fleet'
   inEnvironment?: boolean
   repoHost?: string
 }
@@ -66,6 +70,7 @@ export function ruleMatches(rule: PolicyRule, f: StepFacts): boolean {
   if (m.hostTags?.length && !(f.host && f.host.tags.some((t) => m.hostTags!.includes(t)))) return false
   if (m.hostGroups?.length && !(f.host && m.hostGroups.includes(f.host.group))) return false
   if (!anyOf(m.agentOutputs, f.agentOutput)) return false
+  if (!anyOf(m.agentPlacements, f.agentPlacement)) return false
   if (m.inEnvironment !== undefined && m.inEnvironment !== Boolean(f.inEnvironment)) return false
   if (!anyOf(m.repoHosts, f.repoHost)) return false
   return true
@@ -123,6 +128,7 @@ export function parseRules(raw: unknown): PolicyRule[] {
       hostTags: strList(m['hostTags'], `${p}.match.hostTags`),
       hostGroups: strList(m['hostGroups'], `${p}.match.hostGroups`),
       agentOutputs: strList(m['agentOutputs'], `${p}.match.agentOutputs`, ['pr', 'branch', 'none']) as PolicyMatch['agentOutputs'],
+      agentPlacements: strList(m['agentPlacements'], `${p}.match.agentPlacements`, ['sandbox', 'fleet']) as PolicyMatch['agentPlacements'],
       repoHosts: strList(m['repoHosts'], `${p}.match.repoHosts`),
     }
     if (m['inEnvironment'] !== undefined) {
@@ -143,15 +149,18 @@ export function parseRules(raw: unknown): PolicyRule[] {
   })
 }
 
-/** Gathers what policy needs to know about a step (its target host, repository, output). */
+/** The target host's tags and group, when the step names a host that still exists. */
+async function hostFacts(q: Queryable, orgId: string, hostId: string): Promise<StepFacts['host']> {
+  const host = await getHost(q, orgId, hostId)
+  return host ? { tags: host.tags, group: host.group } : undefined
+}
+
+/** Gathers what policy needs to know about a step (its target host, repository, output, placement). */
 export async function stepFacts(q: Queryable, orgId: string, step: Step): Promise<StepFacts> {
   if (step.kind === 'approval') return { kind: 'approval' }
   if (step.kind === 'action') {
     const facts: StepFacts = { kind: 'action', actionType: step.config.type as ActionType }
-    if (step.config.type === 'ssh' && step.config.hostId) {
-      const host = await getHost(q, orgId, step.config.hostId)
-      if (host) facts.host = { tags: host.tags, group: host.group }
-    }
+    if (step.config.type === 'ssh' && step.config.hostId) facts.host = await hostFacts(q, orgId, step.config.hostId)
     return facts
   }
   const cfg = step.config
@@ -163,10 +172,14 @@ export async function stepFacts(q: Queryable, orgId: string, step: Step): Promis
   } catch {
     repoHost = undefined
   }
-  return {
+  const facts: StepFacts = {
     kind: 'agent',
     agentOutput: repoUrl ? (cfg.output ?? 'pr') : 'none',
+    agentPlacement: cfg.runOn ? 'fleet' : 'sandbox',
     inEnvironment: Boolean(cfg.environmentId),
     repoHost,
   }
+  // After prepare, runOn is always { hostId }; a draft may still carry { host: 'alert' }, whose host is unknown here.
+  if (cfg.runOn && 'hostId' in cfg.runOn) facts.host = await hostFacts(q, orgId, cfg.runOn.hostId)
+  return facts
 }

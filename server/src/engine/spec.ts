@@ -57,6 +57,8 @@ export interface AgentConfig {
   model?: string
   /** Run inside this persistent environment (and its repository) instead of a fresh container. */
   environmentId?: string
+  /** Run on this fleet host (routini-runner with the agents capability) instead of the Routini sandbox. */
+  runOn?: { hostId: string } | { host: 'alert' }
   /** Give the agent Routini's own MCP tools (fleet commands, runs, incidents) with a run-scoped token. */
   routini?: boolean
   resources?: { cpus?: number; memoryMb?: number }
