@@ -32,16 +32,26 @@ import {
   recordRunnerFacts,
   RUNNER_CHANNEL,
   RUNNER_OUT_CHANNEL,
+  sealedAad,
   sentTasksFor,
   touchRunner,
+  type AgentSecret,
   type ExecResultData,
   type Runner,
+  type RunnerTask,
 } from '../repos/runners.js'
+
+/** A runner without the "agents" capability cannot be asked to run one. */
+export const NO_AGENTS_ERROR = 'This host\'s runner does not run agents; enable "agents" in its config.json'
+
+const CAPABILITIES = ['exec', 'pty', 'agents'] as const
 
 export const PROTOCOL_VERSION = 1
 const CONNECT_PATH = '/api/runner/connect'
 const MAX_NOTIFY_BYTES = 6000
 const MAX_LINE = 4000
+const MAX_BLOCKED = 100
+const MAX_HOST = 253
 
 export class GatewayError extends Error {
   constructor(
@@ -150,7 +160,7 @@ export class RunnerGateway {
       const conn = msg.runnerId ? this.conns.get(msg.runnerId) : undefined
       if (!conn) return
       if (msg.op === 'start' && msg.taskId) void this.dispatch(conn, msg.taskId)
-      else if (msg.op === 'cancel' && msg.taskId) this.send(conn, { type: 'exec.cancel', id: msg.taskId })
+      else if (msg.op === 'cancel' && msg.taskId) void this.cancel(conn, msg.taskId)
       else if (msg.op === 'revoke') this.revokeLocal(conn)
       else if (msg.op === 'replace' && msg.instance !== conn.key) this.drop(conn, 4000, 'replaced by a newer connection')
     })
@@ -273,7 +283,9 @@ export class RunnerGateway {
 
   private async onHello(ws: WebSocket, runner: Runner, hello: Record<string, unknown>): Promise<Conn> {
     const str = (v: unknown, max = 200) => (typeof v === 'string' ? v.slice(0, max) : '')
-    const capabilities = Array.isArray(hello['capabilities']) ? (hello['capabilities'] as unknown[]).filter((c): c is string => c === 'exec' || c === 'pty') : []
+    const capabilities = Array.isArray(hello['capabilities'])
+      ? (hello['capabilities'] as unknown[]).filter((c): c is string => typeof c === 'string' && (CAPABILITIES as readonly string[]).includes(c))
+      : []
     const facts = isObj(hello['facts']) ? (hello['facts'] as Record<string, unknown>) : null
     const info = { version: str(hello['version'], 40), hostname: str(hello['hostname'], 253), os: str(hello['os'], 40), arch: str(hello['arch'], 40), capabilities, facts }
 
@@ -377,7 +389,8 @@ export class RunnerGateway {
       case 'facts':
         if (isObj(f['facts'])) void this.onFacts(conn, f['facts'] as Record<string, unknown>)
         return
-      case 'exec.output': {
+      case 'exec.output':
+      case 'agent.output': {
         if (!id || typeof f['data'] !== 'string') return
         const s = f['stream'] === 'stderr' ? 'stderr' : 'stdout'
         const d = (f['data'] as string).length > MAX_LINE ? `${(f['data'] as string).slice(0, MAX_LINE)}…` : (f['data'] as string)
@@ -388,6 +401,7 @@ export class RunnerGateway {
         return
       }
       case 'exec.exit':
+      case 'agent.exit':
         if (id) void this.onExit(conn, id, f)
         return
       case 'pty.opened':
@@ -426,11 +440,10 @@ export class RunnerGateway {
       timedOut: f['timedOut'] === true,
       canceled: f['canceled'] === true,
       error: typeof f['error'] === 'string' && f['error'] ? (f['error'] as string).slice(0, 500) : null,
+      egress: egressStats(f['egress']),
     }
     const status = result.canceled ? 'canceled' : result.error ? 'failed' : 'done'
-    await this.ctx.db.org(conn.runner.orgId, (q) => finishRunnerTask(q, conn.runner.orgId, taskId, status, result)).catch((err) => {
-      console.error('[runner] could not record exec result:', (err as Error).message)
-    })
+    await this.finish(conn.runner.orgId, taskId, status, result)
   }
 
   /** Sends buffered output to waiting workers, in order, in NOTIFY-sized batches. */
@@ -468,16 +481,78 @@ export class RunnerGateway {
     const { orgId } = conn.runner
     const task = await this.ctx.db.org(orgId, (q) => claimRunnerTask(q, orgId, taskId, conn.key)).catch(() => null)
     if (!task) return // someone else claimed it, or it is not queued any more
-    if (task.cancelRequested) {
-      await this.ctx.db.org(orgId, (q) => finishRunnerTask(q, orgId, task.id, 'canceled', { exitCode: null, timedOut: false, canceled: true, error: null }))
+    if (task.cancelRequested) return void (await this.finish(orgId, task.id, 'canceled', { exitCode: null, timedOut: false, canceled: true, error: null }))
+
+    let frame: object
+    try {
+      frame = this.startFrame(conn, task)
+    } catch (err) {
+      await this.finish(orgId, task.id, 'failed', { exitCode: null, timedOut: false, canceled: false, error: (err as Error).message })
       return
     }
-    const p = task.payload
-    this.send(conn, { type: 'exec.start', id: task.id, command: p.command, env: p.env ?? {}, cwd: p.cwd ?? null, timeoutSec: p.timeoutSec })
+    this.send(conn, frame)
     // A cancel may have landed between the claim and the send.
     const fresh = await this.ctx.db.org(orgId, (q) => getRunnerTask(q, orgId, task.id)).catch(() => null)
-    if (fresh?.cancelRequested) this.send(conn, { type: 'exec.cancel', id: task.id })
+    if (fresh?.cancelRequested) this.send(conn, { type: cancelType(task), id: task.id })
   }
+
+  /** Builds the start frame for a task; throws a runner-visible message it cannot run. */
+  private startFrame(conn: Conn, task: RunnerTask): object {
+    const p = task.payload
+    if (p.type !== 'agent') {
+      return { type: 'exec.start', id: task.id, command: p.command, env: p.env ?? {}, cwd: p.cwd ?? null, timeoutSec: p.timeoutSec }
+    }
+    if (!conn.runner.capabilities.includes('agents')) throw new Error(NO_AGENTS_ERROR)
+    let secret: AgentSecret
+    try {
+      secret = JSON.parse(this.ctx.box.open(p.sealed, sealedAad(task.id))) as AgentSecret
+    } catch (err) {
+      throw new Error(`Could not open the agent task's secrets: ${(err as Error).message}`)
+    }
+    return {
+      type: 'agent.start',
+      id: task.id,
+      image: p.image,
+      pull: p.pull,
+      user: p.user,
+      cpus: p.cpus,
+      memoryMb: p.memoryMb,
+      pidsLimit: p.pidsLimit,
+      timeoutSec: p.timeoutSec,
+      env: secret.env,
+      labels: p.labels,
+      egress: { image: p.egressImage, network: p.network, session: secret.session },
+    }
+  }
+
+  /** Cancels a task on the runner, with the frame its kind understands. */
+  private async cancel(conn: Conn, taskId: string): Promise<void> {
+    const { orgId } = conn.runner
+    const task = await this.ctx.db.org(orgId, (q) => getRunnerTask(q, orgId, taskId)).catch(() => null)
+    this.send(conn, { type: task ? cancelType(task) : 'exec.cancel', id: taskId })
+  }
+
+  private async finish(orgId: string, taskId: string, status: 'done' | 'failed' | 'canceled', result: ExecResultData): Promise<void> {
+    await this.ctx.db.org(orgId, (q) => finishRunnerTask(q, orgId, taskId, status, result)).catch((err) => {
+      console.error('[runner] could not record a task result:', (err as Error).message)
+    })
+  }
+}
+
+const cancelType = (task: RunnerTask) => (task.payload.type === 'agent' ? 'agent.cancel' : 'exec.cancel')
+
+/**
+ * Validates the egress counters an agent.exit reports; null when absent or
+ * malformed. Bounded, because the result is stored and shown in the timeline.
+ */
+function egressStats(v: unknown): ExecResultData['egress'] {
+  if (!isObj(v)) return null
+  const e = v as Record<string, unknown>
+  const num = (x: unknown) => (typeof x === 'number' && Number.isFinite(x) && x >= 0 ? Math.floor(x) : 0)
+  const blocked = Array.isArray(e['blocked'])
+    ? (e['blocked'] as unknown[]).filter((h): h is string => typeof h === 'string').map((h) => h.slice(0, MAX_HOST)).slice(0, MAX_BLOCKED)
+    : []
+  return { requests: num(e['requests']), intercepted: num(e['intercepted']), blocked }
 }
 
 function isObj(v: unknown): boolean {

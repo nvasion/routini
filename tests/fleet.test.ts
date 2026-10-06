@@ -7,11 +7,17 @@ import type { Server } from 'node:http'
 import { EventEmitter } from 'node:events'
 import { WebSocket } from 'ws'
 import { makeTestApp, type TestApp, type TestUser } from './helpers/testApp'
-import { FakeRunner, type ExecStart } from './helpers/fakeRunner'
+import { FakeRunner, type AgentStart, type ExecStart } from './helpers/fakeRunner'
 import { Worker } from '../server/src/engine/worker'
 import { attachHostTerminal } from '../server/src/http/hostTerminal'
 import type { Auth } from '../server/src/http/auth'
 import type { SshShell, SshShellOpener } from '../server/src/services/ssh'
+import { runAgentOnRunner } from '../server/src/runner/agent'
+import { NO_AGENTS_ERROR } from '../server/src/runner/gateway'
+import type { AgentPayload, AgentSecret } from '../server/src/repos/runners'
+import { getOrgById } from '../server/src/repos/identity'
+import { getRun } from '../server/src/repos/runs'
+import type { StepContext } from '../server/src/engine/types'
 
 let t: TestApp
 let u: TestUser
@@ -241,6 +247,199 @@ describe('command steps on runner hosts', () => {
     await drained
     await r.next('exec.cancel')
     expect((await u.get(`${base}/runs/${number}`)).body.run.status).toBe('canceled')
+  })
+})
+
+describe('agent tasks on runner hosts', () => {
+  // Two distinct secrets, so a test can tell which path leaked.
+  const BINDING_SECRET = 'ghp_binding_secret_7f3a91c0'
+  const ENV_SECRET = 'sk-ant-env-secret-42b7de90'
+  const AGENT_CAPS = ['exec', 'pty', 'agents']
+
+  const payload = (): Omit<AgentPayload, 'sealed'> => ({
+    type: 'agent',
+    image: 'routini/agent-fake:latest',
+    pull: 'missing',
+    user: '1000:1000',
+    cpus: 2,
+    memoryMb: 2048,
+    pidsLimit: 256,
+    timeoutSec: 600,
+    labels: { 'routini.run': 'r-1' },
+    egressImage: 'routini/egress:latest',
+    network: 'routini-run-1',
+  })
+
+  const secret = (): AgentSecret => ({
+    env: { ANTHROPIC_API_KEY: ENV_SECRET },
+    session: {
+      token: 'egress-session-token',
+      orgId: u.orgId,
+      label: 'run-1',
+      allowedHosts: ['github.com'],
+      bindings: [{ host: 'github.com', header: 'Authorization', format: 'basic-token', secret: BINDING_SECRET }],
+      expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+    },
+  })
+
+  /** The runner_tasks rows as stored, payload rendered as text so we can grep it. */
+  const taskRows = () =>
+    t.ctx.db.system((q) => q.query<{ payload: string; status: string }>(`SELECT payload::text AS payload, status FROM runner_tasks ORDER BY created_at`))
+
+  /**
+   * A minimal StepContext for a real run row (agent steps are not wired into
+   * the engine yet; runner_tasks.run_id is a foreign key, so the run must exist).
+   */
+  async function agentCtx(runId: string, signal = new AbortController().signal): Promise<StepContext> {
+    const org = await t.ctx.db.system((q) => getOrgById(q, u.orgId))
+    const run = await t.ctx.db.org(u.orgId, (q) => getRun(q, u.orgId, runId))
+    return {
+      app: t.ctx,
+      org: org!,
+      run: run!,
+      step: { id: 'agent', name: 'agent', kind: 'agent' },
+      idx: 0,
+      attempt: 1,
+      signal,
+      log: async () => {},
+      emit: async () => {},
+      secret: async () => null,
+      addSecret: () => {},
+      addUsage: async () => {},
+    } as unknown as StepContext
+  }
+
+  it('hands the sealed secrets to the runner and never stores them in the task row', async () => {
+    const { credential, hostId, runnerId } = await enroll()
+    let started: AgentStart | undefined
+    let duringTask: Array<{ payload: string; status: string }> = []
+    await runner(credential, undefined, {
+      capabilities: AGENT_CAPS,
+      onAgent: async (s, r) => {
+        started = s
+        duringTask = await taskRows()
+        r.agentOutput(s.id, 'reading the repo')
+        r.agentOutput(s.id, 'npm warn deprecated', 'stderr')
+        r.agentExit(s.id, 0, { egress: { requests: 7, intercepted: 2, blocked: ['evil.example'] } })
+      },
+    })
+    const { id: runId } = await commandJob(hostId, 'true')
+    const lines: string[] = []
+    const out = await runAgentOnRunner(await agentCtx(runId), {
+      runnerId,
+      hostName: 'web-01',
+      payload: payload(),
+      secret: secret(),
+      onLine: (line, stream) => lines.push(`${stream}:${line}`),
+      pollMs: 25,
+      offlineGraceMs: 400,
+    })
+
+    expect(out).toEqual({ ok: true, exitCode: 0, egress: { requests: 7, intercepted: 2, blocked: ['evil.example'] } })
+    expect(lines).toEqual(['stdout:reading the repo', 'stderr:npm warn deprecated'])
+
+    // The start frame carries the whole container spec, opened from `sealed`.
+    expect(started).toMatchObject({
+      image: 'routini/agent-fake:latest',
+      pull: 'missing',
+      user: '1000:1000',
+      cpus: 2,
+      memoryMb: 2048,
+      pidsLimit: 256,
+      timeoutSec: 600,
+      labels: { 'routini.run': 'r-1' },
+      env: { ANTHROPIC_API_KEY: ENV_SECRET },
+      egress: { image: 'routini/egress:latest', network: 'routini-run-1', session: { allowedHosts: ['github.com'] } },
+    })
+    // The binding secret reaches the runner, and only inside egress.session.bindings.
+    const frame = JSON.parse(JSON.stringify(started)) as AgentStart
+    expect(frame.egress.session['bindings']).toEqual([{ host: 'github.com', header: 'Authorization', format: 'basic-token', secret: BINDING_SECRET }])
+    delete frame.egress.session['bindings']
+    expect(JSON.stringify(frame)).not.toContain(BINDING_SECRET)
+
+    // The row never held either plaintext — not while running, not after.
+    expect(duringTask).toHaveLength(1)
+    expect(duringTask[0]!.status).toBe('sent')
+    expect(duringTask[0]!.payload).toContain('"sealed"')
+    for (const row of [...duringTask, ...(await taskRows())]) {
+      expect(row.payload).not.toContain(BINDING_SECRET)
+      expect(row.payload).not.toContain(ENV_SECRET)
+      expect(row.payload).not.toContain('egress-session-token')
+    }
+    // …and the sealed blob itself is dropped once the task is finished.
+    const after = await taskRows()
+    expect(after[0]!.status).toBe('done')
+    expect(after[0]!.payload).not.toContain('sealed')
+    expect(JSON.parse(after[0]!.payload)).toMatchObject({ type: 'agent', image: 'routini/agent-fake:latest' })
+  })
+
+  it('refuses a runner without the agents capability, leaving nothing sealed behind', async () => {
+    const { credential, hostId, runnerId } = await enroll()
+    const r = await runner(credential) // capabilities: exec, pty
+    const { id: runId } = await commandJob(hostId, 'true')
+    const out = await runAgentOnRunner(await agentCtx(runId), {
+      runnerId,
+      hostName: 'web-01',
+      payload: payload(),
+      secret: secret(),
+      onLine: () => {},
+      pollMs: 25,
+      offlineGraceMs: 400,
+    })
+    expect(out).toEqual({ ok: false, exitCode: null, error: NO_AGENTS_ERROR, egress: null })
+    expect(NO_AGENTS_ERROR).toBe('This host\'s runner does not run agents; enable "agents" in its config.json')
+    expect(r.frames.some((f) => f['type'] === 'agent.start')).toBe(false)
+    const rows = await taskRows()
+    expect(rows[0]!.status).toBe('failed')
+    expect(rows[0]!.payload).not.toContain('sealed')
+  })
+
+  it('cancels with agent.cancel when the step is aborted', async () => {
+    const { credential, hostId, runnerId } = await enroll()
+    const r = await runner(credential, undefined, { capabilities: AGENT_CAPS, onAgent: () => {} })
+    r.ws.on('message', (raw) => {
+      const f = JSON.parse(raw.toString()) as { type: string; id: string }
+      if (f.type === 'agent.cancel') r.agentExit(f.id, null, { canceled: true })
+    })
+    const { id: runId } = await commandJob(hostId, 'true')
+    const ac = new AbortController()
+    const pending = runAgentOnRunner(await agentCtx(runId, ac.signal), {
+      runnerId,
+      hostName: 'web-01',
+      payload: payload(),
+      secret: secret(),
+      onLine: () => {},
+      pollMs: 25,
+      offlineGraceMs: 400,
+    })
+    await r.next('agent.start')
+    ac.abort()
+    expect(await pending).toEqual({ ok: false, exitCode: null, error: 'Canceled', egress: null })
+    await r.next('agent.cancel')
+    expect(r.frames.some((f) => f['type'] === 'exec.cancel')).toBe(false)
+  })
+
+  it('fails clearly when the runner never comes online, and reports a non-zero exit', async () => {
+    const { credential, hostId, runnerId } = await enroll()
+    const { id: runId } = await commandJob(hostId, 'true')
+    const opts = { runnerId, hostName: 'web-01', payload: payload(), secret: secret(), onLine: () => {}, pollMs: 25, offlineGraceMs: 200 }
+    expect(await runAgentOnRunner(await agentCtx(runId), opts)).toEqual({
+      ok: false,
+      exitCode: null,
+      error: 'The runner on "web-01" is offline',
+      egress: null,
+    })
+    // The give-up also scrubs the sealed blob.
+    expect((await taskRows())[0]!.payload).not.toContain('sealed')
+
+    await runner(credential, undefined, { capabilities: AGENT_CAPS, onAgent: (s, r) => r.agentExit(s.id, 2) })
+    const { id: secondRun } = await commandJob(hostId, 'true')
+    expect(await runAgentOnRunner(await agentCtx(secondRun), opts)).toEqual({
+      ok: false,
+      exitCode: 2,
+      error: 'The agent exited with code 2',
+      egress: null,
+    })
   })
 })
 
