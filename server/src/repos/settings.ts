@@ -162,7 +162,7 @@ export function parseSettingsPatch(raw: unknown, current: OrgSettings): Settings
           merged.region = (cfg['region'] as string).trim()
           if (merged.region && !AWS_REGION_RE.test(merged.region)) fail(`ai.agents.${id}.region must be an AWS region such as us-east-1`)
         }
-        if (id === 'claude' && merged.endpoint === 'aws-bedrock' && !merged.region) {
+        if (merged.endpoint === 'aws-bedrock' && !merged.region) {
           fail(`ai.agents.${id}: the aws-bedrock endpoint requires a region`)
         }
         if (merged.endpoint === 'gateway') {

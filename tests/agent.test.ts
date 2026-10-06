@@ -61,9 +61,18 @@ describe('brokeredModelAccess', () => {
     expect(access.secrets).toEqual(['ABSKreal'])
   })
 
+  it('gives other agents on Bedrock the ROUTINI_ENDPOINT contract with a region, and the same bindings', () => {
+    const access = brokeredModelAccess('omnimancer', { endpoint: 'aws-bedrock', model: '', region: 'eu-central-1' }, 'ABSKreal')
+    expect(access.env).toEqual({ ROUTINI_ENDPOINT: 'aws-bedrock', ROUTINI_ENDPOINT_KEY: PLACEHOLDER, ROUTINI_ENDPOINT_REGION: 'eu-central-1' })
+    expect(access.hosts).toEqual(['bedrock-runtime.eu-central-1.amazonaws.com', 'bedrock.eu-central-1.amazonaws.com'])
+    expect(access.bindings.every((b) => b.header === 'authorization' && b.format === 'bearer' && b.secret === 'ABSKreal')).toBe(true)
+  })
+
   it('refuses Bedrock without a key or a region', () => {
-    expect(() => brokeredModelAccess('claude', { endpoint: 'aws-bedrock', model: '', region: 'us-east-1' }, null)).toThrow(/No AWS Bedrock API key/)
-    expect(() => brokeredModelAccess('claude', { endpoint: 'aws-bedrock', model: '' }, 'ABSKreal')).toThrow(/needs a region/)
+    for (const agent of ['claude', 'omnimancer'] as const) {
+      expect(() => brokeredModelAccess(agent, { endpoint: 'aws-bedrock', model: '', region: 'us-east-1' }, null)).toThrow(/No AWS Bedrock API key/)
+      expect(() => brokeredModelAccess(agent, { endpoint: 'aws-bedrock', model: '' }, 'ABSKreal')).toThrow(/needs a region/)
+    }
   })
 })
 
@@ -250,6 +259,27 @@ describe('agent steps', () => {
       ANTHROPIC_API_KEY: '',
       ROUTINI_MODEL: 'eu.anthropic.claude-test',
     })
+  })
+
+  it('passes Omnimancer its Bedrock endpoint, key and region', async () => {
+    const t2 = await makeTestApp({ engine: { executors: { agent: agentExecutor({ docker: fake.docker, images: { omnimancer: 'routini/agent-omnimancer:test' } }) } } })
+    try {
+      const u2 = await t2.signup('omni@example.com')
+      const base2 = `/api/orgs/${u2.orgSlug}`
+      await u2.put(`${base2}/settings`, { ai: { agents: { omnimancer: { endpoint: 'aws-bedrock', region: 'us-west-2', model: 'us.anthropic.claude-test' } } }, endpointApiKeys: { 'aws-bedrock': 'ABSKomnikey0123456789' } })
+      const job = await u2.post(`${base2}/jobs`, { name: 'Omni', steps: [{ name: 'agent', kind: 'agent', config: { agent: 'omnimancer', prompt: 'Fix it' } }] })
+      await u2.post(`${base2}/jobs/${job.body.job.id}/run`)
+      await new Worker(t2.ctx, t2.ctx.engine, { heartbeatMs: 20 }).drain()
+      expect(fake.spawned[0]!.env).toMatchObject({
+        ROUTINI_ENDPOINT: 'aws-bedrock',
+        ROUTINI_ENDPOINT_KEY: 'ABSKomnikey0123456789',
+        ROUTINI_ENDPOINT_REGION: 'us-west-2',
+        ROUTINI_MODEL: 'us.anthropic.claude-test',
+      })
+      expect(fake.spawned[0]!.env).not.toHaveProperty('ANTHROPIC_API_KEY')
+    } finally {
+      await t2.close()
+    }
   })
 
   it('refuses to start without a model key or an image', async () => {

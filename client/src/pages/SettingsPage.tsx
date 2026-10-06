@@ -331,7 +331,7 @@ function Models() {
               <Field label="Model" hint={agents[a].endpoint === 'aws-bedrock' ? 'Bedrock model or inference profile ID (e.g. us.anthropic.…). Blank = the agent\'s default.' : "Blank = the agent's default."}>
                 {(id) => <input id={id} className="input mono" value={agents[a].model} onChange={(e) => setAgents({ ...agents, [a]: { ...agents[a], model: e.target.value } })} />}
               </Field>
-              {a === 'claude' && agents[a].endpoint === 'aws-bedrock' && (
+              {agents[a].endpoint === 'aws-bedrock' && (
                 <Field label="AWS region" hint="Where your Bedrock models are enabled. The key is a Bedrock API key.">
                   {(id) => <input id={id} className="input mono" value={agents[a].region ?? ''} placeholder="us-east-1" onChange={(e) => setAgents({ ...agents, [a]: { ...agents[a], region: e.target.value } })} />}
                 </Field>

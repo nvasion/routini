@@ -35,6 +35,8 @@ those agents' steps fail with a clear message.
 | `ROUTINI_COMMIT_MESSAGE` | Commit message for the agent's changes. |
 | `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` | Model endpoint, from the org's AI settings. |
 | `CLAUDE_CODE_USE_BEDROCK` / `AWS_REGION` / `AWS_BEARER_TOKEN_BEDROCK` | Model endpoint when the org routes Claude Code through AWS Bedrock (Bedrock API key). |
+| `ROUTINI_ENDPOINT` / `ROUTINI_ENDPOINT_KEY` | Other agents (Omnimancer, OpenCode) instead of the vars above: the endpoint name from the AI settings (`anthropic`, `openrouter`, `aws-bedrock`, `gateway`, …) and its key. The image maps these onto the agent's own config. |
+| `ROUTINI_ENDPOINT_REGION` / `ROUTINI_GATEWAY_URL` | AWS region for `aws-bedrock` (the key is a Bedrock API key, sent as `authorization: Bearer`); URL for `gateway`. |
 | `GITHUB_TOKEN`, `SLACK_BOT_TOKEN`, … | Connected integrations whose scope includes this agent. |
 
 **Output (stdout)**
