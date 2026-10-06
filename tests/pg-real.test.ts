@@ -29,7 +29,24 @@ describe.skipIf(!url)('real Postgres (non-superuser owner)', () => {
 
   afterAll(async () => {
     await db?.close()
-    await withOwnerClient(url!, (q) => q.query('DROP SCHEMA public CASCADE; CREATE SCHEMA public;'))
+    // Drop what the test user created. Not the schema itself: on a managed
+    // cluster the user only has CREATE on `public`, it does not own it.
+    await withOwnerClient(url!, (q) =>
+      q.query(`DO $$ DECLARE r record; BEGIN
+        FOR r IN SELECT c.oid::regclass AS t FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+                 WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p') AND pg_get_userbyid(c.relowner) = current_user LOOP
+          EXECUTE format('DROP TABLE IF EXISTS %s CASCADE', r.t);
+        END LOOP;
+        FOR r IN SELECT p.oid::regprocedure AS f FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+                 WHERE n.nspname = 'public' AND pg_get_userbyid(p.proowner) = current_user LOOP
+          EXECUTE format('DROP FUNCTION IF EXISTS %s CASCADE', r.f);
+        END LOOP;
+        FOR r IN SELECT t.oid::regtype AS ty FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace
+                 WHERE n.nspname = 'public' AND t.typtype IN ('e', 'd', 'c') AND pg_get_userbyid(t.typowner) = current_user LOOP
+          EXECUTE format('DROP TYPE IF EXISTS %s CASCADE', r.ty);
+        END LOOP;
+      END $$`),
+    )
   })
 
   it('connects as a non-superuser and runs queries as routini_app', async () => {

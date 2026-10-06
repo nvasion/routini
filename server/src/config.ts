@@ -38,6 +38,8 @@ export interface Config {
   /** Sign-in with an OIDC provider (TynHub), or null. */
   oidc: { issuer: string; clientId: string; clientSecret: string; name: string; scopes: string } | null
   signup: SignupPolicy
+  /** Header the platform edge sets to the client address (ROUTINI_CLIENT_IP_HEADER, e.g. do-connecting-ip). */
+  clientIpHeader?: string
   /** Run the scheduler and queue worker inside the API process. Required with embedded Postgres. */
   inlineWorker: boolean
   /** Bootstrap account created on first boot when the database has no users. */
@@ -113,6 +115,7 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): Config {
     agentApiUrl: (nonEmpty('ROUTINI_AGENT_API_URL') ?? publicUrl).replace(/\/+$/, ''),
     oidc: oidcFromEnv(nonEmpty),
     signup,
+    clientIpHeader: nonEmpty('ROUTINI_CLIENT_IP_HEADER')?.toLowerCase(),
     inlineWorker,
     seed,
   }
