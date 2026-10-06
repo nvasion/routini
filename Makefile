@@ -1,4 +1,4 @@
-.PHONY: install dev build start test clean
+.PHONY: install dev dev-server dev-client build start worker test test-server test-client test-pg test-docker agents up down local local-down clean
 
 # Install all dependencies
 install:
@@ -6,34 +6,50 @@ install:
 	cd server && npm install
 	cd client && npm install
 
-# Run both server and client in development mode
+# API (embedded Postgres + inline worker) and console with hot reload
 dev:
 	npm run dev
-
-# Run only the server
 dev-server:
 	cd server && npm run dev
-
-# Run only the client
 dev-client:
 	cd client && npm run dev
 
-# Build for production
+# Production build and run (API; with DATABASE_URL also run `make worker`)
 build:
 	npm run build
-
-# Start production server
 start:
-	npm run start
+	cd server && npm start
+worker:
+	cd server && node dist/worker.js
 
-# Run tests
-test:
-	npm run test
+# Tests
+test: test-server test-client
+test-server:
+	cd server && NODE_ENV=test npx vitest run
+test-client:
+	cd client && npx vitest run --config vitest.config.ts
+# Opt-in suites: a real Postgres (non-superuser owner) and a real Docker daemon
+test-pg:
+	cd server && NODE_ENV=test npx vitest run ../tests/pg-real.test.ts
+test-docker:
+	cd server && ROUTINI_E2E_DOCKER=1 NODE_ENV=test npx vitest run ../tests/agent-docker.e2e.test.ts ../tests/environments-docker.e2e.test.ts ../tests/broker-docker.e2e.test.ts ../tests/runner-docker.e2e.test.ts
 
-# Clean build artifacts
+# Agent images (see agents/README.md)
+agents:
+	cd agents && docker build -f claude-code/Dockerfile -t routini/agent-claude:latest .
+	cd agents && docker build -f fake/Dockerfile -t routini/agent-fake:test .
+
+# Full stack in Docker (needs .env; see .env.example)
+up:
+	docker compose up --build -d
+down:
+	docker compose down
+
+# Everything on this machine: the stack plus a connected routini-runner (http://localhost:8088)
+local:
+	bash scripts/local.sh
+local-down:
+	bash scripts/local.sh down
+
 clean:
-	rm -rf server/dist
-	rm -rf client/dist
-	rm -rf node_modules
-	rm -rf server/node_modules
-	rm -rf client/node_modules
+	rm -rf server/dist client/dist node_modules server/node_modules client/node_modules

@@ -4,7 +4,7 @@
  * Executes a shell command on a remote host via SSH and returns the output as
  * task logs.  Uses the `ssh2` package under the hood.
  *
- * Configuration (from DailyTask.config — non-secret only):
+ * Configuration (from ActionTask.config — non-secret only):
  *   host        – target SSH hostname or IP (required)
  *   port        – SSH port; default "22"
  *   username    – SSH login name (required)
@@ -38,7 +38,7 @@
 
 import { Client } from 'ssh2'
 import type { ConnectConfig } from 'ssh2'
-import type { DailyTask } from '../types.js'
+import type { ActionTask } from './actionTypes.js'
 import { isSsrfSafeHostname, resolvedIpIsSsrfSafe } from '../utils/network.js'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -49,6 +49,9 @@ export interface SshTaskResult {
   logs: string[]
   /** Human-readable failure reason — never includes credentials. */
   error?: string
+  /** Raw stdout and exit code (when the command ran). */
+  stdout?: string
+  exitCode?: number | null
 }
 
 /** Low-level SSH execution contract used by the real ssh2 adapter and tests. */
@@ -99,6 +102,18 @@ export interface SshRunnerOptions {
    */
   ssrfCheck?: (hostname: string) => Promise<boolean>
   /**
+   * Allow private and loopback hosts. True for self-hosted installs, where the
+   * operator's servers live on their own network; false on the hosted service,
+   * where those addresses would reach Routini's infrastructure.
+   */
+  allowPrivateHosts?: boolean
+  /**
+   * Allow shell syntax (pipes, &&, $VAR, redirects) in the command. Commands
+   * are authored by org members for their own hosts, never assembled from
+   * untrusted input, so the engine enables this. Default false.
+   */
+  allowShellSyntax?: boolean
+  /**
    * Injectable credential resolver.  The default implementation checks the
    * encrypted credential store first and falls back to environment variables.
    * Pass a mock in unit tests to control the credential store without a DB.
@@ -106,114 +121,13 @@ export interface SshRunnerOptions {
   credentialProvider?: SshCredentialProvider
 }
 
-// ── Default credential provider (store-first → env-var fallback) ────────────
+// ── Default credential provider (environment) ─────────────────────────────────
+//
+// The engine passes an org-scoped credentialProvider for every SSH step. This
+// default exists for direct callers and tests: it reads environment variables.
 
-/**
- * Minimal shape of the encrypted credential store module this service relies
- * on.  Defined locally (rather than via `typeof import(...)`) so that this
- * service type-checks and compiles even before the credential store module
- * exists in the working tree — the store is an optional, lazily-loaded
- * dependency.  The real module in `server/src/services/credentialStore.ts`
- * is expected to export a `getCredential` function matching this contract.
- */
-interface CredentialStoreModule {
-  /**
-   * Retrieves a decrypted secret by name, or `null`/`undefined` when nothing
-   * is stored under `name`.  The returned value is the plaintext credential.
-   */
-  getCredential(name: string): Promise<string | null | undefined>
-}
-
-/**
- * Cached handle to the encrypted credential store module.
- *
- * The store is imported lazily so that this service remains usable (falling
- * back to environment variables) even when the store module has not been
- * initialised for the current process — e.g. in unit tests that only exercise
- * env-var credentials.  The import is attempted once and the outcome is
- * cached; subsequent lookups reuse the result without re-importing.
- *
- *   `undefined` – load not yet attempted
- *   `null`      – load attempted but the store is unavailable
- *   object      – the loaded credential store module
- */
-let credentialStoreModule: CredentialStoreModule | null | undefined
-let credentialStoreLoadAttempted = false
-
-/**
- * Lazily loads the encrypted credential store module, if available.
- * Returns `null` when the module is absent or fails to load — callers MUST
- * treat `null` as "store unavailable" and fall back to environment variables
- * rather than throwing.  A failure is logged once (server-side only) for
- * diagnostics but never surfaces to callers, keeping this resolution path
- * resilient.
- */
-async function loadCredentialStore(): Promise<CredentialStoreModule | null> {
-  if (credentialStoreLoadAttempted) return credentialStoreModule ?? null
-  credentialStoreLoadAttempted = true
-  try {
-    // Dynamic import keeps this optional: the service compiles and runs even
-    // before the credential store module exists in the working tree.  The
-    // module specifier is relative so it resolves within the project only.
-    // It is held in a variable so the import is resolved at runtime rather
-    // than statically by the compiler — the store is an optional dependency.
-    const specifier = './credentialStore.js'
-    const mod = (await import(specifier)) as Partial<CredentialStoreModule>
-    if (mod && typeof mod.getCredential === 'function') {
-      credentialStoreModule = mod as CredentialStoreModule
-    } else {
-      // Module present but does not expose the expected API — treat as
-      // unavailable and fall back to environment variables.
-      console.warn('[ssh] Credential store module present but missing getCredential export')
-      credentialStoreModule = null
-    }
-  } catch (err) {
-    // Store not available (module missing or not yet initialised).  This is
-    // a soft failure — fall back to environment variables.  Log server-side
-    // only; never include credential material in the message.
-    console.warn(
-      '[ssh] Credential store unavailable — falling back to environment variables:',
-      err instanceof Error ? err.message : 'unknown error',
-    )
-    credentialStoreModule = null
-  }
-  return credentialStoreModule
-}
-
-/**
- * Default credential resolver.
- *
- * Lookup order:
- *   1. Encrypted credential store (if available) — checked first so that
- *      secrets saved through the credentials API take precedence over
- *      process environment variables.
- *   2. `process.env[name]` — the original source of SSH credentials, kept as
- *      a fallback so existing deployments that configure secrets via env
- *      vars continue to work unchanged.
- *
- * Returns `undefined` when neither source has a value, signalling that the
- * credential is not configured.  Empty-string store values are treated as
- * "not set" so a blank stored secret never shadows a real env-var value.
- */
 const defaultCredentialProvider: SshCredentialProvider = {
   async get(name: string): Promise<string | undefined> {
-    const store = await loadCredentialStore()
-    if (store) {
-      try {
-        const stored = await store.getCredential(name)
-        if (stored && stored.trim() !== '') {
-          return stored
-        }
-      } catch (err) {
-        // A store read failure is non-fatal: fall through to the env-var
-        // fallback so a transient DB/decryption issue does not break SSH
-        // tasks that could otherwise run with env-based credentials.
-        console.warn(
-          `[ssh] Credential store read failed for "${name}" — falling back to env var:`,
-          err instanceof Error ? err.message : 'unknown error',
-        )
-      }
-    }
     const envValue = process.env[name]
     return envValue && envValue.trim() !== '' ? envValue : undefined
   },
@@ -284,6 +198,87 @@ class Ssh2Executor implements SshExecutor {
 
 const defaultExecutor = new Ssh2Executor()
 
+// ── Interactive shell (host terminals) ───────────────────────────────────────
+
+/** An interactive shell on an SSH host; same shape as a runner PTY session. */
+export interface SshShell {
+  onData(cb: (chunk: Buffer) => void): void
+  write(data: string): void
+  resize(cols: number, rows: number): void
+  close(): void
+  done: Promise<number | null>
+}
+
+export type SshShellOpener = (config: SshConnectConfig, size: { cols: number; rows: number }) => Promise<SshShell>
+
+/** Opens a login shell with a PTY. The connection closes when the shell exits. */
+export const openSsh2Shell: SshShellOpener = (config, size) =>
+  new Promise((resolve, reject) => {
+    const conn = new Client()
+    let settled = false
+    conn.on('ready', () => {
+      conn.shell({ term: 'xterm-256color', cols: size.cols, rows: size.rows }, (err, stream) => {
+        if (err) {
+          settled = true
+          conn.end()
+          return reject(new Error('The SSH server refused to open a shell'))
+        }
+        settled = true
+        const done = new Promise<number | null>((r) => {
+          let code: number | null = null
+          stream.on('exit', (c: number | null) => {
+            code = typeof c === 'number' ? c : null
+          })
+          stream.on('close', () => {
+            conn.end()
+            r(code)
+          })
+        })
+        resolve({
+          onData: (cb) => {
+            stream.on('data', (b: Buffer) => cb(b))
+            stream.stderr.on('data', (b: Buffer) => cb(b))
+          },
+          write: (d) => {
+            stream.write(d)
+          },
+          resize: (cols, rows) => {
+            stream.setWindow(rows, cols, 0, 0)
+          },
+          close: () => {
+            stream.end()
+            conn.end()
+          },
+          done,
+        })
+      })
+    })
+    conn.on('error', () => {
+      if (!settled) {
+        settled = true
+        reject(new Error('SSH connection failed'))
+      }
+    })
+    conn.connect({
+      host: config.host,
+      port: config.port,
+      username: config.username,
+      readyTimeout: config.readyTimeout,
+      ...(config.privateKey ? { privateKey: config.privateKey, ...(config.passphrase ? { passphrase: config.passphrase } : {}) } : { password: config.password }),
+    })
+  })
+
+/** Same SSRF rules as SSH steps: private targets only when the server allows them. */
+export async function sshTargetAllowed(host: string, allowPrivateHosts: boolean, ssrfCheck = resolvedIpIsSsrfSafe): Promise<boolean> {
+  if (allowPrivateHosts) return true
+  if (!isSsrfSafeHostname(host)) return false
+  try {
+    return await ssrfCheck(host)
+  } catch {
+    return false
+  }
+}
+
 // ── Command validation ────────────────────────────────────────────────────────
 
 /**
@@ -337,13 +332,16 @@ interface SshConfigInvalidResult {
 }
 type SshConfigValidation = SshConfigValidResult | SshConfigInvalidResult
 
-function validateSshConfig(config: Record<string, string>): SshConfigValidation {
+function validateSshConfig(
+  config: Record<string, string>,
+  opts: { allowPrivateHosts?: boolean; allowShellSyntax?: boolean } = {},
+): SshConfigValidation {
   const host = config['host']?.trim()
   if (!host) {
     return { valid: false, error: 'SSH task config is missing required field: host' }
   }
 
-  if (!isSsrfSafeHostname(host)) {
+  if (!opts.allowPrivateHosts && !isSsrfSafeHostname(host)) {
     return {
       valid: false,
       error: `SSH host "${host}" is not allowed: private or loopback addresses are blocked`,
@@ -366,7 +364,7 @@ function validateSshConfig(config: Record<string, string>): SshConfigValidation 
     return { valid: false, error: 'SSH task config is missing required field: command' }
   }
 
-  const commandError = validateSshCommand(command)
+  const commandError = opts.allowShellSyntax ? null : validateSshCommand(command)
   if (commandError) {
     return { valid: false, error: commandError }
   }
@@ -380,18 +378,18 @@ function validateSshConfig(config: Record<string, string>): SshConfigValidation 
  * Runs the SSH command specified in `task.config` on the remote host and
  * returns the combined stdout/stderr as log lines plus an overall success flag.
  *
- * @param task     The DailyTask record (must have actionType === 'ssh').
+ * @param task     The ActionTask record (must have actionType === 'ssh').
  * @param options  Optional overrides for testing (inject a mock executor).
  */
 export async function runSshTask(
-  task: DailyTask,
+  task: ActionTask,
   options: SshRunnerOptions = {},
 ): Promise<SshTaskResult> {
   const executor = options.executor ?? defaultExecutor
-  const ssrfCheck = options.ssrfCheck ?? resolvedIpIsSsrfSafe
+  const ssrfCheck = options.allowPrivateHosts ? async () => true : (options.ssrfCheck ?? resolvedIpIsSsrfSafe)
   const credentialProvider = options.credentialProvider ?? defaultCredentialProvider
 
-  const cfg = validateSshConfig(task.config)
+  const cfg = validateSshConfig(task.config, options)
   if (!cfg.valid) {
     return { success: false, logs: [], error: cfg.error }
   }
@@ -489,12 +487,14 @@ export async function runSshTask(
     logs.push(`Command exited with code ${exitCode ?? 'unknown'}`)
 
     if (exitCode === 0) {
-      return { success: true, logs }
+      return { success: true, logs, stdout: result.stdout, exitCode }
     }
 
     return {
       success: false,
       logs,
+      stdout: result.stdout,
+      exitCode,
       error: `[task:${task.id}] SSH command failed with exit code ${exitCode ?? 'unknown'}`,
     }
   } catch (err) {

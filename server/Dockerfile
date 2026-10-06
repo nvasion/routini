@@ -1,42 +1,26 @@
-# ── Stage 1: build ────────────────────────────────────────────────────────────
-FROM node:20-alpine AS build
+# Routini API and worker (same image; the worker runs `node dist/worker.js`).
+
+# ── Build ─────────────────────────────────────────────────────────────────────
+FROM node:22-slim AS build
 WORKDIR /app
-
-# Install all dependencies (devDependencies are needed for tsc)
-COPY package.json package-lock.json* ./
+COPY package.json package-lock.json ./
 RUN npm ci --ignore-scripts
-
-# Compile TypeScript
 COPY tsconfig.json ./
 COPY src/ ./src/
 RUN npm run build
 
-# ── Stage 2: production runtime ───────────────────────────────────────────────
-FROM node:20-alpine AS runtime
+# ── Runtime ───────────────────────────────────────────────────────────────────
+FROM node:22-slim AS runtime
 WORKDIR /app
-
 ENV NODE_ENV=production
-
-# Install only production dependencies
-COPY package.json package-lock.json* ./
+COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
-
-# Copy compiled output from build stage
 COPY --from=build /app/dist ./dist
-
-# Rebuild native bindings for better-sqlite3 (its install script was skipped
-# above by --ignore-scripts) and create the persistent data directory used
-# for the SQLite database file, owned by the non-root "node" user the
-# container runs as.
-RUN apk add --no-cache --virtual .build-deps python3 make g++ \
-    && npm rebuild better-sqlite3 \
-    && apk del .build-deps \
-    && mkdir -p /app/data \
-    && chown -R node:node /app/data
-
+# Embedded Postgres data lives here when DATABASE_URL is not set.
+RUN mkdir -p /app/data && chown node:node /app/data
+ENV ROUTINI_DATA_DIR=/app/data/pg
 EXPOSE 3001
-
-# Run as a non-root user for security
 USER node
-
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+  CMD node -e "fetch('http://localhost:'+(process.env.PORT||3001)+'/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 CMD ["node", "dist/index.js"]

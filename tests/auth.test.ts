@@ -1,137 +1,137 @@
-import { describe, it, expect } from 'vitest'
+// Signup policies, login, sessions (Bearer + cookie/CSRF), logout revocation, seeding.
+
+import { describe, it, expect, afterEach } from 'vitest'
 import supertest from 'supertest'
-import { app } from '../server/src/app'
+import { makeTestApp, type TestApp } from './helpers/testApp'
+import { seedFirstAccount } from '../server/src/bootstrap'
 
-const request = supertest(app)
+let t: TestApp
+afterEach(async () => {
+  await t?.close()
+})
 
-// ── POST /api/auth/login ─────────────────────────────────────────
-
-describe('POST /api/auth/login', () => {
-  it('returns a token and safe user for valid credentials', async () => {
-    const res = await request
-      .post('/api/auth/login')
-      .send({ email: 'admin@routini.dev', password: 'changeme' })
-
-    expect(res.status).toBe(200)
-    expect(typeof res.body.token).toBe('string')
-    expect(res.body.token.length).toBeGreaterThan(0)
-    expect(res.body.user.email).toBe('admin@routini.dev')
-    expect(typeof res.body.user.id).toBe('string')
-    // password hash must never be exposed
-    expect(res.body.user.passwordHash).toBeUndefined()
+describe('signup', () => {
+  it('creates a user, an owned org, and a session', async () => {
+    t = await makeTestApp()
+    const res = await t.request.post('/api/auth/signup').send({ email: 'Ada@Example.com', password: 'password123', orgName: 'Analytical Engines' })
+    expect(res.status).toBe(201)
+    expect(res.body.user).toMatchObject({ email: 'Ada@Example.com' })
+    expect(res.body.user).not.toHaveProperty('passwordHash')
+    expect(res.body.orgs).toEqual([expect.objectContaining({ slug: 'analytical-engines', role: 'owner' })])
+    expect(res.headers['set-cookie']?.[0]).toMatch(/routini_token=.*HttpOnly.*SameSite=Strict/i)
   })
 
-  it('returns 401 for wrong password', async () => {
-    const res = await request
-      .post('/api/auth/login')
-      .send({ email: 'admin@routini.dev', password: 'wrongpassword' })
-
-    expect(res.status).toBe(401)
-    expect(res.body.error).toBeDefined()
+  it('rejects a duplicate email case-insensitively', async () => {
+    t = await makeTestApp()
+    await t.signup('dup@example.com')
+    const res = await t.request.post('/api/auth/signup').send({ email: 'DUP@example.com', password: 'password123' })
+    expect(res.status).toBe(409)
   })
 
-  it('returns 401 for unknown email', async () => {
-    const res = await request
-      .post('/api/auth/login')
-      .send({ email: 'nobody@example.com', password: 'changeme' })
-
-    expect(res.status).toBe(401)
-    expect(res.body.error).toBeDefined()
+  it('validates email and password length', async () => {
+    t = await makeTestApp()
+    expect((await t.request.post('/api/auth/signup').send({ email: 'nope', password: 'password123' })).status).toBe(400)
+    expect((await t.request.post('/api/auth/signup').send({ email: 'a@b.co', password: 'short' })).status).toBe(400)
+    expect((await t.request.post('/api/auth/signup').send({})).status).toBe(400)
   })
 
-  it('returns 400 when email is missing', async () => {
-    const res = await request.post('/api/auth/login').send({ password: 'changeme' })
-    expect(res.status).toBe(400)
-    expect(res.body.error).toBeDefined()
+  it('first-user-only allows exactly one signup', async () => {
+    t = await makeTestApp({ config: { signup: 'first-user-only' } })
+    const results = await Promise.all(
+      ['one@example.com', 'two@example.com', 'three@example.com'].map((email) =>
+        t.request.post('/api/auth/signup').send({ email, password: 'password123' }),
+      ),
+    )
+    expect(results.map((r) => r.status).sort()).toEqual([201, 403, 403])
   })
 
-  it('returns 400 when password is missing', async () => {
-    const res = await request
-      .post('/api/auth/login')
-      .send({ email: 'admin@routini.dev' })
-    expect(res.status).toBe(400)
-    expect(res.body.error).toBeDefined()
+  it('closed refuses every signup', async () => {
+    t = await makeTestApp({ config: { signup: 'closed' } })
+    expect((await t.request.post('/api/auth/signup').send({ email: 'a@example.com', password: 'password123' })).status).toBe(403)
   })
 
-  it('returns 400 for an invalid email format', async () => {
-    const res = await request
-      .post('/api/auth/login')
-      .send({ email: 'notanemail', password: 'changeme' })
-    expect(res.status).toBe(400)
-    expect(res.body.error).toBeDefined()
+  it('suffixes the org slug when it is taken', async () => {
+    t = await makeTestApp()
+    const a = await t.signup('sam@one.com')
+    const b = await t.signup('sam@two.com')
+    expect(a.orgSlug).toBe('sam')
+    expect(b.orgSlug).toBe('sam-2')
   })
 })
 
-// ── POST /api/auth/logout ────────────────────────────────────────
-
-describe('POST /api/auth/logout', () => {
-  it('logs out with a valid token and returns a message', async () => {
-    const login = await request
-      .post('/api/auth/login')
-      .send({ email: 'admin@routini.dev', password: 'changeme' })
-    const token = login.body.token as string
-
-    const res = await request
-      .post('/api/auth/logout')
-      .set('Authorization', `Bearer ${token}`)
-
-    expect(res.status).toBe(200)
-    expect(typeof res.body.message).toBe('string')
+describe('login and sessions', () => {
+  it('logs in with the right password only, with the same error for unknown emails', async () => {
+    t = await makeTestApp()
+    await t.signup('lin@example.com')
+    const ok = await t.request.post('/api/auth/login').send({ email: 'LIN@example.com', password: 'password123' })
+    expect(ok.status).toBe(200)
+    expect(ok.body.orgs).toHaveLength(1)
+    const bad = await t.request.post('/api/auth/login').send({ email: 'lin@example.com', password: 'wrong-password' })
+    const unknown = await t.request.post('/api/auth/login').send({ email: 'ghost@example.com', password: 'password123' })
+    expect(bad.status).toBe(401)
+    expect(unknown.status).toBe(401)
+    expect(bad.body).toEqual(unknown.body)
   })
 
-  it('succeeds gracefully without a token (idempotent)', async () => {
-    const res = await request.post('/api/auth/logout')
-    expect(res.status).toBe(200)
+  it('GET /me requires a session and returns memberships', async () => {
+    t = await makeTestApp()
+    const u = await t.signup('me@example.com')
+    expect((await t.request.get('/api/auth/me')).status).toBe(401)
+    const me = await u.get('/api/auth/me')
+    expect(me.status).toBe(200)
+    expect(me.body.user.email).toBe('me@example.com')
+    expect(me.body.orgs[0].role).toBe('owner')
   })
 
-  it('invalidates the token – /me returns 401 after logout', async () => {
-    const login = await request
-      .post('/api/auth/login')
-      .send({ email: 'admin@routini.dev', password: 'changeme' })
-    const token = login.body.token as string
+  it('logout revokes the token for good', async () => {
+    t = await makeTestApp()
+    const u = await t.signup('out@example.com')
+    expect((await u.get('/api/auth/me')).status).toBe(200)
+    expect((await u.post('/api/auth/logout')).status).toBe(200)
+    expect((await u.get('/api/auth/me')).status).toBe(401)
+  })
 
-    await request
-      .post('/api/auth/logout')
-      .set('Authorization', `Bearer ${token}`)
-
-    const me = await request
-      .get('/api/auth/me')
-      .set('Authorization', `Bearer ${token}`)
-
-    expect(me.status).toBe(401)
+  it('rejects tampered and garbage tokens', async () => {
+    t = await makeTestApp()
+    const u = await t.signup('tamper@example.com')
+    const parts = u.token.split('.')
+    const forged = [parts[0], Buffer.from(JSON.stringify({ sub: u.userId, jti: 'x', csrf: 'y' })).toString('base64url'), parts[2]].join('.')
+    const r = supertest(t.app)
+    expect((await r.get('/api/auth/me').set('Authorization', `Bearer ${forged}`)).status).toBe(401)
+    expect((await r.get('/api/auth/me').set('Authorization', 'Bearer garbage')).status).toBe(401)
   })
 })
 
-// ── GET /api/auth/me ─────────────────────────────────────────────
+describe('cookie sessions and CSRF', () => {
+  it('requires the CSRF header on mutations when authenticated by cookie', async () => {
+    t = await makeTestApp()
+    const agent = t.request // supertest agent keeps cookies
+    const signup = await agent.post('/api/auth/signup').send({ email: 'cookie@example.com', password: 'password123' })
+    const slug = signup.body.orgs[0].slug
+    expect((await agent.get(`/api/orgs/${slug}`)).status).toBe(200)
+    const without = await agent.put(`/api/orgs/${slug}`).send({ name: 'Renamed' })
+    expect(without.status).toBe(403)
+    const wrong = await agent.put(`/api/orgs/${slug}`).set('X-CSRF-Token', 'nope').send({ name: 'Renamed' })
+    expect(wrong.status).toBe(403)
+    const ok = await agent.put(`/api/orgs/${slug}`).set('X-CSRF-Token', signup.body.csrfToken).send({ name: 'Renamed' })
+    expect(ok.status).toBe(200)
+    expect(ok.body.org.name).toBe('Renamed')
+  })
+})
 
-describe('GET /api/auth/me', () => {
-  it('returns the authenticated user for a valid token', async () => {
-    const login = await request
-      .post('/api/auth/login')
-      .send({ email: 'admin@routini.dev', password: 'changeme' })
-    const token = login.body.token as string
-
-    const res = await request
-      .get('/api/auth/me')
-      .set('Authorization', `Bearer ${token}`)
-
-    expect(res.status).toBe(200)
-    expect(res.body.email).toBe('admin@routini.dev')
-    // No sensitive fields
-    expect(res.body.passwordHash).toBeUndefined()
+describe('seeding', () => {
+  it('creates the seed account on an empty database only', async () => {
+    t = await makeTestApp({ config: { seed: { email: 'seed@example.com', password: 'seed-password' } } })
+    expect(await seedFirstAccount(t.ctx)).toBe(true)
+    expect(await seedFirstAccount(t.ctx)).toBe(false)
+    const login = await t.request.post('/api/auth/login').send({ email: 'seed@example.com', password: 'seed-password' })
+    expect(login.status).toBe(200)
+    expect(login.body.orgs[0].slug).toBe('default')
   })
 
-  it('returns 401 without an Authorization header', async () => {
-    const res = await request.get('/api/auth/me')
-    expect(res.status).toBe(401)
-    expect(res.body.error).toBeDefined()
-  })
-
-  it('returns 401 for an invalid token', async () => {
-    const res = await request
-      .get('/api/auth/me')
-      .set('Authorization', 'Bearer thisisnotavalidtoken')
-    expect(res.status).toBe(401)
-    expect(res.body.error).toBeDefined()
+  it('does nothing when users already exist', async () => {
+    t = await makeTestApp({ config: { seed: { email: 'seed@example.com', password: 'seed-password' } } })
+    await t.signup('first@example.com')
+    expect(await seedFirstAccount(t.ctx)).toBe(false)
   })
 })

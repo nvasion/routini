@@ -1,0 +1,4 @@
+# Shell scripts and agent image files run inside Linux containers: always LF.
+*.sh text eol=lf
+agents/** text eol=lf
+Dockerfile text eol=lf

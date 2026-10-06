@@ -1,14 +1,8 @@
-# Development image — installs all dependencies so that tsx and other
-# devDependencies are available for hot-reload.  Source code is mounted
-# at runtime via the docker-compose volume; node_modules stays in the
-# image layer and is preserved by the named volume declared in the compose
-# file, so container restarts do not re-install packages.
-FROM node:20-alpine
+# Development image: all dependencies, hot reload via tsx. Source is mounted by
+# docker-compose.dev.yml; node_modules stays in the image (named volume).
+FROM node:22-slim
 WORKDIR /app
-
-COPY package.json package-lock.json* ./
+COPY package.json package-lock.json ./
 RUN npm install --ignore-scripts
-
 EXPOSE 3001
-
 CMD ["npm", "run", "dev"]

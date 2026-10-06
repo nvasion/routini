@@ -1,128 +1,59 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code when working with this project.
+Guidance for Claude Code (and other agents) working in this repository.
 
-## Project Overview
+## What Routini is
 
-**routini** is a full-stack TypeScript application with Express.js backend and React frontend.
+An AI engineer platform: **Trigger → Job → Run → Steps**. Steps are actions
+(http/ssh/imap), coding agents in containers, or approvals. Runs are durable in
+Postgres and executed by a lease-based queue worker. Multi-tenant by org, with
+row-level security. A React console (inbox, runs, jobs, dock) sits on top.
+README.md is the user-facing overview; `tynhub-prds/PRD-routini-phase0-foundation.md`
+(in the TynHub workspace) is the design of record.
 
-## Persona
-
-You are a senior software engineer and architect. You write clean, maintainable, production-quality code. Before creating anything new, you read and understand the existing codebase first. You refactor and improve existing code rather than duplicating functionality.
-
-## Core Principles
-
-### Read Before You Write
-- Always read existing code before making changes or adding new files
-- Understand the current architecture, patterns, and conventions in use
-- Check if what you need already exists before creating something new
-- Refactor existing code to accommodate new requirements rather than duplicating logic
-
-### Test Everything
-- Write tests for every new feature, function, and module you create
-- Run the full test suite after every change to ensure nothing is broken
-- Tests are not optional — untested code is incomplete code
-- Cover both happy paths and error cases
-- If you fix a bug, write a regression test that proves the fix works
-
-### Keep Documentation Current
-- Update README.md as you create and modify code — it must always reflect the current state
-- Document new features, changed APIs, updated commands, and modified architecture
-- If you add a dependency, document it. If you change a command, update the docs
-- README.md is the first thing someone reads — keep it accurate and useful
-
-### Code Quality
-- Write simple, readable code over clever code
-- Follow the language conventions and style already established in this project
-- Lint your code after every change
-- Handle errors explicitly — never silently swallow them
-- Keep functions small and focused on a single responsibility
-
-### No Unnecessary Complexity
-- Don't add features, abstractions, or configurations that weren't asked for
-- Don't over-engineer — solve the problem at hand, not hypothetical future problems
-- Three lines of similar code is better than a premature abstraction
-- Only add dependencies when they provide clear value over a simple implementation
-
-## Tech Stack
-
-- **Backend**: Express.js with TypeScript
-- **Frontend**: React 18 with Vite
-- **Language**: TypeScript (strict mode)
-- **Testing**: Vitest
-
-## Development Commands
+## Commands
 
 ```bash
-# Install all dependencies
-make install
-
-# Start dev servers (both client and server)
-make dev
-
-# Start only backend
-make dev-server
-
-# Start only frontend
-make dev-client
-
-# Build for production
-make build
-
-# Start production server
-make start
-
-# Run tests
-make test
+make install        # all dependencies
+make dev            # API :3001 (embedded Postgres, inline worker) + console :5173
+make test           # server + client tests — run before every commit
+make test-pg        # opt-in: ROUTINI_TEST_PG_URL=postgres://… (non-superuser owner)
+make test-docker    # opt-in: real agent containers (needs Docker)
+make agents         # build agent images
+cd server && npx tsc --noEmit -p .   # typecheck server
+cd client && npx tsc --noEmit -p .   # typecheck client
 ```
 
-## Project Structure
+On this machine Node and Docker live in WSL (Ubuntu-24.04); run commands there.
 
-- `server/` - Express.js backend
-  - `src/index.ts` - Server entry point, middleware setup
-  - `src/routes.ts` - API route handlers
-- `client/` - React frontend
-  - `src/main.tsx` - React entry point
-  - `src/App.tsx` - Main application component
-- `tests/` - Test files
+## Rules that keep the system correct
 
-## API Design
+- **Tenancy.** Tenant rows are read and written only inside `db.org(orgId, q => …)`.
+  Repository functions take `orgId` and filter by it as well. `db.system(…)` is for
+  the scheduler, worker and bootstrap only. A new tenant table needs `org_id` and
+  `SELECT routini_tenant('<table>')` in its migration.
+- **Migrations** are append-only entries in `server/src/db/migrations.ts`. Never
+  edit a shipped migration; add a new version.
+- **Run state** changes go through `repos/runs.ts` helpers (`setRunStatus`,
+  `updateStep`, `appendEvent`) so every change emits an event + NOTIFY. Executors
+  run outside transactions.
+- **Secrets** never appear in API responses, events or logs. Use the credential
+  store (write-only API), register values with `ctx.addSecret`/`ctx.secret` in
+  executors, and let `utils/redact.ts` scrub output.
+- **Network safety.** HTTP/SSH targets on private addresses are allowed only in
+  `selfhost` mode. HTTP never follows redirects. Repo URLs go through
+  `utils/repoUrl.ts`.
+- **Agent images** must follow the contract in `agents/README.md`. Keep shell
+  scripts LF (`.gitattributes`) and portable (BusyBox in the fake image).
+- **UI colours** come only from tokens in `client/src/styles/tokens.css`; status
+  colours mean the same in every theme, and in the Routini theme red is identity
+  only (in content, red = failed).
 
-All API routes are prefixed with `/api`. The server runs on port 3001.
-The client dev server runs on port 5173 and proxies `/api` requests to the backend.
+## Code style
 
-## Code Style
-
-### Backend
-- Use async/await for asynchronous operations
-- Type all request/response handlers
-- Return consistent JSON responses
-- Handle errors with appropriate HTTP status codes
-
-### Frontend
-- Use functional components with hooks
-- Keep components small and focused
-- Use TypeScript interfaces for data types
-- Handle loading and error states
-
-## Common Tasks
-
-### Adding a new API endpoint
-
-1. Add route handler in `server/src/routes.ts`
-2. Define TypeScript interfaces for request/response
-3. Add tests in `tests/`
-4. Update frontend to consume the endpoint
-
-### Adding a new page/component
-
-1. Create component in `client/src/`
-2. Add routing if needed
-3. Connect to API endpoints
-4. Add styles in CSS file
-
-## Important Notes
-
-- Vite proxies `/api` and `/health` to the backend in development
-- Build outputs are in `server/dist` and `client/dist`
-- Use `make install` to install all dependencies at once
+TypeScript strict, ES modules. Server: small modules, explicit errors
+(`HttpError` for client-safe messages), validation that reports the exact field.
+Client: functional components, pure logic in separate tested modules
+(`jobForm.ts`, `timeline.ts`, `format.ts`). Match surrounding comment density.
+Write tests for new behaviour: server integration tests in `tests/` via
+`tests/helpers/testApp.ts`; client tests next to the code.

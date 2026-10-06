@@ -1,0 +1,134 @@
+/* ─────────────────────────────────────────────────────────────────────────────
+   Theme tokens. Components read only var(--…); each theme defines the roles.
+
+   Rules that hold in every theme:
+   – Status colours (ok / warn / fail / live / off) mean the same thing everywhere.
+   – In the Routini theme, red is identity only (logo, header rule). Inside
+     content, red always means "failed".
+   – Interactive colour (--accent, --primary) never marks a status.
+   ───────────────────────────────────────────────────────────────────────────── */
+
+:root,
+[data-theme='routini'] {
+  color-scheme: dark;
+  --bg: #0b0b0d;
+  --panel: #151517;
+  --sunken: #101012;
+  --hover: #222225;
+  --chip: #232326;
+  --line: #2d2d31;
+  --line-soft: #212124;
+  --btn-line: #3b3b40;
+  --ink: #f4f1ec;
+  --ink-2: #d2cdc6;
+  --muted: #a8a39b;
+  --placeholder: #858078;
+  --code: #070708;
+  --term-bg: #050505;
+  --term-ink: #d2cdc6;
+  --accent: #ffa53d;
+  --accent-hover: #ffc37a;
+  --accent-line: #5a3a12;
+  --primary: #ff9f1c;
+  --on-primary: #0b0b0d;
+  --focus: #f4f1ec;
+  --live: #5ab0ff;
+  --ok: #33cc99;
+  --ok-line: #1c4a3c;
+  --warn: #ffd23f;
+  --warn-line: #5a4a10;
+  --fail: #ff4d3d;
+  --fail-line: #5e1e18;
+  --off: #6e6a64;
+  --h-bg: #0b0b0d;
+  --h-rule: #ff2d1f;
+}
+
+[data-theme='tynhub-dark'] {
+  color-scheme: dark;
+  --bg: #14181e;
+  --panel: #1c232c;
+  --sunken: #171c23;
+  --hover: #26303c;
+  --chip: #24303e;
+  --line: #333b45;
+  --line-soft: #2a323c;
+  --btn-line: #3f4a57;
+  --ink: #e7e9ec;
+  --ink-2: #c3cad2;
+  --muted: #a3acb7;
+  --placeholder: #7d8793;
+  --code: #0f1318;
+  --term-bg: #0b0e12;
+  --term-ink: #c3cad2;
+  --accent: #6fb1e8;
+  --accent-hover: #a9d1f3;
+  --accent-line: #284b6b;
+  --primary: #1e6fb2;
+  --on-primary: #ffffff;
+  --focus: #ed7a3c;
+  --live: #ed7a3c;
+  --ok: #5bc0a0;
+  --ok-line: #2e5e50;
+  --warn: #e8b44a;
+  --warn-line: #5a4a26;
+  --fail: #f0716e;
+  --fail-line: #6a3433;
+  --off: #6b7480;
+  --h-bg: #1c232c;
+  --h-rule: #333b45;
+}
+
+[data-theme='tynhub-light'] {
+  color-scheme: light;
+  --bg: #f4f4f2;
+  --panel: #ffffff;
+  --sunken: #ecedea;
+  --hover: #e3e7ec;
+  --chip: #e6eaef;
+  --line: #cdd0d4;
+  --line-soft: #e3e5e8;
+  --btn-line: #b4bac2;
+  --ink: #23272c;
+  --ink-2: #3e454d;
+  --muted: #5c6670;
+  --placeholder: #7a828b;
+  --code: #f1f2f4;
+  --term-bg: #1b2129;
+  --term-ink: #d5dae0;
+  --accent: #1e6fb2;
+  --accent-hover: #155a93;
+  --accent-line: #a9c6e3;
+  --primary: #1e6fb2;
+  --on-primary: #ffffff;
+  --focus: #d95b22;
+  --live: #bc4a16;
+  --ok: #1c7c60;
+  --ok-line: #a5d5c4;
+  --warn: #8f6200;
+  --warn-line: #e0c68a;
+  --fail: #b8332a;
+  --fail-line: #e6b0ab;
+  --off: #8a929b;
+  --h-bg: #24303e;
+  --h-rule: #24303e;
+}
+
+/* TynHub light keeps the slate masthead, so the header re-scopes its tokens. */
+[data-theme='tynhub-light'] .rq-header {
+  --ink: #f4f4f2;
+  --muted: #b7c1cc;
+  --line: #3a4757;
+  --bg: #1b2530;
+  --hover: #33414f;
+  --chip: #33414f;
+  --accent: #6fb1e8;
+  --placeholder: #8c97a3;
+}
+
+:root {
+  --font-sign: 'Barlow Semi Condensed', 'Arial Narrow', sans-serif;
+  --font-ui: 'IBM Plex Sans', system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+  --radius: 8px;
+}

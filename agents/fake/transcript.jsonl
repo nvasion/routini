@@ -1,0 +1,5 @@
+{"type":"system","subtype":"init","model":"claude-sonnet-5","tools":["Bash","Read","Edit","Write"],"session_id":"fake-session"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"I'll check the disk usage first."},{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"df -h /"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"Filesystem Size Used Avail Use% Mounted on\noverlay 80G 73G 7.1G 91% /","is_error":false}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Disk is 91% full; journald has no size cap."}]}}
+{"type":"result","subtype":"success","is_error":false,"result":"Found that journald has no SystemMaxUse cap; recommended capping it at 500M.","total_cost_usd":0.0421,"num_turns":3,"duration_ms":5123}

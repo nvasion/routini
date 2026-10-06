@@ -1,15 +1,40 @@
-// Server entry point — delegates all app setup to app.ts so that
-// tests can import the configured app without starting a real listener.
+// API server entry point. With embedded Postgres (no DATABASE_URL) or
+// ROUTINI_INLINE_WORKER=1, the scheduler and queue worker run in this process.
 
-import { app } from './app.js'
+import { bootstrap, startBackground, type Background } from './bootstrap.js'
+import { createApp } from './app.js'
+import { attachTerminal } from './http/terminal.js'
+import { attachHostTerminal } from './http/hostTerminal.js'
+import type { Auth } from './http/auth.js'
 
-const PORT = process.env.PORT ?? 3001
+const ctx = await bootstrap()
+const app = createApp(ctx)
+const background: Background | null = ctx.config.inlineWorker ? await startBackground(ctx) : null
 
-// Skip listen() in test environments so supertest can bind its own port.
-if (process.env.NODE_ENV !== 'test') {
-  app.listen(PORT, () => {
-    console.log(`Server running on http://localhost:${PORT}`)
+const server = app.listen(ctx.config.port, () => {
+  const store = ctx.config.databaseUrl ? 'Postgres' : `embedded Postgres (${ctx.config.dataDir})`
+  const worker = background ? 'inline worker' : 'no worker (run dist/worker.js)'
+  console.log(`Routini API on http://localhost:${ctx.config.port} · ${store} · ${ctx.config.mode} · ${worker}`)
+})
+const terminals = attachTerminal(server, ctx, app.locals['auth'] as Auth)
+const hostTerminals = attachHostTerminal(server, ctx, app.locals['auth'] as Auth)
+ctx.runners.attach(server)
+await ctx.runners.start()
+
+const shutdown = (signal: string) => {
+  console.log(`[server] ${signal}: shutting down`)
+  setTimeout(() => process.exit(1), 15_000).unref()
+  for (const ws of terminals.clients) ws.close(1001, 'server shutting down')
+  for (const ws of hostTerminals.clients) ws.close(1001, 'server shutting down')
+  void ctx.runners.stop()
+  server.close(() => {
+    void (async () => {
+      await background?.stop()
+      await ctx.hub.stop()
+      await ctx.db.close()
+      process.exit(0)
+    })()
   })
 }
-
-export { app }
+process.on('SIGINT', () => shutdown('SIGINT'))
+process.on('SIGTERM', () => shutdown('SIGTERM'))

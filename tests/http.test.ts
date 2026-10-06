@@ -361,13 +361,13 @@ describe('runHttpTask – status mismatch', () => {
     expect(result.error).toContain('503')
   })
 
-  it('includes the task ID in the error', async () => {
+  it('reports the mismatch without internal ids (the run timeline already identifies the step)', async () => {
     const task = makeTask()
     const result = await runHttpTask(task, {
       fetchImpl: mockFetch(404),
       ssrfCheck: safeSsrf,
     })
-    expect(result.error).toContain('task-http-001')
+    expect(result.error).toBe('Expected status 200, got 404')
   })
 
   it('still captures response logs on mismatch', async () => {
@@ -435,13 +435,13 @@ describe('runHttpTask – fetch errors', () => {
     expect(result.error).toBeDefined()
   })
 
-  it('includes the task ID in network error messages', async () => {
+  it('reports network errors without internal ids', async () => {
     const task = makeTask()
     const result = await runHttpTask(task, {
       fetchImpl: failingFetch(new Error('network down')),
       ssrfCheck: safeSsrf,
     })
-    expect(result.error).toContain('task-http-001')
+    expect(result.error).toBe('network down')
   })
 
   it('handles non-Error fetch rejections', async () => {
