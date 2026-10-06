@@ -14,6 +14,8 @@ import { SettingsPage } from './pages/SettingsPage'
 import { EnvironmentsPage } from './pages/EnvironmentsPage'
 import { FleetPage } from './pages/FleetPage'
 import { IncidentPage, IncidentsPage } from './pages/IncidentsPage'
+import { LandingPage } from './pages/public/LandingPage'
+import { GettingStartedPage } from './pages/public/GettingStartedPage'
 
 function RequireAuth({ children }: { children: ReactNode }) {
   const { session, loading } = useAuth()
@@ -21,6 +23,13 @@ function RequireAuth({ children }: { children: ReactNode }) {
   if (loading) return <p className="muted" style={{ padding: 24 }}>Loading…</p>
   if (!session) return <Navigate to="/login" replace state={{ from: location.pathname }} />
   return <>{children}</>
+}
+
+/** `/`: the front page for visitors; signed-in people go straight to their console. */
+function Front() {
+  const { session, loading } = useAuth()
+  if (loading) return <p className="muted" style={{ padding: 24 }}>Loading…</p>
+  return session ? <Home /> : <LandingPage />
 }
 
 function Home() {
@@ -40,8 +49,11 @@ export function AppRoutes() {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
+      <Route path="/signup" element={<LoginPage initialMode="signup" />} />
+      <Route path="/docs/getting-started" element={<GettingStartedPage />} />
+      <Route path="/" element={<Front />} />
       <Route
-        path="/"
+        path="/app"
         element={
           <RequireAuth>
             <Home />
