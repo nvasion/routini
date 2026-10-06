@@ -16,5 +16,11 @@ export default defineConfig({
   test: {
     include: ['src/**/*.test.{ts,tsx}'],
     environment: 'jsdom',
+    // A page test renders the whole shell (router, org context, fake fetch) in
+    // jsdom; alone each stays near a second, but the full suite runs these files
+    // in parallel and the heaviest ones exceed vitest's 5s default on a small
+    // box. Same reasoning — and the same budget — as server/vitest.config.ts.
+    testTimeout: 30_000,
+    hookTimeout: 60_000,
   },
 })
