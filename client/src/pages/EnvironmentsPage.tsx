@@ -6,7 +6,7 @@ import { Empty, ErrorBanner, Field, Modal, StatusDot } from '../components/ui'
 import { api } from '../lib/api'
 import { relativeTime } from '../lib/format'
 import { useApi } from '../lib/hooks'
-import type { EnvEvent, Environment } from '../lib/types'
+import type { EnvEvent, Environment, Host } from '../lib/types'
 import { useDock } from '../shell/Dock'
 import { envDot, useInterval } from '../shell/EnvPanels'
 import { useOrg } from '../shell/OrgContext'
@@ -61,7 +61,9 @@ export function EnvironmentsPage() {
               <span className="title mono">{e.name}</span>
               <span className="sub">
                 {e.status}
-                {e.statusDetail ? ` — ${e.statusDetail}` : ''} · {e.repo ? `${e.repo.url.replace(/^https:\/\//, '')} @ ${e.repo.branch}` : 'no repository'} · {e.cpus} CPU · {e.memoryMb / 1024} GB · active {relativeTime(e.lastActiveAt)}
+                {e.statusDetail ? ` — ${e.statusDetail}` : ''} · {e.repo ? `${e.repo.url.replace(/^https:\/\//, '')} @ ${e.repo.branch}` : 'no repository'} · {e.cpus} CPU · {e.memoryMb / 1024} GB · active{' '}
+                {relativeTime(e.lastActiveAt)}
+                {e.host ? ` · on ${e.host.name}` : ''}
               </span>
             </button>
             {org.can('member') && (
@@ -105,12 +107,33 @@ export function EnvironmentsPage() {
   )
 }
 
+/** Why a fleet host cannot host an environment, or null when it can (routini-runner ≥ 0.4.0, agents enabled). */
+function hostBlocked(host: Host): string | null {
+  const r = host.runner
+  if (!r || r.revoked || !r.online) return 'offline'
+  if (!r.capabilities.includes('environments')) return 'needs runner v0.4.0 with agents'
+  return null
+}
+
+/** The "Host" select for a new environment: Routini (the default), then every runner host. */
+function hostOptions(hosts: Host[]): Array<{ value: string; label: string; disabled: boolean }> {
+  const options = [{ value: '', label: 'Routini', disabled: false }]
+  for (const h of hosts) {
+    if (h.transport !== 'runner') continue
+    const blocked = hostBlocked(h)
+    options.push({ value: h.id, label: blocked ? `${h.name} (${blocked})` : h.name, disabled: blocked !== null })
+  }
+  return options
+}
+
 function CreateEnvironment({ onClose, onCreated }: { onClose: () => void; onCreated: () => Promise<void> }) {
   const org = useOrg()
+  const hosts = useApi<{ hosts: Host[] }>(org.api('/hosts'))
   const [name, setName] = useState('')
   const [repoUrl, setRepoUrl] = useState('')
   const [branch, setBranch] = useState('main')
   const [image, setImage] = useState('')
+  const [hostId, setHostId] = useState('')
   const [idle, setIdle] = useState('60')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -125,6 +148,7 @@ function CreateEnvironment({ onClose, onCreated }: { onClose: () => void; onCrea
           name: name.trim(),
           ...(repoUrl.trim() ? { repo: { url: repoUrl.trim(), branch: branch.trim() || 'main' } } : {}),
           ...(image.trim() ? { image: image.trim() } : {}),
+          ...(hostId ? { hostId } : {}),
           idleMinutes: Number(idle) || 60,
         },
       })
@@ -146,8 +170,19 @@ function CreateEnvironment({ onClose, onCreated }: { onClose: () => void; onCrea
           </Field>
           <Field label="Branch">{(id) => <input id={id} className="input mono" value={branch} onChange={(e) => setBranch(e.target.value)} />}</Field>
         </div>
+        <Field label="Host" hint="A fleet host runs the container behind its own egress proxy, instead of Routini's.">
+          {(id) => (
+            <select id={id} className="select" value={hostId} onChange={(e) => setHostId(e.target.value)}>
+              {hostOptions(hosts.data?.hosts ?? []).map((o) => (
+                <option key={o.value} value={o.value} disabled={o.disabled}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          )}
+        </Field>
         <div className="row">
-          <Field label="Image" hint="Blank uses the Claude Code agent image (git, node, python, claude).">
+          <Field label="Image" hint={hostId ? 'Blank defaults to the public Claude Code image.' : 'Blank uses the Claude Code agent image (git, node, python, claude).'}>
             {(id) => <input id={id} className="input mono" value={image} onChange={(e) => setImage(e.target.value)} />}
           </Field>
           <Field label="Stop when idle (minutes)">{(id) => <input id={id} className="input" inputMode="numeric" value={idle} onChange={(e) => setIdle(e.target.value)} />}</Field>

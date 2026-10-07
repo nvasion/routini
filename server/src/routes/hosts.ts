@@ -5,7 +5,7 @@
 //   POST   /api/orgs/:org/hosts                 (admin)
 //   GET    /api/orgs/:org/hosts/:id
 //   PUT    /api/orgs/:org/hosts/:id             (admin)
-//   DELETE /api/orgs/:org/hosts/:id             (admin; refused while a job's command step uses it; revokes its runner)
+//   DELETE /api/orgs/:org/hosts/:id             (admin; refused while a job's command step or an environment uses it; revokes its runner)
 //   POST   /api/orgs/:org/hosts/:id/check       status: SSH probe, or the runner's latest facts (member)
 //   POST   /api/orgs/:org/hosts/:id/runner/update  update its routini-runner (admin; 202, outcome in events)
 //   GET    /api/orgs/:org/hosts/:id/events      audit trail (terminal sessions, runner connects)
@@ -36,6 +36,7 @@ import {
   type HostCheck,
   type HostInput,
 } from '../repos/hosts.js'
+import { listEnvironmentNamesForHost } from '../repos/environments.js'
 import { getSecret } from '../repos/credentials.js'
 import { runSshTask } from '../services/ssh.js'
 import { revokeRunner } from '../repos/runners.js'
@@ -137,6 +138,8 @@ export function hostsRouter(ctx: AppContext): Router {
           [org.id, id],
         )
         if (users.length) throw new HttpError(409, `Host is used by: ${users.map((u) => u.name).join(', ')}`)
+        const envNames = await listEnvironmentNamesForHost(q, org.id, id)
+        if (envNames.length) throw new HttpError(409, `Host is used by environments: ${envNames.join(', ')}`)
         const host = await getHost(q, org.id, id)
         if (!host) throw notFound('Host not found')
         const active = host.runner && !host.runner.revoked ? host.runner.id : null

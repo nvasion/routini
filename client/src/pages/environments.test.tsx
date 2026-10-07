@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { baseRoutes, FakeEventSource, mockFetch, renderAt } from '../test/harness'
-import type { Environment } from '../lib/types'
+import type { Environment, Host } from '../lib/types'
 import { emptyStep, emptyJob, toPayload } from './jobForm'
 import { terminalUrl } from '../lib/terminalUrl'
 
@@ -32,6 +32,24 @@ const ENV = (over: Partial<Environment> = {}): Environment => ({
   idleMinutes: 60,
   lastActiveAt: new Date().toISOString(),
   createdAt: new Date().toISOString(),
+  hostId: null,
+  host: null,
+  ...over,
+})
+
+const HOST = (over: Partial<Host> = {}): Host => ({
+  id: 'h1',
+  name: 'fleet-01',
+  group: 'prod',
+  address: '10.0.0.11',
+  port: 22,
+  username: null,
+  auth: 'key',
+  credentialKey: null,
+  tags: [],
+  lastCheck: null,
+  transport: 'runner',
+  runner: { id: 'r1', name: 'fleet-01', version: '0.4.0', hostname: 'fleet-01', online: true, connectedAt: null, lastSeenAt: null, capabilities: ['exec', 'agents', 'environments'], facts: null, revoked: false },
   ...over,
 })
 
@@ -64,6 +82,45 @@ describe('environments page', () => {
     await within(main).findByText('review-env')
     const post = log.calls.find((c) => c.method === 'POST' && c.url === '/api/orgs/acme/environments')!
     expect(post.body).toEqual({ name: 'review-env', repo: { url: 'https://github.com/acme/app', branch: 'main' }, idleMinutes: 60 })
+  })
+
+  it('lists runner hosts in the create form, disabling ones that cannot host environments, and sends the chosen hostId', async () => {
+    const offline = HOST({ id: 'h-off', name: 'web-02', runner: { ...HOST().runner!, id: 'r2', online: false } })
+    const noCap = HOST({ id: 'h-nocap', name: 'web-03', runner: { ...HOST().runner!, id: 'r3', capabilities: ['exec', 'agents'] } })
+    const ssh = HOST({ id: 'h-ssh', name: 'ssh-01', transport: 'ssh', runner: null, username: 'deploy' })
+    let envs = [ENV({ host: { id: 'h1', name: 'fleet-01' }, hostId: 'h1' })]
+    const log = mockFetch(
+      baseRoutes({
+        'GET /api/orgs/acme/environments': () => ({ environments: envs }),
+        'GET /api/orgs/acme/hosts': () => ({ hosts: [HOST(), offline, noCap, ssh] }),
+        'POST /api/orgs/acme/environments': ({ body }) => {
+          envs = [...envs, ENV({ id: 'e2', name: (body as { name: string }).name, status: 'starting', hostId: 'h1', host: { id: 'h1', name: 'fleet-01' } })]
+          return [202, { environment: envs[1] }]
+        },
+      }),
+    )
+    renderAt('/o/acme/environments')
+    const main = await screen.findByRole('main')
+    // The existing environment's host shows on its card.
+    expect(within(main).getByText(/on fleet-01/)).toBeTruthy()
+
+    fireEvent.click(within(main).getByRole('button', { name: 'New environment' }))
+    const dialog = await screen.findByRole('dialog', { name: 'New environment' })
+    const select = within(dialog).getByLabelText('Host') as HTMLSelectElement
+    const options = Array.from(select.options).map((o) => ({ value: o.value, label: o.textContent, disabled: o.disabled }))
+    expect(options).toEqual([
+      { value: '', label: 'Routini', disabled: false },
+      { value: 'h1', label: 'fleet-01', disabled: false },
+      { value: 'h-off', label: 'web-02 (offline)', disabled: true },
+      { value: 'h-nocap', label: 'web-03 (needs runner v0.4.0 with agents)', disabled: true },
+    ])
+
+    fireEvent.change(within(dialog).getByLabelText('Name'), { target: { value: 'on-fleet' } })
+    fireEvent.change(select, { target: { value: 'h1' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create' }))
+    await within(main).findByText('on-fleet')
+    const post = log.calls.find((c) => c.method === 'POST' && c.url === '/api/orgs/acme/environments')!
+    expect(post.body).toEqual({ name: 'on-fleet', hostId: 'h1', idleMinutes: 60 })
   })
 
   it('opens a terminal for a running environment in the dock', async () => {

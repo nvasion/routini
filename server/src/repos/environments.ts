@@ -12,6 +12,8 @@ export interface Environment {
   name: string
   image: string
   repo: { url: string; branch: string; dir: string } | null
+  /** The fleet host (routini-runner) this environment's container runs on; null runs on Routini's own Docker host. */
+  hostId: string | null
   status: EnvStatus
   statusDetail: string | null
   containerId: string | null
@@ -33,6 +35,7 @@ interface Row {
   name: string
   image: string
   repo: Environment['repo']
+  host_id: string | null
   status: EnvStatus
   status_detail: string | null
   container_id: string | null
@@ -48,7 +51,7 @@ interface Row {
 }
 
 const COLS =
-  'id, org_id, name, image, repo, status, status_detail, container_id, volume, cpus, memory_mb, idle_minutes, last_active_at, created_by, created_at, updated_at, egress_token'
+  'id, org_id, name, image, repo, host_id, status, status_detail, container_id, volume, cpus, memory_mb, idle_minutes, last_active_at, created_by, created_at, updated_at, egress_token'
 const iso = (v: Date) => new Date(v).toISOString()
 const toEnv = (r: Row): Environment => ({
   id: r.id,
@@ -56,6 +59,7 @@ const toEnv = (r: Row): Environment => ({
   name: r.name,
   image: r.image,
   repo: r.repo,
+  hostId: r.host_id,
   status: r.status,
   statusDetail: r.status_detail,
   containerId: r.container_id,
@@ -72,14 +76,31 @@ const toEnv = (r: Row): Environment => ({
 
 export async function insertEnvironment(
   q: Queryable,
-  e: { orgId: string; name: string; image: string; repo: Environment['repo']; volume: string; cpus: number; memoryMb: number; idleMinutes: number; createdBy: string | null },
+  e: {
+    orgId: string
+    name: string
+    image: string
+    repo: Environment['repo']
+    hostId: string | null
+    volume: string
+    cpus: number
+    memoryMb: number
+    idleMinutes: number
+    createdBy: string | null
+  },
 ): Promise<Environment> {
   const [row] = await q.query<Row>(
-    `INSERT INTO environments (org_id, name, image, repo, status, volume, cpus, memory_mb, idle_minutes, created_by)
-     VALUES ($1, $2, $3, $4, 'starting', $5, $6, $7, $8, $9) RETURNING ${COLS}`,
-    [e.orgId, e.name, e.image, e.repo ? JSON.stringify(e.repo) : null, e.volume, e.cpus, e.memoryMb, e.idleMinutes, e.createdBy],
+    `INSERT INTO environments (org_id, name, image, repo, host_id, status, volume, cpus, memory_mb, idle_minutes, created_by)
+     VALUES ($1, $2, $3, $4, $5, 'starting', $6, $7, $8, $9, $10) RETURNING ${COLS}`,
+    [e.orgId, e.name, e.image, e.repo ? JSON.stringify(e.repo) : null, e.hostId, e.volume, e.cpus, e.memoryMb, e.idleMinutes, e.createdBy],
   )
   return toEnv(row!)
+}
+
+/** Environment names that reference a host, for the delete guard in routes/hosts.ts. */
+export async function listEnvironmentNamesForHost(q: Queryable, orgId: string, hostId: string): Promise<string[]> {
+  const rows = await q.query<{ name: string }>('SELECT name FROM environments WHERE org_id = $1 AND host_id = $2 ORDER BY name', [orgId, hostId])
+  return rows.map((r) => r.name)
 }
 
 export async function getEnvironment(q: Queryable, orgId: string, id: string): Promise<Environment | null> {
