@@ -187,6 +187,11 @@ export async function markRunnerConnected(
   )
 }
 
+/** A runner told us mid-connection that what it serves changed (Docker came up): replaces the list from hello. */
+export async function setRunnerCapabilities(q: Queryable, orgId: string, id: string, capabilities: string[]): Promise<void> {
+  await q.query('UPDATE runners SET capabilities = $3, last_seen_at = now() WHERE org_id = $1 AND id = $2', [orgId, id, capabilities])
+}
+
 export async function recordRunnerFacts(q: Queryable, orgId: string, id: string, facts: Record<string, unknown>): Promise<void> {
   await q.query('UPDATE runners SET facts = $3, last_seen_at = now() WHERE org_id = $1 AND id = $2', [orgId, id, JSON.stringify(facts)])
 }
