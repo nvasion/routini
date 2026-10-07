@@ -36,6 +36,24 @@ async function create(body: Record<string, unknown> = {}) {
   return (await u.get(`${base()}/${res.body.environment.id}`)).body as { environment: Record<string, unknown> & { id: string; status: string }; events: Array<{ type: string }> }
 }
 
+/** A runner host, enrolled but never connected — its runner's capabilities are set directly (no FakeRunner needed here). */
+async function runnerHost(name: string, capabilities: string[] = ['exec', 'pty', 'agents', 'environments']): Promise<string> {
+  const e = await u.post(`/api/orgs/${u.orgSlug}/runners/enrollments`, { name, group: 'prod', tags: ['prod'] })
+  expect(e.status, JSON.stringify(e.body)).toBe(201)
+  const r = await t.request.post('/api/runner/enroll').send({ token: e.body.token, hostname: `${name}.prod.example`, os: 'linux', arch: 'amd64', version: '0.4.0' })
+  expect(r.status, JSON.stringify(r.body)).toBe(201)
+  await t.ctx.db.system((q) => q.query('UPDATE runners SET capabilities = $1 WHERE id = $2', [capabilities, r.body.runnerId]))
+  return r.body.hostId as string
+}
+
+/** An SSH host (not routini-runner). */
+async function sshHost(name: string): Promise<string> {
+  await u.put(`/api/orgs/${u.orgSlug}/credentials/ssh.${name}`, { value: 'not-a-real-key' })
+  const h = await u.post(`/api/orgs/${u.orgSlug}/hosts`, { name, address: '10.0.0.5', username: 'deploy', credentialKey: `ssh.${name}` })
+  expect(h.status, JSON.stringify(h.body)).toBe(201)
+  return h.body.host.id as string
+}
+
 describe('lifecycle', () => {
   it('creates a running environment, cloning its repo with the GitHub token only in that process', async () => {
     await u.put(`/api/orgs/${u.orgSlug}/integrations/github`, { credentials: { token: 'ghp_token_for_clone_0123456789' } })
@@ -106,6 +124,65 @@ describe('lifecycle', () => {
     const res = await u.post(base(), { name: 'x', image: 'evil/miner:latest' })
     expect(res.status).toBe(400)
     expect(res.body.error).toMatch(/image must be one of: routini\/agent-claude:latest/)
+  })
+})
+
+describe('environments on a fleet host', () => {
+  it('creates on a qualified runner host, defaulting the image to the fleet agent image, and the view carries the host', async () => {
+    const hostId = await runnerHost('fleet-01')
+    const d = await create({ name: 'fleet-env', hostId })
+    expect(d.environment).toMatchObject({ hostId, host: { id: hostId, name: 'fleet-01' }, image: 'ghcr.io/nvasion/routini-agent-claude:latest' })
+    const list = (await u.get(base())).body.environments as Array<{ id: string; host: { id: string; name: string } | null }>
+    expect(list.find((e) => e.id === d.environment.id)!.host).toEqual({ id: hostId, name: 'fleet-01' })
+  })
+
+  it('leaves environments without a host unchanged (no host field set, Routini image defaults)', async () => {
+    const d = await create({ name: 'no-host' })
+    expect(d.environment).toMatchObject({ hostId: null, host: null, image: 'routini/agent-claude:latest' })
+  })
+
+  it('rejects a runner host whose runner lacks the environments capability', async () => {
+    const hostId = await runnerHost('fleet-02', ['exec', 'pty', 'agents'])
+    const res = await u.post(base(), { name: 'x', hostId })
+    expect(res.status).toBe(400)
+    expect(res.body.error).toBe('"fleet-02" cannot host environments: its runner needs routini-runner v0.4.0 or newer with agents enabled')
+  })
+
+  it('rejects a revoked runner host', async () => {
+    const hostId = await runnerHost('fleet-revoked')
+    await t.ctx.db.system((q) => q.query("UPDATE runners SET revoked_at = now() WHERE host_id = $1", [hostId]))
+    const res = await u.post(base(), { name: 'x', hostId })
+    expect(res.status).toBe(400)
+    expect(res.body.error).toBe('"fleet-revoked" cannot host environments: its runner needs routini-runner v0.4.0 or newer with agents enabled')
+  })
+
+  it('rejects an SSH host', async () => {
+    const hostId = await sshHost('ssh-01')
+    const res = await u.post(base(), { name: 'x', hostId })
+    expect(res.status).toBe(400)
+    expect(res.body.error).toBe('"ssh-01" cannot host environments: its runner needs routini-runner v0.4.0 or newer with agents enabled')
+  })
+
+  it('rejects a hostId that does not match a host in this org', async () => {
+    const res = await u.post(base(), { name: 'x', hostId: '00000000-0000-0000-0000-000000000000' })
+    expect(res.status).toBe(400)
+    expect(res.body.error).toMatch(/hostId does not match a host in this org/)
+  })
+
+  it('rejects an image not on the fleet image list for a fleet host', async () => {
+    const hostId = await runnerHost('fleet-03')
+    const res = await u.post(base(), { name: 'x', hostId, image: 'evil/miner:latest' })
+    expect(res.status).toBe(400)
+    expect(res.body.error).toBe('image must be one of: ghcr.io/nvasion/routini-agent-claude:latest')
+  })
+
+  it('refuses to delete a host that an environment still references', async () => {
+    const hostId = await runnerHost('fleet-04')
+    const d = await create({ name: 'fleet-env-2', hostId })
+    expect(d.environment.hostId).toBe(hostId)
+    const res = await u.del(`/api/orgs/${u.orgSlug}/hosts/${hostId}`)
+    expect(res.status).toBe(409)
+    expect(res.body.error).toBe('Host is used by environments: fleet-env-2')
   })
 })
 

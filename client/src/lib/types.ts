@@ -277,6 +277,9 @@ export interface Environment {
   name: string
   image: string
   repo: { url: string; branch: string; dir: string } | null
+  /** The fleet host (routini-runner) this environment's container runs on; null runs on Routini's own Docker host. */
+  hostId: string | null
+  host: { id: string; name: string } | null
   status: EnvStatus
   statusDetail: string | null
   cpus: number

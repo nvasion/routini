@@ -14,6 +14,7 @@
 
 import { Router } from 'express'
 import { randomUUID } from 'node:crypto'
+import type { Queryable } from '../db/index.js'
 import { ah, badRequest, currentOrg, currentUser, HttpError, notFound, type AppContext } from '../http/common.js'
 import { requireRole } from '../http/orgContext.js'
 import {
@@ -26,7 +27,8 @@ import {
   type Environment,
 } from '../repos/environments.js'
 import { EnvError, repoDirName } from '../engine/environments.js'
-import { defaultAgentImages } from '../engine/agent.js'
+import { defaultAgentImages, fleetEnvImages } from '../engine/agent.js'
+import { getHost, listHosts, type Host } from '../repos/hosts.js'
 import { validateRepoUrl } from '../utils/repoUrl.js'
 import { redact } from '../utils/redact.js'
 
@@ -38,6 +40,20 @@ export function allowedImages(mode: 'selfhost' | 'hosted', env: NodeJS.ProcessEn
   if (mode === 'selfhost') return null
   const configured = (env['ROUTINI_ENV_IMAGES'] ?? '').split(',').map((s) => s.trim()).filter(Boolean)
   return configured.length ? configured : Object.values(defaultAgentImages(env)).filter((v): v is string => Boolean(v))
+}
+
+/** A fleet host (routini-runner) qualified to host environments: not revoked, online, agents enabled. */
+function hostCanHostEnvironments(host: Host): boolean {
+  return host.transport === 'runner' && !!host.runner && !host.runner.revoked && host.runner.capabilities.includes('environments')
+}
+
+type HostRef = { id: string; name: string }
+
+/** The `host` field of the environment view, looked up from its hostId. */
+async function hostRefFor(q: Queryable, orgId: string, hostId: string | null): Promise<HostRef | null> {
+  if (!hostId) return null
+  const host = await getHost(q, orgId, hostId)
+  return host ? { id: host.id, name: host.name } : null
 }
 
 export function environmentsRouter(ctx: AppContext): Router {
@@ -53,11 +69,12 @@ export function environmentsRouter(ctx: AppContext): Router {
     }
   }
 
-  const view = (e: Environment) => ({
+  const view = (e: Environment, host: HostRef | null = null) => ({
     ...e,
     containerId: undefined,
     volume: undefined,
     egressToken: undefined,
+    host: e.hostId ? host : null,
     // Self-hosters can attach their own tools (VS Code Dev Containers, a shell).
     ...(ctx.config.mode === 'selfhost' && e.status === 'running' && e.containerId
       ? { attachCommand: `docker exec -it -u 1000 -w /workspace ${e.containerId.slice(0, 12)} bash -l` }
@@ -74,7 +91,12 @@ export function environmentsRouter(ctx: AppContext): Router {
     '/environments',
     ah(async (req, res) => {
       const org = currentOrg(req)
-      res.json({ environments: (await db.org(org.id, (q) => listEnvironments(q, org.id))).map(view) })
+      const environments = await db.org(org.id, async (q) => {
+        const [list, hosts] = await Promise.all([listEnvironments(q, org.id), listHosts(q, org.id)])
+        const hostsById = new Map(hosts.map((h) => [h.id, { id: h.id, name: h.name }]))
+        return list.map((e) => view(e, e.hostId ? hostsById.get(e.hostId) ?? null : null))
+      })
+      res.json({ environments })
     }),
   )
 
@@ -88,9 +110,20 @@ export function environmentsRouter(ctx: AppContext): Router {
       const name = typeof b['name'] === 'string' ? b['name'].trim() : ''
       if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$/.test(name)) throw badRequest('name must be 1–63 chars of letters, digits, ".", "_" or "-"')
 
-      const image = typeof b['image'] === 'string' && b['image'].trim() ? b['image'].trim() : defaultAgentImages().claude!
+      let targetHost: Host | null = null
+      if (b['hostId'] !== undefined && b['hostId'] !== null) {
+        const rawHostId = b['hostId']
+        if (typeof rawHostId !== 'string' || !/^[0-9a-f-]{36}$/i.test(rawHostId)) throw badRequest('hostId does not match a host in this org')
+        targetHost = await db.org(org.id, (q) => getHost(q, org.id, rawHostId))
+        if (!targetHost) throw badRequest('hostId does not match a host in this org')
+        if (!hostCanHostEnvironments(targetHost)) {
+          throw badRequest(`"${targetHost.name}" cannot host environments: its runner needs routini-runner v0.4.0 or newer with agents enabled`)
+        }
+      }
+
+      const image = typeof b['image'] === 'string' && b['image'].trim() ? b['image'].trim() : targetHost ? fleetEnvImages()[0]! : defaultAgentImages().claude!
       if (!/^[A-Za-z0-9][A-Za-z0-9._\/:@-]{0,254}$/.test(image)) throw badRequest('image is not a valid image reference')
-      const allowed = allowedImages(ctx.config.mode)
+      const allowed = targetHost ? fleetEnvImages() : allowedImages(ctx.config.mode)
       if (allowed && !allowed.includes(image)) throw badRequest(`image must be one of: ${allowed.join(', ')}`)
 
       let repo: Environment['repo'] = null
@@ -118,6 +151,7 @@ export function environmentsRouter(ctx: AppContext): Router {
             name,
             image,
             repo,
+            hostId: targetHost?.id ?? null,
             volume: `routini-env-${id}`,
             cpus: num('cpus', 0.5, 8, 2),
             memoryMb: Math.round(num('memoryMb', 512, 16_384, 4096)),
@@ -136,7 +170,7 @@ export function environmentsRouter(ctx: AppContext): Router {
         if (err instanceof EnvError) throw new HttpError(err.status, err.message)
         throw err
       }
-      res.status(202).json({ environment: view(env) })
+      res.status(202).json({ environment: view(env, targetHost ? { id: targetHost.id, name: targetHost.name } : null) })
     }),
   )
 
@@ -148,7 +182,7 @@ export function environmentsRouter(ctx: AppContext): Router {
       const out = await db.org(org.id, async (q) => {
         const env = await getEnvironment(q, org.id, id)
         if (!env) throw notFound('Environment not found')
-        return { environment: view(env), events: await listEnvironmentEvents(q, org.id, id, 30) }
+        return { environment: view(env, await hostRefFor(q, org.id, env.hostId)), events: await listEnvironmentEvents(q, org.id, id, 30) }
       })
       res.json(out)
     }),
@@ -173,9 +207,12 @@ export function environmentsRouter(ctx: AppContext): Router {
         patch.idleMinutes = b['idleMinutes'] as number
       }
       try {
-        const env = await db.org(org.id, (q) => updateEnvironmentSettings(q, org.id, id, patch))
-        if (!env) throw notFound('Environment not found')
-        res.json({ environment: view(env) })
+        const out = await db.org(org.id, async (q) => {
+          const env = await updateEnvironmentSettings(q, org.id, id, patch)
+          if (!env) throw notFound('Environment not found')
+          return view(env, await hostRefFor(q, org.id, env.hostId))
+        })
+        res.json({ environment: out })
       } catch (err) {
         if (isUniqueViolation(err)) throw new HttpError(409, 'Another environment already has that name')
         throw err
@@ -189,7 +226,8 @@ export function environmentsRouter(ctx: AppContext): Router {
     ah(async (req, res) => {
       const org = currentOrg(req)
       const env = await wrapEnvError(() => envs.start(org.id, idOr404(req.params['id']), currentUser(req).id))
-      res.status(202).json({ environment: view(env) })
+      const host = await db.org(org.id, (q) => hostRefFor(q, org.id, env.hostId))
+      res.status(202).json({ environment: view(env, host) })
     }),
   )
 
@@ -199,7 +237,8 @@ export function environmentsRouter(ctx: AppContext): Router {
     ah(async (req, res) => {
       const org = currentOrg(req)
       const env = await wrapEnvError(() => envs.stop(org.id, idOr404(req.params['id']), currentUser(req).id))
-      res.json({ environment: view(env) })
+      const host = await db.org(org.id, (q) => hostRefFor(q, org.id, env.hostId))
+      res.json({ environment: view(env, host) })
     }),
   )
 
