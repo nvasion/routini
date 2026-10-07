@@ -201,6 +201,20 @@ describe('proxying', () => {
     expect(stats.intercepted).toBeGreaterThanOrEqual(3)
   })
 
+  it('presents a token binding to upstream as Authorization: Token token=<secret> (PagerDuty)', async () => {
+    const tokenSession = 'e'.repeat(32)
+    await control(
+      'PUT',
+      `/sessions/${tokenSession}`,
+      session(tokenSession, {
+        allowedHosts: ['api.pagerduty.com'],
+        bindings: [{ host: 'api.pagerduty.com', header: 'authorization', format: 'token', secret: 'pd_REAL_key' }],
+      }),
+    )
+    const pagerduty = JSON.parse((await viaProxy('api.pagerduty.com', tokenSession, routiniCa.certPem, { authorization: `Token token=${PLACEHOLDER}` })).body)
+    expect(pagerduty.authorization).toBe('Token token=pd_REAL_key')
+  })
+
   it('forwards plain HTTP to allowed hosts but never adds credentials to it', async () => {
     const plainSession = 'd'.repeat(32)
     await control('PUT', `/sessions/${plainSession}`, session(plainSession, { bindings: [{ host: 'plain.example', header: 'authorization', format: 'bearer', secret: 'SHOULD_NOT_LEAK' }] }))

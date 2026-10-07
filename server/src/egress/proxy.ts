@@ -65,6 +65,8 @@ function credentialValue(b: CredentialBinding): string {
       return `Basic ${Buffer.from(`x-access-token:${b.secret}`).toString('base64')}`
     case 'basic-pair':
       return `Basic ${Buffer.from(`${b.user ?? ''}:${b.secret}`).toString('base64')}`
+    case 'token':
+      return `Token token=${b.secret}`
     default:
       return b.secret
   }
