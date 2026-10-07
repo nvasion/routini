@@ -265,6 +265,8 @@ function RuleCard(props: { rule: RuleForm; index: number; count: number; onChang
               ['ssh', 'Commands on hosts'],
               ['imap', 'IMAP'],
               ['factory', 'Factory'],
+              ['azure-boards', 'Azure Boards'],
+              ['teams', 'Teams'],
             ]}
             value={m.actionTypes}
             onChange={(v) => setMatch({ actionTypes: v })}
