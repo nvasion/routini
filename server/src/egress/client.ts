@@ -30,6 +30,20 @@ export interface BrokerConfig {
 
 export class BrokerError extends Error {}
 
+/**
+ * What an agent or environment container needs from an egress broker:
+ * Routini's own (BrokerClient, local Docker host) or a fleet host's (see
+ * runner/env.ts RunnerBroker, whose control channel runs over the runner
+ * connection instead of HTTP).
+ */
+export interface SandboxBroker {
+  newToken(): string
+  network(orgId: string): Promise<string>
+  open(s: EgressSession): Promise<void>
+  close(token: string): Promise<SessionStats | null>
+  containerEnv(token: string): Promise<Record<string, string>>
+}
+
 export const DEFAULT_SANDBOX_NETWORK_PREFIX = 'routini-sb'
 
 /**
@@ -45,7 +59,7 @@ export function sandboxNetworkPrefix(env: NodeJS.ProcessEnv = process.env): stri
   return env['ROUTINI_SANDBOX_NETWORK_PREFIX']?.trim() || DEFAULT_SANDBOX_NETWORK_PREFIX
 }
 
-export class BrokerClient {
+export class BrokerClient implements SandboxBroker {
   private ca: string | null = null
   private readonly ready = new Map<string, Promise<string>>()
 

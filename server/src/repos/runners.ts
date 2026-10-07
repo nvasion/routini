@@ -238,7 +238,22 @@ export interface AgentPayload {
   sealed: SealedSecret
 }
 
-export type RunnerPayload = ExecPayload | AgentPayload
+/**
+ * Environment operations on a fleet host: volumes, the org network, the host's
+ * own egress session, and the container that backs a persistent environment.
+ * `args` is the op's non-secret arguments; anything secret (an exec's env, the
+ * egress session's credential bindings) travels sealed, same as an agent task.
+ */
+export type EnvOp = 'volume.ensure' | 'volume.remove' | 'network.ensure' | 'session.open' | 'session.close' | 'container.start' | 'container.remove' | 'container.state' | 'exec' | 'pull'
+
+export interface EnvOpPayload {
+  type: 'env'
+  op: EnvOp
+  args: Record<string, unknown>
+  sealed?: SealedSecret
+}
+
+export type RunnerPayload = ExecPayload | AgentPayload | EnvOpPayload
 
 /** The plaintext an agent task's `sealed` blob holds. */
 export interface AgentSecret {
@@ -256,6 +271,8 @@ export interface ExecResultData {
   error: string | null
   /** Agent tasks only: what the host's egress proxy saw. */
   egress?: { requests: number; intercepted: number; blocked: string[] } | null
+  /** Environment tasks only: the op's result (a container id, its state, …). */
+  data?: Record<string, unknown> | null
 }
 
 export interface RunnerTask {
@@ -327,6 +344,34 @@ export async function createAgentRunnerTask(
 ): Promise<RunnerTask> {
   const id = randomUUID()
   const payload: AgentPayload = { ...plain, sealed: box.seal(JSON.stringify(secret), sealedAad(id)) }
+  const [row] = await q.query<TaskRow>(
+    `INSERT INTO runner_tasks (id, org_id, runner_id, run_id, step_idx, payload) VALUES ($1, $2, $3, $4, $5, $6) RETURNING ${TASK_COLS}`,
+    [id, orgId, runnerId, link.runId ?? null, link.stepIdx ?? null, JSON.stringify(payload)],
+  )
+  const task = toTask(row!)
+  await notifyStart(q, task.id, runnerId)
+  return task
+}
+
+/**
+ * Queues an environment op. Same shape as createAgentRunnerTask: the id is
+ * generated first so secretArgs (an exec's env, a session's bindings) can be
+ * sealed against it before the row exists. Ops with nothing secret (volume
+ * and network ops, container.state, pull) pass secretArgs = null and get no
+ * `sealed` field at all.
+ */
+export async function createEnvRunnerTask(
+  q: Queryable,
+  box: SecretBox,
+  orgId: string,
+  runnerId: string,
+  op: EnvOp,
+  args: Record<string, unknown>,
+  secretArgs: Record<string, unknown> | null,
+  link: TaskLink = {},
+): Promise<RunnerTask> {
+  const id = randomUUID()
+  const payload: EnvOpPayload = { type: 'env', op, args, ...(secretArgs ? { sealed: box.seal(JSON.stringify(secretArgs), sealedAad(id)) } : {}) }
   const [row] = await q.query<TaskRow>(
     `INSERT INTO runner_tasks (id, org_id, runner_id, run_id, step_idx, payload) VALUES ($1, $2, $3, $4, $5, $6) RETURNING ${TASK_COLS}`,
     [id, orgId, runnerId, link.runId ?? null, link.stepIdx ?? null, JSON.stringify(payload)],
