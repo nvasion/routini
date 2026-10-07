@@ -272,3 +272,118 @@ describe('job form: Factory steps', () => {
     expect(ok.ok && ok.payload['steps']).toEqual([{ id: 'step-1', name: 'Action', kind: 'action', when: 'on_success', config: { type: 'factory', operation: 'orchestrate', projectId: 'routini', request: 'x', runtime: 'claude-code', createPr: true } }])
   })
 })
+
+describe('job form: Azure Boards steps', () => {
+  const base = { ...job, steps: [] as Job['steps'] }
+
+  it('round-trips a step with project, query and limit', () => {
+    const steps: Job['steps'] = [
+      { id: 'board', name: 'Board sweep', kind: 'action', when: 'on_success', retries: 0, config: { type: 'azure-boards', project: 'Fabrikam', query: 'SELECT [System.Id] FROM WorkItems WHERE [State] <> "Closed"', limit: 25 } },
+    ]
+    const form = fromJob({ ...base, steps })
+    expect(form.steps[0]).toMatchObject({ boardsProject: 'Fabrikam', boardsQuery: 'SELECT [System.Id] FROM WorkItems WHERE [State] <> "Closed"', boardsLimit: '25' })
+    const r = toPayload(form)
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.payload['steps']).toEqual([{ id: 'board', name: 'Board sweep', kind: 'action', when: 'on_success', config: { type: 'azure-boards', project: 'Fabrikam', query: 'SELECT [System.Id] FROM WorkItems WHERE [State] <> "Closed"', limit: 25 } }])
+  })
+
+  it('round-trips a step with only a project (query and limit optional)', () => {
+    const steps: Job['steps'] = [{ id: 'board', name: 'Board', kind: 'action', when: 'on_success', retries: 0, config: { type: 'azure-boards', project: 'Fabrikam' } }]
+    const form = fromJob({ ...base, steps })
+    expect(form.steps[0]).toMatchObject({ boardsProject: 'Fabrikam', boardsQuery: '', boardsLimit: '' })
+    const r = toPayload(form)
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.payload['steps']).toEqual([{ id: 'board', name: 'Board', kind: 'action', when: 'on_success', config: { type: 'azure-boards', project: 'Fabrikam' } }])
+  })
+
+  it('drops a whitespace-only query and keeps an unset limit', () => {
+    const form = { ...emptyJob(), name: 'sweep' }
+    form.steps = [{ ...emptyStep('action', 0), actionType: 'azure-boards', boardsProject: 'Fabrikam', boardsQuery: '   ' }]
+    const r = toPayload(form)
+    expect(r.ok && r.payload['steps']).toEqual([{ id: 'step-1', name: 'Action', kind: 'action', when: 'on_success', config: { type: 'azure-boards', project: 'Fabrikam' } }])
+  })
+
+  it('requires a project', () => {
+    const form = { ...emptyJob(), name: 'sweep' }
+    form.steps = [{ ...emptyStep('action', 0), actionType: 'azure-boards' }]
+    const r = toPayload(form)
+    expect(r.ok).toBe(false)
+    if (r.ok) return
+    expect(r.errors).toEqual(['Step 1 (Action): enter the Azure DevOps project.'])
+  })
+
+  it('rejects a limit outside 1..200', () => {
+    const form = { ...emptyJob(), name: 'sweep' }
+    form.steps = [{ ...emptyStep('action', 0), actionType: 'azure-boards', boardsProject: 'Fabrikam', boardsLimit: '0' }]
+    expect((toPayload(form) as { ok: false; errors: string[] }).errors).toEqual(['Step 1 (Action): limit must be a whole number from 1 to 200.'])
+    form.steps[0]!.boardsLimit = '201'
+    expect((toPayload(form) as { ok: false; errors: string[] }).errors).toEqual(['Step 1 (Action): limit must be a whole number from 1 to 200.'])
+    form.steps[0]!.boardsLimit = '12.5'
+    expect((toPayload(form) as { ok: false; errors: string[] }).errors).toEqual(['Step 1 (Action): limit must be a whole number from 1 to 200.'])
+  })
+})
+
+describe('job form: Teams steps', () => {
+  const base = { ...job, steps: [] as Job['steps'] }
+
+  it('round-trips a step with message and title', () => {
+    const steps: Job['steps'] = [{ id: 'notify', name: 'Notify', kind: 'action', when: 'on_success', retries: 0, config: { type: 'teams', message: 'Board sweep finished.', title: 'Routini' } }]
+    const form = fromJob({ ...base, steps })
+    expect(form.steps[0]).toMatchObject({ teamsTitle: 'Routini', teamsMessage: 'Board sweep finished.' })
+    const r = toPayload(form)
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.payload['steps']).toEqual([{ id: 'notify', name: 'Notify', kind: 'action', when: 'on_success', config: { type: 'teams', message: 'Board sweep finished.', title: 'Routini' } }])
+  })
+
+  it('round-trips a step without a title (optional)', () => {
+    const steps: Job['steps'] = [{ id: 'notify', name: 'Notify', kind: 'action', when: 'on_success', retries: 0, config: { type: 'teams', message: 'Board sweep finished.' } }]
+    const form = fromJob({ ...base, steps })
+    expect(form.steps[0]).toMatchObject({ teamsTitle: '', teamsMessage: 'Board sweep finished.' })
+    const r = toPayload(form)
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.payload['steps']).toEqual([{ id: 'notify', name: 'Notify', kind: 'action', when: 'on_success', config: { type: 'teams', message: 'Board sweep finished.' } }])
+  })
+
+  it('requires a message', () => {
+    const form = { ...emptyJob(), name: 'notify' }
+    form.steps = [{ ...emptyStep('action', 0), actionType: 'teams', teamsTitle: 'Hi' }]
+    const r = toPayload(form)
+    expect(r.ok).toBe(false)
+    if (r.ok) return
+    expect(r.errors).toEqual(['Step 1 (Action): enter the message to post.'])
+  })
+
+  it('rejects a title longer than 200 characters', () => {
+    const form = { ...emptyJob(), name: 'notify' }
+    form.steps = [{ ...emptyStep('action', 0), actionType: 'teams', teamsMessage: 'Hi', teamsTitle: 'x'.repeat(201) }]
+    const r = toPayload(form)
+    expect(r.ok).toBe(false)
+    if (r.ok) return
+    expect(r.errors).toEqual(['Step 1 (Action): the title can be at most 200 characters.'])
+  })
+
+  it('trims a blank title out of the payload', () => {
+    const form = { ...emptyJob(), name: 'notify' }
+    form.steps = [{ ...emptyStep('action', 0), actionType: 'teams', teamsMessage: 'Hi', teamsTitle: '   ' }]
+    const r = toPayload(form)
+    expect(r.ok && r.payload['steps']).toEqual([{ id: 'step-1', name: 'Action', kind: 'action', when: 'on_success', config: { type: 'teams', message: 'Hi' } }])
+  })
+})
+
+describe('job form: IMAP steps still round-trip', () => {
+  const base = { ...job, steps: [] as Job['steps'] }
+
+  it('round-trips an imap step', () => {
+    const steps: Job['steps'] = [{ id: 'inbox', name: 'Inbox', kind: 'action', when: 'on_success', retries: 0, config: { type: 'imap', host: 'mail.example.com', port: 993, username: 'ops', credentialKey: 'mail_pw', mailbox: 'INBOX', search: 'UNSEEN' } }]
+    const form = fromJob({ ...base, steps })
+    expect(form.steps[0]).toMatchObject({ actionType: 'imap', imapHost: 'mail.example.com', imapPort: '993', imapUser: 'ops', imapCredential: 'mail_pw', mailbox: 'INBOX', search: 'UNSEEN' })
+    const r = toPayload(form)
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.payload['steps']).toEqual([{ id: 'inbox', name: 'Inbox', kind: 'action', when: 'on_success', config: { type: 'imap', host: 'mail.example.com', port: 993, username: 'ops', credentialKey: 'mail_pw', mailbox: 'INBOX', search: 'UNSEEN' } }])
+  })
+})

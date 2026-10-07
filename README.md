@@ -23,7 +23,7 @@ TynHub at [routini.tynhub.com](https://routini.tynhub.com) (alpha, open signup).
 
 ```
 Trigger ─▶ Job ─▶ Run ─▶ Steps
-manual        trigger    action    http · command (runner or ssh) · imap · factory
+manual        trigger    action    http · command (runner or ssh) · imap · factory · azure boards · teams
 cron (tz)     + steps    agent     a coding agent in a container → PR
 webhook                  approval  waits for a person
 alert

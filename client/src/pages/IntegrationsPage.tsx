@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from 'react'
+import { IntegrationIcon } from '../components/IntegrationIcon'
 import { ErrorBanner, Field, Modal } from '../components/ui'
 import { api } from '../lib/api'
 import { relativeTime } from '../lib/format'
@@ -17,6 +18,12 @@ const STATUS: Record<Integration['status'], { label: string; cls: string }> = {
   connected: { label: 'Connected', cls: 'ok' },
   error: { label: 'Check failed', cls: 'fail' },
   not_connected: { label: 'Not connected', cls: '' },
+}
+
+function statusBadge(i: Integration) {
+  if (i.comingSoon) return <span className="badge">Coming soon</span>
+  const s = STATUS[i.status]
+  return <span className={`badge ${s.cls}`}>{s.label}</span>
 }
 
 export function IntegrationsPage() {
@@ -40,13 +47,16 @@ export function IntegrationsPage() {
         {list.data?.integrations.map((i) => (
           <button key={i.id} type="button" className="card" style={{ textAlign: 'left', cursor: 'pointer', color: 'var(--ink)' }} onClick={() => setOpen(i)}>
             <span className="inline" style={{ justifyContent: 'space-between', width: '100%' }}>
-              <span style={{ fontFamily: 'var(--font-sign)', fontWeight: 700, fontSize: 18 }}>{i.name}</span>
-              <span className={`badge ${STATUS[i.status].cls}`}>{STATUS[i.status].label}</span>
+              <span className="inline" style={{ gap: 10 }}>
+                <IntegrationIcon id={i.id} name={i.name} />
+                <span style={{ fontFamily: 'var(--font-sign)', fontWeight: 700, fontSize: 18 }}>{i.name}</span>
+              </span>
+              {statusBadge(i)}
             </span>
             <span className="muted" style={{ fontSize: 13 }}>
               {i.description}
             </span>
-            {i.status !== 'not_connected' && !i.serverOnly && <span className="meta">agents: {i.scopes.agents.join(', ') || 'none'}</span>}
+            {!i.comingSoon && i.status !== 'not_connected' && !i.serverOnly && <span className="meta">agents: {i.scopes.agents.join(', ') || 'none'}</span>}
           </button>
         ))}
       </div>
@@ -64,6 +74,21 @@ function IntegrationModal({ integration: i, onClose, onChange, canEdit }: { inte
   const [error, setError] = useState<string | null>(null)
   const [note, setNote] = useState<string | null>(null)
   const connected = i.status !== 'not_connected'
+
+  // Coming-soon integrations are never connectable: show only the description
+  // and setup link, no form. Keep this after all hooks above (hooks must run
+  // unconditionally) — do not add hooks below this point.
+  if (i.comingSoon) {
+    return (
+      <Modal title={i.name} onClose={onClose}>
+        <p className="lead">{i.description}</p>
+        <a href={i.setupUrl} target="_blank" rel="noreferrer">
+          {i.setupLabel} ↗
+        </a>
+        <div className="banner info">{i.name} is coming soon.</div>
+      </Modal>
+    )
+  }
 
   async function run(fn: () => Promise<void>) {
     setBusy(true)

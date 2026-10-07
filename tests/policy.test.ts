@@ -28,6 +28,13 @@ describe('rules', () => {
     expect(evaluatePolicy([{ id: 'all', name: 'all', match: {}, effect: 'deny' }], { kind: 'approval' }).effect).toBe('allow')
   })
 
+  it('blocks a teams step by actionType, and accepts azure-boards in the rule parser', () => {
+    const denyTeams = parseRules([{ id: 'no-teams', name: 'No Teams', effect: 'deny', match: { actionTypes: ['teams'] } }])
+    expect(evaluatePolicy(denyTeams, { kind: 'action', actionType: 'teams' }).effect).toBe('deny')
+    expect(evaluatePolicy(denyTeams, { kind: 'action', actionType: 'azure-boards' }).effect).toBe('allow')
+    expect(parseRules([{ id: 'boards', name: 'Boards', effect: 'allow', match: { actionTypes: ['azure-boards'] } }])[0]!.match.actionTypes).toEqual(['azure-boards'])
+  })
+
   it('matches agent steps on where they run, with the fleet host tags', () => {
     const fleet: PolicyRule[] = [{ id: 'fleet-prod', name: 'Agents on prod fleet hosts', match: { kinds: ['agent'], agentPlacements: ['fleet'], hostTags: ['prod'] }, effect: 'require_approval' }]
     expect(evaluatePolicy(fleet, { kind: 'agent', agentPlacement: 'fleet', host: { tags: ['web', 'prod'], group: 'build' } }).rule?.id).toBe('fleet-prod')

@@ -91,6 +91,13 @@ export function renderStep(step: Step, data: TemplateData): Step {
         return { ...step, config: { ...c, command: renderCommand(c.command, data, env), env } }
       }
       if (c.type === 'factory' && c.request) return { ...step, config: { ...c, request: renderText(c.request, data) } }
+      if (c.type === 'azure-boards') {
+        if (c.query === undefined) return step
+        return { ...step, config: { ...c, query: renderText(c.query, data) } }
+      }
+      if (c.type === 'teams') {
+        return { ...step, config: { ...c, message: renderText(c.message, data), title: c.title === undefined ? undefined : renderText(c.title, data) } }
+      }
       return step
     }
     case 'agent':

@@ -57,6 +57,11 @@ export type ActionConfig =
   | { type: 'ssh'; hostId?: string; host?: 'alert'; command: string }
   | { type: 'imap'; host: string; port?: number; username: string; credentialKey: string; mailbox?: string; search?: string; tls?: boolean }
   | { type: 'factory'; operation: 'orchestrate' | 'prd'; projectId?: string; prdId?: string; request?: string; runtime?: 'claude-code' | 'omnimancer'; provider?: string; model?: string; createPr?: boolean }
+  | { type: 'azure-boards'; project: string; query?: string; limit?: number }
+  | { type: 'teams'; message: string; title?: string }
+
+/** Every member of the ActionConfig union's `type` field. */
+export type ActionType = ActionConfig['type']
 
 export interface AgentConfig {
   agent: AgentId
@@ -250,6 +255,8 @@ export interface Integration {
   scopes: { agents: AgentId[] }
   /** Used by Routini itself (e.g. Factory steps), never handed to agents. */
   serverOnly?: boolean
+  /** Listed but not connectable yet. */
+  comingSoon?: boolean
 }
 
 export type AIEndpoint = 'anthropic' | 'openrouter' | 'digitalocean' | 'aws-bedrock' | 'openai' | 'google' | 'azure' | 'gateway'
@@ -305,7 +312,7 @@ export type PolicyEffect = 'allow' | 'require_approval' | 'deny'
 
 export interface PolicyMatch {
   kinds?: Array<'action' | 'agent'>
-  actionTypes?: Array<'http' | 'ssh' | 'imap' | 'factory'>
+  actionTypes?: ActionType[]
   hostTags?: string[]
   hostGroups?: string[]
   agentOutputs?: Array<'pr' | 'branch' | 'none'>
