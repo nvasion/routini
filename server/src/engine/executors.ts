@@ -1,6 +1,6 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// Built-in step executors: action (http / ssh / imap) and approval.
-// The agent executor lives in ./agent.ts (M3).
+// Built-in step executors: action (http / ssh / imap / factory / azure-boards /
+// teams) and approval. The agent executor lives in ./agent.ts (M3).
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { runHttpTask } from '../services/http.js'
@@ -10,6 +10,8 @@ import { getHost } from '../repos/hosts.js'
 import { createApproval } from '../repos/runs.js'
 import type { ActionConfig, ApprovalConfig } from './spec.js'
 import { runFactoryAction } from './factory.js'
+import { runAzureBoardsAction } from './boards.js'
+import { runTeamsAction } from './teamsAction.js'
 import { execOnRunner, STDOUT_TAIL_BYTES } from '../runner/exec.js'
 import { shellExports } from './template.js'
 import { emitPlacement } from './placement.js'
@@ -93,6 +95,14 @@ export function actionExecutor(opts: EngineOptions['actions'] = {}): StepExecuto
         case 'factory':
           await emitPlacement(ctx, { target: 'factory', host: 'Factory' })
           return runFactoryAction(ctx, cfg, { fetchImpl: opts.factoryFetch, pollMs: opts.factoryPollMs })
+
+        case 'azure-boards':
+          await emitPlacement(ctx, { target: 'routini', host: 'Routini worker' })
+          return runAzureBoardsAction(ctx, cfg, { fetchImpl: opts.integrationFetch })
+
+        case 'teams':
+          await emitPlacement(ctx, { target: 'routini', host: 'Routini worker' })
+          return runTeamsAction(ctx, cfg, { fetchImpl: opts.integrationFetch })
 
         case 'imap': {
           await emitPlacement(ctx, { target: 'routini', host: 'Routini worker' })

@@ -5,7 +5,7 @@
 //
 //   fleet    one of the org's hosts (via routini-runner or SSH)
 //   sandbox  an agent container on Routini's Docker host (routini-agents)
-//   routini  the Routini worker itself (http, imap)
+//   routini  the Routini worker itself (http, imap, azure-boards, teams)
 //   factory  dispatched to Factory, which runs it on its own infrastructure
 // ─────────────────────────────────────────────────────────────────────────────
 

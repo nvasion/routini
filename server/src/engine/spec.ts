@@ -2,7 +2,7 @@
 // Job specification: triggers and steps, and their validation.
 //
 // A job is a trigger plus an ordered list of steps. Each step is one of:
-//   action    – a deterministic operation (http / ssh / imap)
+//   action    – a deterministic operation (http / ssh / imap / factory / azure-boards / teams)
 //   agent     – a coding agent in a container (executor arrives in M3)
 //   approval  – pause the run until a person approves or denies
 // `when` decides whether a step runs, relative to the outcome of the last step
@@ -47,6 +47,8 @@ export type ActionConfig =
       model?: string
       createPr?: boolean
     }
+  | { type: 'azure-boards'; project: string; query?: string; limit?: number }
+  | { type: 'teams'; message: string; title?: string }
 
 export interface AgentConfig {
   agent: AgentId
@@ -254,8 +256,24 @@ function parseAction(c: Record<string, unknown>, p: string): ActionConfig {
       }
       return { type: 'factory', operation, prdId: id('prdId') }
     }
+    case 'azure-boards': {
+      const project = str(c['project'], `${p}.project`, 64)!
+      if (!/^[^\/\\?#%*:|"<>.][^\/\\?#%*:|"<>]*$/.test(project)) fail(`${p}.project is not a valid Azure DevOps project name`)
+      return {
+        type: 'azure-boards',
+        project,
+        query: str(c['query'], `${p}.query`, 4000, { optional: true }),
+        limit: int(c['limit'], `${p}.limit`, 1, 200),
+      }
+    }
+    case 'teams':
+      return {
+        type: 'teams',
+        message: str(c['message'], `${p}.message`, 20_000)!,
+        title: str(c['title'], `${p}.title`, 200, { optional: true }),
+      }
     default:
-      return fail(`${p}.type must be one of: http, ssh, imap, factory`)
+      return fail(`${p}.type must be one of: http, ssh, imap, factory, azure-boards, teams`)
   }
 }
 
