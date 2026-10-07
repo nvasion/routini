@@ -74,6 +74,12 @@ alert
   health every minute and runs command steps and terminals as its own user.
   SSH hosts keep working, and commands and terminals behave the same on both.
   Terminal sessions on hosts are admin-only and audited.
+  - Admins can **update a runner** from the Fleet page. From runner v0.3.0 on,
+    a root-owned helper on the host installs the checksum-verified release.
+    Older runners show a one-time upgrade command instead.
+  - The Fleet page also says **why a host can't run agents**, with the command
+    to fix it (`sudo routini-runner-update --enable-agents`). Only root on the
+    host can run that command, because Docker access is root-equivalent.
 - **The SRE loop:** monitoring tools (Alertmanager, Grafana, any webhook) post
   alerts to `/api/alerts/:org`. A firing alert opens an **incident** (repeats are
   deduplicated) and starts every job with a matching **alert trigger**. Steps can
@@ -164,6 +170,8 @@ stored secrets cannot be decrypted.
 | `ROUTINI_FLEET_AGENT_IMAGE_CLAUDE` | `ghcr.io/nvasion/routini-agent-claude:latest` | Agent image a fleet host pulls for `runOn` steps. |
 | `ROUTINI_FLEET_AGENT_IMAGE_OMNIMANCER`, `…_OPENCODE` | — | The same for those agents; without one, their fleet steps fail with a clear message. |
 | `ROUTINI_FLEET_EGRESS_IMAGE` | `ghcr.io/nvasion/routini-egress:latest` | Egress proxy a fleet host runs beside the agent container. |
+| `ROUTINI_RUNNER_LATEST_VERSION` | — (ask GitHub) | Pin the routini-runner release the Fleet page offers as an update, e.g. `v0.3.0` (air-gapped installs). |
+| `ROUTINI_RUNNER_RELEASES` | — | `off`: never ask GitHub for the latest runner release (no update offers). |
 | `ROUTINI_WORKER_CONCURRENCY` | `4` | Runs per worker process. |
 | `ROUTINI_ENV_IMAGES` | agent images | Hosted mode: images environments may use (comma separated). Self-host allows any image. |
 | `ROUTINI_PUBLIC_URL` | `CLIENT_URL` | Where runners and monitoring tools reach this server (install commands and the alert endpoint use it). |

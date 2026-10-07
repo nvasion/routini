@@ -200,7 +200,13 @@ export interface Host {
  * What the runner reports about its machine (osPretty, load1, cpus, addresses…).
  * `docker` is the Docker version it found, absent when Docker is not installed.
  */
-export type RunnerFacts = Record<string, unknown> & { docker?: string }
+/** Runner facts (routini-runner PROTOCOL.md 2.2); anything may be missing. */
+export type RunnerFacts = Record<string, unknown> & {
+  /** Present only when the runner's Docker daemon answered. */
+  docker?: { available: boolean; version: string; agentsRunning: number; maxAgents: number }
+  /** Why agents do or do not run (runner ≥ 0.3.0). */
+  agents?: { configured: boolean; error?: string }
+}
 
 export interface HostRunner {
   id: string
@@ -213,6 +219,12 @@ export interface HostRunner {
   capabilities: string[]
   facts: RunnerFacts | null
   revoked: boolean
+}
+
+/** GET /runners/latest */
+export interface RunnerLatest {
+  version: string | null
+  commands: { reinstall: string; enableAgents: string }
 }
 
 export interface HostEvent {

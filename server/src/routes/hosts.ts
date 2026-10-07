@@ -7,16 +7,19 @@
 //   PUT    /api/orgs/:org/hosts/:id             (admin)
 //   DELETE /api/orgs/:org/hosts/:id             (admin; refused while a job's command step uses it; revokes its runner)
 //   POST   /api/orgs/:org/hosts/:id/check       status: SSH probe, or the runner's latest facts (member)
+//   POST   /api/orgs/:org/hosts/:id/runner/update  update its routini-runner (admin; 202, outcome in events)
 //   GET    /api/orgs/:org/hosts/:id/events      audit trail (terminal sessions, runner connects)
 //
 // Runner hosts are created by enrollment (routes/runners.ts); only their name,
 // group and tags are editable.
 // ─────────────────────────────────────────────────────────────────────────────
 
+import { randomUUID } from 'node:crypto'
 import { Router } from 'express'
-import { ah, badRequest, currentOrg, HttpError, notFound, type AppContext } from '../http/common.js'
+import { ah, badRequest, currentOrg, currentUser, HttpError, notFound, type AppContext } from '../http/common.js'
 import { requireRole } from '../http/orgContext.js'
 import {
+  addHostEvent,
   createHost,
   deleteHost,
   getHost,
@@ -36,6 +39,8 @@ import {
 import { getSecret } from '../repos/credentials.js'
 import { runSshTask } from '../services/ssh.js'
 import { revokeRunner } from '../repos/runners.js'
+import { NO_UPDATE_ERROR } from '../runner/gateway.js'
+import { compareTags, normalizeTag } from '../services/runnerReleases.js'
 import { redact } from '../utils/redact.js'
 
 function parseOr400(raw: unknown, current?: HostInput): HostInput {
@@ -141,6 +146,43 @@ export function hostsRouter(ctx: AppContext): Router {
       })
       if (runnerId) await ctx.runners.revoke(runnerId)
       res.status(204).end()
+    }),
+  )
+
+  // Asks the host's runner to update itself (PROTOCOL.md 2.7). Body: { version? },
+  // default the latest release. The result arrives as host events.
+  r.post(
+    '/hosts/:id/runner/update',
+    requireRole('admin'),
+    ah(async (req, res) => {
+      const org = currentOrg(req)
+      const id = idOr404(req.params['id'])
+      const raw = (req.body ?? {}) as Record<string, unknown>
+      const host = await db.org(org.id, (q) => getHost(q, org.id, id))
+      if (!host) throw notFound('Host not found')
+      const runner = host.transport === 'runner' ? host.runner : null
+      if (!runner || runner.revoked) throw new HttpError(409, 'This host is not connected through routini-runner')
+      if (!runner.online) throw new HttpError(409, `The runner on "${host.name}" is offline`)
+      if (!runner.capabilities.includes('update')) throw new HttpError(409, NO_UPDATE_ERROR)
+
+      let version: string | null
+      if (raw['version'] !== undefined) {
+        version = normalizeTag(raw['version'])
+        if (!version) throw badRequest('version must look like v1.2.3')
+      } else {
+        version = await ctx.runnerReleases.latest()
+        if (!version) throw new HttpError(503, 'The latest routini-runner release is unknown right now; pass a version')
+        if (runner.version && normalizeTag(runner.version) && compareTags(version, normalizeTag(runner.version)!) <= 0) {
+          throw new HttpError(409, `The runner already runs ${normalizeTag(runner.version)}, the latest release`)
+        }
+      }
+      if (runner.version && normalizeTag(runner.version) === version) throw new HttpError(409, `The runner already runs ${version}`)
+
+      const requestId = randomUUID()
+      const userId = currentUser(req).id
+      await db.org(org.id, (q) => addHostEvent(q, org.id, id, 'runner.update.requested', userId, { version, from: runner.version }))
+      await ctx.runners.requestUpdate(runner.id, { requestId, version, userId })
+      res.status(202).json({ requestId, version })
     }),
   )
 

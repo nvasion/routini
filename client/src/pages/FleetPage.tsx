@@ -9,8 +9,9 @@ import { TerminalView } from '../components/TerminalView'
 import { api } from '../lib/api'
 import { relativeTime } from '../lib/format'
 import { useApi } from '../lib/hooks'
-import type { Enrollment, Host, HostEvent } from '../lib/types'
+import type { Enrollment, Host, HostEvent, RunnerLatest } from '../lib/types'
 import { useOrg } from '../shell/OrgContext'
+import { agentsStatus, dockerFacts, updateOffer } from './runnerStatus'
 
 export function hostState(h: Host): { status: 'ok' | 'warn' | 'fail' | 'off'; label: string } {
   if (h.transport === 'runner') {
@@ -32,6 +33,7 @@ const str = (v: unknown) => (typeof v === 'string' && v ? v : undefined)
 export function FleetPage() {
   const org = useOrg()
   const list = useApi<{ hosts: Host[] }>(org.api('/hosts'))
+  const latest = useApi<RunnerLatest>(org.api('/runners/latest'))
   const [adding, setAdding] = useState(false)
   const [terminal, setTerminal] = useState<Host | null>(null)
   const [details, setDetails] = useState<Host | null>(null)
@@ -103,7 +105,7 @@ export function FleetPage() {
           </h2>
           <div className="fleet-grid">
             {items.map((h) => (
-              <HostCard key={h.id} host={h} onTerminal={() => setTerminal(h)} onDetails={() => setDetails(h)} onChecked={() => void list.reload()} />
+              <HostCard key={h.id} host={h} latest={latest.data ?? null} onTerminal={() => setTerminal(h)} onDetails={() => setDetails(h)} onChecked={() => void list.reload()} />
             ))}
           </div>
         </section>
@@ -126,18 +128,49 @@ export function FleetPage() {
           <TerminalView org={org.slug} hostId={terminal.id} height={420} />
         </Modal>
       )}
-      {details && <HostDetails host={details} onClose={() => setDetails(null)} onRemoved={() => void list.reload()} />}
+      {details && (
+        <HostDetails
+          host={hosts.find((h) => h.id === details.id) ?? details}
+          latest={latest.data ?? null}
+          onClose={() => setDetails(null)}
+          onRemoved={() => void list.reload()}
+          onUpdated={() => void list.reload()}
+        />
+      )}
     </>
   )
 }
 
-function HostCard({ host: h, onTerminal, onDetails, onChecked }: { host: Host; onTerminal: () => void; onDetails: () => void; onChecked: () => void }) {
+/**
+ * "Update runner": POST /hosts/:id/runner/update, then reload the fleet a few
+ * times while the runner restarts and reconnects with its new version.
+ */
+function useRunnerUpdate(h: Host, onDone: () => void) {
+  const org = useOrg()
+  const [state, setState] = useState<{ busy: boolean; note: string | null; error: string | null }>({ busy: false, note: null, error: null })
+  async function update() {
+    setState({ busy: true, note: null, error: null })
+    try {
+      const r = await api<{ version: string }>(org.api(`/hosts/${h.id}/runner/update`), { body: {} })
+      setState({ busy: false, note: `Updating to ${r.version}; the runner restarts and reconnects in a few seconds.`, error: null })
+      for (const ms of [4000, 9000, 20000]) window.setTimeout(onDone, ms)
+    } catch (err) {
+      setState({ busy: false, note: null, error: (err as Error).message })
+    }
+  }
+  return { ...state, update }
+}
+
+function HostCard({ host: h, latest, onTerminal, onDetails, onChecked }: { host: Host; latest: RunnerLatest | null; onTerminal: () => void; onDetails: () => void; onChecked: () => void }) {
   const org = useOrg()
   const state = hostState(h)
   const facts = h.runner?.facts ?? {}
   const [checking, setChecking] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const canTerminal = org.can('admin') && (h.transport === 'ssh' ? !!h.credentialKey : !!h.runner?.online && h.runner.capabilities.includes('pty'))
+  const offer = h.runner ? updateOffer(h.runner, latest?.version ?? null, latest?.commands ?? null) : null
+  const docker = h.runner ? dockerFacts(h.runner) : null
+  const upd = useRunnerUpdate(h, onChecked)
 
   async function check() {
     setChecking(true)
@@ -168,6 +201,11 @@ function HostCard({ host: h, onTerminal, onDetails, onChecked }: { host: Host; o
             </span>
           )}
           <span className={`badge${h.transport === 'runner' ? ' accent' : ''}`}>{h.transport === 'runner' ? `runner ${h.runner?.version ?? ''}`.trim() : 'ssh'}</span>
+          {offer && (
+            <span className="badge warn" title={`routini-runner ${offer.to} is available`}>
+              update
+            </span>
+          )}
         </span>
       </div>
       <span className="meta">{state.label}</span>
@@ -179,7 +217,7 @@ function HostCard({ host: h, onTerminal, onDetails, onChecked }: { host: Host; o
           {num(facts['load1']) !== undefined ? `load ${num(facts['load1'])!.toFixed(2)}` : '—'}
           {num(facts['cpus']) !== undefined ? ` · ${num(facts['cpus'])} cpu` : ''}
         </span>
-        {str(facts.docker) && <span>docker {str(facts.docker)}</span>}
+        {docker?.version && <span>docker {docker.version}</span>}
       </div>
       {h.lastCheck?.ok && (state.status !== 'fail' || h.transport === 'ssh') && (
         <div className="stack" style={{ gap: 6 }}>
@@ -188,8 +226,18 @@ function HostCard({ host: h, onTerminal, onDetails, onChecked }: { host: Host; o
         </div>
       )}
       {h.tags.length > 0 && <span className="meta">{h.tags.map((t) => `#${t}`).join(' ')}</span>}
-      <ErrorBanner error={error} />
+      <ErrorBanner error={error ?? upd.error} />
+      {upd.note && (
+        <span className="meta" role="status">
+          {upd.note}
+        </span>
+      )}
       <div className="inline">
+        {offer?.kind === 'button' && org.can('admin') && h.runner?.online && (
+          <button type="button" className="btn small" disabled={upd.busy} onClick={() => void upd.update()}>
+            {upd.busy ? 'Updating…' : `Update to ${offer.to}`}
+          </button>
+        )}
         {canTerminal && (
           <button type="button" className="btn small" onClick={onTerminal}>
             <Icon name="terminal" size={14} /> Terminal
@@ -214,13 +262,63 @@ const EVENT_LABEL: Record<string, string> = {
   'runner.connected': 'Runner connected',
   'runner.disconnected': 'Runner disconnected',
   'runner.removed': 'Runner removed',
+  'runner.update.requested': 'Runner update requested',
+  'runner.update.succeeded': 'Runner updated',
+  'runner.update.failed': 'Runner update failed',
 }
 
-function HostDetails({ host: h, onClose, onRemoved }: { host: Host; onClose: () => void; onRemoved: () => void }) {
+/** A command only root on the host can run, with a copy button. */
+function HostCommand({ label, command }: { label: string; command: string }) {
+  const [copied, setCopied] = useState(false)
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(command)
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1500)
+    } catch {
+      // clipboard unavailable; the command is selectable
+    }
+  }
+  return (
+    <div className="stack" style={{ gap: 6 }}>
+      <pre className="code" aria-label={label} style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all', margin: 0 }}>
+        {command}
+      </pre>
+      <div className="inline">
+        <button type="button" className="btn small" onClick={() => void copy()}>
+          {copied ? 'Copied' : 'Copy'}
+        </button>
+        <span className="meta">Run it as root on the server.</span>
+      </div>
+    </div>
+  )
+}
+
+function HostDetails({
+  host: h,
+  latest,
+  onClose,
+  onRemoved,
+  onUpdated,
+}: {
+  host: Host
+  latest: RunnerLatest | null
+  onClose: () => void
+  onRemoved: () => void
+  onUpdated: () => void
+}) {
   const org = useOrg()
   const events = useApi<{ events: HostEvent[] }>(org.api(`/hosts/${h.id}/events`))
   const [error, setError] = useState<string | null>(null)
   const facts = h.runner?.facts ?? {}
+  const offer = h.runner ? updateOffer(h.runner, latest?.version ?? null, latest?.commands ?? null) : null
+  const agents = h.runner ? agentsStatus(h.runner, latest?.commands ?? null) : null
+  const docker = h.runner ? dockerFacts(h.runner) : null
+  const reloadEvents = events.reload
+  const upd = useRunnerUpdate(h, () => {
+    onUpdated()
+    void reloadEvents()
+  })
 
   async function remove() {
     if (!window.confirm(`Remove ${h.name}?${h.transport === 'runner' ? ' Its runner is revoked and stops.' : ''}`)) return
@@ -247,7 +345,13 @@ function HostDetails({ host: h, onClose, onRemoved }: { host: Host; onClose: () 
             <dt>Allows</dt>
             <dd>{h.runner?.capabilities.join(', ') || 'nothing'}</dd>
             <dt>Docker</dt>
-            <dd className="mono">{str(facts.docker) ?? 'not found'}</dd>
+            <dd className="mono">{docker?.version ?? 'not available'}</dd>
+            <dt>Agents</dt>
+            <dd>
+              {agents?.kind === 'on'
+                ? `on${agents.running !== null && agents.max !== null ? ` · ${agents.running}/${agents.max} running` : ''}`
+                : (agents?.reason ?? '—')}
+            </dd>
             <dt>Last seen</dt>
             <dd>{h.runner?.lastSeenAt ? relativeTime(h.runner.lastSeenAt) : 'never'}</dd>
           </>
@@ -257,6 +361,40 @@ function HostDetails({ host: h, onClose, onRemoved }: { host: Host; onClose: () 
         <dt>Tags</dt>
         <dd>{h.tags.join(', ') || '—'}</dd>
       </dl>
+      {h.transport === 'runner' && org.can('admin') && (offer || agents?.kind === 'off') && (
+        <section className="stack" aria-label="Runner maintenance">
+          {offer?.kind === 'button' && (
+            <div className="inline">
+              <button type="button" className="btn primary small" disabled={upd.busy || !h.runner?.online} onClick={() => void upd.update()}>
+                {upd.busy ? 'Updating…' : `Update runner to ${offer.to}`}
+              </button>
+              {!h.runner?.online && <span className="meta">The runner is offline.</span>}
+            </div>
+          )}
+          {offer?.kind === 'reinstall' && (
+            <>
+              <p className="meta" style={{ margin: 0 }}>
+                routini-runner {offer.to} is available. This runner predates updates from Routini, so upgrade it once on the server; after that the update button works from here.
+              </p>
+              <HostCommand label="Upgrade command" command={offer.command} />
+            </>
+          )}
+          {upd.note && (
+            <span className="meta" role="status">
+              {upd.note}
+            </span>
+          )}
+          <ErrorBanner error={upd.error} />
+          {agents?.kind === 'off' && agents.command && (
+            <>
+              <p className="meta" style={{ margin: 0 }}>
+                {agents.reason}
+              </p>
+              <HostCommand label="Enable agents command" command={agents.command} />
+            </>
+          )}
+        </section>
+      )}
       <h3 style={{ margin: '8px 0 0' }}>Audit trail</h3>
       <div className="list">
         {events.data && events.data.events.length === 0 && <Empty>No activity recorded yet.</Empty>}
@@ -268,6 +406,9 @@ function HostDetails({ host: h, onClose, onRemoved }: { host: Host; onClose: () 
                 {relativeTime(e.ts)}
                 {typeof e.data['seconds'] === 'number' ? ` · ${e.data['seconds']}s` : ''}
                 {typeof e.data['via'] === 'string' ? ` · via ${e.data['via']}` : ''}
+                {e.type.startsWith('runner.update') && typeof e.data['version'] === 'string' ? ` · ${e.data['version']}` : ''}
+                {e.type === 'runner.connected' && typeof e.data['version'] === 'string' ? ` · v${String(e.data['version']).replace(/^v/, '')}` : ''}
+                {typeof e.data['error'] === 'string' ? ` · ${e.data['error']}` : ''}
               </span>
             </span>
           </div>
