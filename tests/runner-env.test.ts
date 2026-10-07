@@ -327,3 +327,27 @@ describe('RunnerGateway.openEnvTty', () => {
     expect(err).toMatchObject({ status: 409, message: NO_ENVIRONMENTS_ERROR })
   })
 })
+
+// The real runner (routini-runner envx) answers every env.op with exactly this
+// frame shape. Written out by hand, not through FakeRunner.envDone, so the
+// server is held to PROTOCOL.md 2.8 rather than to the fake.
+describe('env.done wire format (PROTOCOL.md 2.8)', () => {
+  it('reads the op payload from `result`, as routini-runner sends it', async () => {
+    const e = await enroll()
+    await connect(e.credential, {
+      capabilities: ENV_CAPS,
+      onEnvOp: (s, r) => {
+        const result =
+          s.op === 'network.ensure' ? { network: s.args['network'] } : s.op === 'session.open' ? { caPem: 'PEM' } : s.op === 'container.start' ? { containerId: 'c-1' } : { state: 'running' }
+        r.send({ type: 'env.done', id: s.id, ok: true, error: null, exitCode: null, timedOut: false, canceled: false, result })
+      },
+    })
+    const b = broker(e.runnerId)
+    expect(await b.network(u.orgId)).toBe(sandboxNetworkName(sandboxNetworkPrefix(), u.orgId))
+    await b.open({ token: 'tok', orgId: u.orgId, label: 'env:x', allowedHosts: [], bindings: [], expiresAt: new Date(Date.now() + 60_000).toISOString() })
+    expect((await b.containerEnv('tok'))['ROUTINI_CA_PEM']).toBe('PEM')
+    const rt = envRuntime(e.runnerId)
+    expect(await rt.startContainer({ name: 'routini-env-x', image: 'ghcr.io/nvasion/routini-agent-claude:latest', volume: 'routini-env-x', labels: {}, cpus: 1, memoryMb: 512 })).toBe('c-1')
+    expect(await rt.state('c-1')).toBe('running')
+  })
+})
