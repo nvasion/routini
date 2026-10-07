@@ -56,6 +56,9 @@ export async function makeTestApp(
     broker?: BrokerClient | null
     /** Default: no known release, so tests never ask GitHub. */
     runnerReleases?: RunnerReleases
+    /** A fleet environment's ops against an offline runner: default fast, so no test waits out a real grace period. */
+    envRunnerOfflineGraceMs?: number
+    envRunnerPollMs?: number
   } = {},
 ): Promise<TestApp> {
   const config: Config = { ...loadConfig({ NODE_ENV: 'test' }), signup: 'open', ...opts.config }
@@ -65,7 +68,13 @@ export async function makeTestApp(
   const ctx: AppContext = createContext(
     { config, db, box: createSecretBox(TEST_MASTER_KEY) },
     { retryDelayMs: () => 0, ...opts.engine },
-    { envRuntime: opts.envRuntime ?? new FakeEnvRuntime(), broker: opts.broker ?? null, runnerReleases: opts.runnerReleases ?? { latest: async () => null } },
+    {
+      envRuntime: opts.envRuntime ?? new FakeEnvRuntime(),
+      broker: opts.broker ?? null,
+      runnerReleases: opts.runnerReleases ?? { latest: async () => null },
+      envRunnerOfflineGraceMs: opts.envRunnerOfflineGraceMs ?? 300,
+      envRunnerPollMs: opts.envRunnerPollMs ?? 25,
+    },
   )
   const app = createApp(ctx, { providerCtx: opts.providerCtx })
   const request = supertest(app)

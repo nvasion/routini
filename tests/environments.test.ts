@@ -8,8 +8,10 @@ import type { Server } from 'node:http'
 import { WebSocket } from 'ws'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import type { Socket } from 'node:net'
 import { makeTestApp, type TestApp, type TestUser } from './helpers/testApp'
 import { FakeEnvRuntime } from './helpers/fakeEnvRuntime'
+import { FakeRunner, fleetEnvHappyPath } from './helpers/fakeRunner'
 import { Worker } from '../server/src/engine/worker'
 import { agentExecutor } from '../server/src/engine/agent'
 import { attachTerminal } from '../server/src/http/terminal'
@@ -128,10 +130,43 @@ describe('lifecycle', () => {
 })
 
 describe('environments on a fleet host', () => {
+  // Provisioning a fleet environment now really queues ops on its runner (tests/env-fleet.test.ts
+  // covers that end to end); the two tests here that watch one through to 'running' need a
+  // connected fake runner to answer them, so this block runs its own gateway server.
+  let server: Server
+  let baseUrl: string
+  const sockets = new Set<Socket>()
+  beforeEach(async () => {
+    server = t.app.listen(0)
+    sockets.clear()
+    server.on('connection', (s) => sockets.add(s))
+    t.ctx.runners.attach(server)
+    await t.ctx.runners.start()
+    baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+  })
+  afterEach(async () => {
+    await t.ctx.runners.stop()
+    for (const s of sockets) s.destroy()
+    server.closeAllConnections?.()
+    await new Promise((r) => server.close(r))
+  })
+
+  /** A runner host, enrolled and connected with a fake runner that answers env ops on the happy path. */
+  async function connectedRunnerHost(name: string): Promise<string> {
+    const e = await u.post(`/api/orgs/${u.orgSlug}/runners/enrollments`, { name, group: 'prod', tags: ['prod'] })
+    expect(e.status, JSON.stringify(e.body)).toBe(201)
+    const r = await t.request.post('/api/runner/enroll').send({ token: e.body.token, hostname: `${name}.prod.example`, os: 'linux', arch: 'amd64', version: '0.4.0' })
+    expect(r.status, JSON.stringify(r.body)).toBe(201)
+    const { onEnvOp } = fleetEnvHappyPath()
+    const fake = new FakeRunner({ baseUrl, credential: r.body.credential, capabilities: ['exec', 'pty', 'agents', 'environments'], onEnvOp })
+    await fake.connect()
+    return r.body.hostId as string
+  }
+
   it('creates on a qualified runner host, defaulting the image to the fleet agent image, and the view carries the host', async () => {
-    const hostId = await runnerHost('fleet-01')
+    const hostId = await connectedRunnerHost('fleet-01')
     const d = await create({ name: 'fleet-env', hostId })
-    expect(d.environment).toMatchObject({ hostId, host: { id: hostId, name: 'fleet-01' }, image: 'ghcr.io/nvasion/routini-agent-claude:latest' })
+    expect(d.environment).toMatchObject({ status: 'running', hostId, host: { id: hostId, name: 'fleet-01' }, image: 'ghcr.io/nvasion/routini-agent-claude:latest' })
     const list = (await u.get(base())).body.environments as Array<{ id: string; host: { id: string; name: string } | null }>
     expect(list.find((e) => e.id === d.environment.id)!.host).toEqual({ id: hostId, name: 'fleet-01' })
   })
@@ -177,7 +212,7 @@ describe('environments on a fleet host', () => {
   })
 
   it('refuses to delete a host that an environment still references', async () => {
-    const hostId = await runnerHost('fleet-04')
+    const hostId = await connectedRunnerHost('fleet-04')
     const d = await create({ name: 'fleet-env-2', hostId })
     expect(d.environment.hostId).toBe(hostId)
     const res = await u.del(`/api/orgs/${u.orgSlug}/hosts/${hostId}`)

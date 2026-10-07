@@ -459,7 +459,17 @@ function StepEditor(props: {
                 </select>
               )}
             </Field>
-            <Field label="Run on" hint={s.environmentId ? 'The environment decides where this runs.' : 'A fleet host runs the agent in Docker on that server, with its own files and network.'}>
+            <Field
+              label="Run on"
+              hint={
+                s.environmentId
+                  ? (() => {
+                      const host = props.environments.find((env) => env.id === s.environmentId)?.host
+                      return host ? `Runs on ${host.name} (from the environment)` : 'The environment decides where this runs.'
+                    })()
+                  : 'A fleet host runs the agent in Docker on that server, with its own files and network.'
+              }
+            >
               {(id) => (
                 <select
                   id={id}

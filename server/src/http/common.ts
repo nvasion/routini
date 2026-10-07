@@ -46,13 +46,30 @@ export interface AppContext {
 export function createContext(
   base: { config: Config; db: Db; box: SecretBox },
   engineOpts: EngineOptions = {},
-  extra: { envRuntime?: EnvRuntime; broker?: BrokerClient | null; gateway?: GatewayOptions; runnerReleases?: RunnerReleases } = {},
+  extra: {
+    envRuntime?: EnvRuntime
+    broker?: BrokerClient | null
+    gateway?: GatewayOptions
+    runnerReleases?: RunnerReleases
+    /** A fleet environment's ops: how long to wait for an offline runner, and the result poll interval (tests). */
+    envRunnerOfflineGraceMs?: number
+    envRunnerPollMs?: number
+  } = {},
 ): AppContext {
   const ctx = { ...base, actions: engineOpts.actions } as AppContext
   ctx.runnerReleases = extra.runnerReleases ?? runnerReleasesFromEnv()
   ctx.hub = new EventHub(base.db)
   ctx.broker = extra.broker === undefined ? brokerFromEnv() : extra.broker
-  ctx.envs = createEnvManager({ db: base.db, box: base.box, runtime: extra.envRuntime ?? new DockerEnvRuntime(), broker: ctx.broker, mode: base.config.mode, requireVerifiedEmail: base.config.requireVerifiedEmail })
+  ctx.envs = createEnvManager({
+    db: base.db,
+    box: base.box,
+    runtime: extra.envRuntime ?? new DockerEnvRuntime(),
+    broker: ctx.broker,
+    mode: base.config.mode,
+    requireVerifiedEmail: base.config.requireVerifiedEmail,
+    runnerOfflineGraceMs: extra.envRunnerOfflineGraceMs,
+    runnerPollMs: extra.envRunnerPollMs,
+  })
   ctx.engine = createEngine(ctx, engineOpts)
   ctx.runners = new RunnerGateway(ctx, extra.gateway)
   return ctx
