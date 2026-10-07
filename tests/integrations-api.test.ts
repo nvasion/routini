@@ -2,7 +2,8 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { makeTestApp, type TestApp, type TestUser } from './helpers/testApp'
-import { getScopedIntegrationEnv } from '../server/src/repos/integrations'
+import { getBrokeredIntegrationAccess, getScopedIntegrationEnv } from '../server/src/repos/integrations'
+import { PLACEHOLDER } from '../server/src/egress/types'
 import type { FetchFn } from '../server/src/integrations/providers'
 
 let t: TestApp
@@ -30,7 +31,25 @@ describe('integrations', () => {
   it('lists the catalog, all not connected, with field metadata but no values', async () => {
     const res = await u.get(base())
     expect(res.status).toBe(200)
-    expect(res.body.integrations.map((i: { id: string }) => i.id)).toEqual(['github', 'slack', 'jira', 'notion', 'linear', 'monday', 'hubspot', 'factory'])
+    expect(res.body.integrations.map((i: { id: string }) => i.id)).toEqual([
+      'github',
+      'slack',
+      'jira',
+      'notion',
+      'linear',
+      'monday',
+      'hubspot',
+      'azure-devops',
+      'teams',
+      'gitlab',
+      'digitalocean',
+      'sentry',
+      'pagerduty',
+      'datadog',
+      'cloudflare',
+      'factory',
+      'ttyy',
+    ])
     expect(res.body.integrations.every((i: { status: string }) => i.status === 'not_connected')).toBe(true)
     expect(github(res.body)['fields']).toEqual([{ key: 'token', label: 'Personal access token', secret: true }])
   })
@@ -96,5 +115,40 @@ describe('integrations', () => {
     await u.post(`/api/orgs/${u.orgSlug}/members`, { email: 'member@example.com', role: 'member' })
     expect((await m.get(base())).status).toBe(200)
     expect((await m.put(`${base()}/github`, { credentials: { token: TOKEN } })).status).toBe(403)
+  })
+
+  it('lists ttyy as coming soon and refuses to connect, test or disconnect it', async () => {
+    const ttyy = (await u.get(base())).body.integrations.find((i: { id: string }) => i.id === 'ttyy')
+    expect(ttyy).toMatchObject({ comingSoon: true, fields: [] })
+
+    const put = await u.put(`${base()}/ttyy`, { scopes: { agents: ['claude'] } })
+    expect(put.status).toBe(409)
+    expect(put.body.error).toBe('ttyy.ai is coming soon')
+
+    const test = await u.post(`${base()}/ttyy/test`)
+    expect(test.status).toBe(409)
+    expect(test.body.error).toBe('ttyy.ai is coming soon')
+
+    const del = await u.del(`${base()}/ttyy`)
+    expect(del.status).toBe(409)
+    expect(del.body.error).toBe('ttyy.ai is coming soon')
+  })
+
+  it('connects azure-devops and brokers both hosts with a placeholder env', async () => {
+    const connect = await u.put(`${base()}/azure-devops`, { credentials: { organization: 'contoso', pat: 'adopat123' } })
+    expect(connect.status).toBe(200)
+    const access = await t.ctx.db.org(u.orgId, (q) => getBrokeredIntegrationAccess(q, t.ctx.box, u.orgId, 'claude'))
+    expect(access.env).toEqual({ AZURE_DEVOPS_ORG: 'contoso', AZURE_DEVOPS_EXT_PAT: PLACEHOLDER })
+    expect(access.hosts).toEqual(['dev.azure.com', 'vssps.dev.azure.com'])
+    expect(access.bindings).toEqual([
+      { host: 'dev.azure.com', header: 'authorization', format: 'basic-token', secret: 'adopat123' },
+      { host: 'vssps.dev.azure.com', header: 'authorization', format: 'basic-token', secret: 'adopat123' },
+    ])
+  })
+
+  it('does not inject teams into agent containers (serverOnly)', async () => {
+    await u.put(`${base()}/teams`, { credentials: { webhookUrl: 'https://example.com/webhook' } })
+    const env = await t.ctx.db.org(u.orgId, (q) => getScopedIntegrationEnv(q, t.ctx.box, u.orgId, 'claude'))
+    expect(env).not.toHaveProperty('TEAMS_WEBHOOK_URL')
   })
 })

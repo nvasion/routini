@@ -7,6 +7,7 @@ export type BindingFormat =
   | 'raw' //    <header>: <secret>
   | 'basic-token' // Authorization: Basic base64("x-access-token:<secret>")  (git over https)
   | 'basic-pair' // Authorization: Basic base64("<user>:<secret>")
+  | 'token' // Authorization: Token token=<secret>  (PagerDuty)
 
 export interface CredentialBinding {
   host: string

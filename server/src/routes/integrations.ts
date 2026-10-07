@@ -12,7 +12,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { Router } from 'express'
-import { ah, badRequest, currentOrg, currentUser, notFound, type AppContext } from '../http/common.js'
+import { ah, badRequest, currentOrg, currentUser, HttpError, notFound, type AppContext } from '../http/common.js'
 import { requireRole } from '../http/orgContext.js'
 import { DEFAULT_SCOPES, getIntegrationDef, INTEGRATIONS, parseScopes, type IntegrationDef, type IntegrationScopes } from '../integrations/catalog.js'
 import { runProviderTest, type ProviderTestContext } from '../integrations/providers.js'
@@ -44,15 +44,19 @@ function view(def: IntegrationDef, state: IntegrationState | null | undefined) {
     lastTestMessage: state?.lastTestMessage ?? null,
     scopes: state?.scopes ?? DEFAULT_SCOPES,
     serverOnly: Boolean(def.serverOnly),
+    comingSoon: Boolean(def.comingSoon),
   }
 }
 
 export function integrationsRouter(ctx: AppContext, providerCtx: ProviderTestContext = {}): Router {
   const r = Router({ mergeParams: true })
 
-  const defOr404 = (id: unknown) => {
+  // Used only by the mutating routes below (PUT/POST test/DELETE); GET lists
+  // every def, including coming-soon ones, via `view()` directly.
+  const connectableDefOr404 = (id: unknown) => {
     const def = getIntegrationDef(String(id))
     if (!def) throw notFound('Unknown integration')
+    if (def.comingSoon) throw new HttpError(409, `${def.name} is coming soon`)
     return def
   }
 
@@ -70,7 +74,7 @@ export function integrationsRouter(ctx: AppContext, providerCtx: ProviderTestCon
     requireRole('admin'),
     ah(async (req, res) => {
       const org = currentOrg(req)
-      const def = defOr404(req.params['id'])
+      const def = connectableDefOr404(req.params['id'])
       const body = (req.body ?? {}) as Record<string, unknown>
 
       let credentials: Record<string, string> | undefined
@@ -114,7 +118,7 @@ export function integrationsRouter(ctx: AppContext, providerCtx: ProviderTestCon
     requireRole('admin'),
     ah(async (req, res) => {
       const org = currentOrg(req)
-      const def = defOr404(req.params['id'])
+      const def = connectableDefOr404(req.params['id'])
       const creds = await ctx.db.org(org.id, async (q) => {
         const state = await getIntegrationState(q, org.id, def.id)
         if (!state?.connectedAt) throw badRequest(`${def.name} is not connected`)
@@ -141,7 +145,7 @@ export function integrationsRouter(ctx: AppContext, providerCtx: ProviderTestCon
     requireRole('admin'),
     ah(async (req, res) => {
       const org = currentOrg(req)
-      const def = defOr404(req.params['id'])
+      const def = connectableDefOr404(req.params['id'])
       await ctx.db.org(org.id, (q) => disconnectIntegration(q, org.id, def.id))
       res.json({ integration: view(def, null) })
     }),

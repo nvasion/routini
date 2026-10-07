@@ -25,7 +25,7 @@ export interface BrokerRule {
   host?: string
   hostFromField?: string
   header: string
-  format: 'bearer' | 'raw' | 'basic-token' | 'basic-pair'
+  format: 'bearer' | 'raw' | 'basic-token' | 'basic-pair' | 'token'
   /** The secret field. */
   field: string
   /** For basic-pair: the field holding the user name. */
@@ -42,6 +42,8 @@ export interface IntegrationDef {
   broker?: readonly BrokerRule[]
   /** Not injected into agent containers (used by Routini itself, e.g. Factory). */
   serverOnly?: boolean
+  /** Listed but not connectable yet (shown as "Coming soon"). */
+  comingSoon?: boolean
 }
 
 export interface IntegrationScopes {
@@ -123,6 +125,98 @@ export const INTEGRATIONS: readonly IntegrationDef[] = [
     broker: [{ host: 'api.hubapi.com', header: 'authorization', format: 'bearer', field: 'token' }],
   },
   {
+    id: 'azure-devops',
+    name: 'Azure DevOps',
+    description: 'Azure Boards work items, Repos and Pipelines. Jobs can read a board with the Azure Boards step.',
+    setupUrl: 'https://learn.microsoft.com/azure/devops/organizations/accounts/use-personal-access-tokens-to-authenticate',
+    setupLabel: 'Create a personal access token (Work Items: Read)',
+    fields: [
+      { key: 'organization', label: 'Organization (dev.azure.com/<name>)', secret: false, env: 'AZURE_DEVOPS_ORG' },
+      { key: 'pat', label: 'Personal access token', secret: true, env: 'AZURE_DEVOPS_EXT_PAT' },
+    ],
+    broker: [
+      { host: 'dev.azure.com', header: 'authorization', format: 'basic-token', field: 'pat' },
+      { host: 'vssps.dev.azure.com', header: 'authorization', format: 'basic-token', field: 'pat' },
+    ],
+  },
+  {
+    id: 'teams',
+    name: 'Microsoft Teams',
+    description: 'Post messages to a Teams channel from jobs with the Teams step. Test connection posts a short message to the channel.',
+    setupUrl: 'https://support.microsoft.com/office/create-incoming-webhooks-with-workflows-for-microsoft-teams-8ae491c7-0394-4861-ba59-055e33f75498',
+    setupLabel: 'Create a Workflows webhook',
+    fields: [{ key: 'webhookUrl', label: 'Workflows webhook URL', secret: true, env: 'TEAMS_WEBHOOK_URL' }],
+    serverOnly: true,
+  },
+  {
+    id: 'gitlab',
+    name: 'GitLab',
+    description: 'GitLab projects, merge requests and issues (gitlab.com or your own instance).',
+    setupUrl: 'https://gitlab.com/-/user_settings/personal_access_tokens',
+    setupLabel: 'Create a personal access token',
+    fields: [
+      { key: 'baseUrl', label: 'GitLab URL (https://gitlab.com or your instance)', secret: false, env: 'GITLAB_URL' },
+      { key: 'token', label: 'Personal access token', secret: true, env: 'GITLAB_TOKEN' },
+    ],
+    broker: [{ hostFromField: 'baseUrl', header: 'private-token', format: 'raw', field: 'token' }],
+  },
+  {
+    id: 'digitalocean',
+    name: 'DigitalOcean',
+    description: 'Droplets, App Platform, databases and DNS on DigitalOcean (doctl and the API).',
+    setupUrl: 'https://cloud.digitalocean.com/account/api/tokens',
+    setupLabel: 'Create a personal access token',
+    fields: [{ key: 'token', label: 'Personal access token', secret: true, env: 'DIGITALOCEAN_ACCESS_TOKEN' }],
+    broker: [{ host: 'api.digitalocean.com', header: 'authorization', format: 'bearer', field: 'token' }],
+  },
+  {
+    id: 'sentry',
+    name: 'Sentry',
+    description: 'Sentry issues and events, so agents can read the stack trace behind a failure.',
+    setupUrl: 'https://sentry.io/settings/account/api/auth-tokens/',
+    setupLabel: 'Create an auth token',
+    fields: [{ key: 'token', label: 'Auth token', secret: true, env: 'SENTRY_AUTH_TOKEN' }],
+    broker: [
+      { host: 'sentry.io', header: 'authorization', format: 'bearer', field: 'token' },
+      { host: 'us.sentry.io', header: 'authorization', format: 'bearer', field: 'token' },
+      { host: 'de.sentry.io', header: 'authorization', format: 'bearer', field: 'token' },
+    ],
+  },
+  {
+    id: 'pagerduty',
+    name: 'PagerDuty',
+    description: 'PagerDuty incidents and on-call: acknowledge, annotate and resolve from runbooks.',
+    setupUrl: 'https://support.pagerduty.com/main/docs/api-access-keys',
+    setupLabel: 'Create a REST API key',
+    fields: [{ key: 'apiKey', label: 'REST API key', secret: true, env: 'PAGERDUTY_TOKEN' }],
+    broker: [{ host: 'api.pagerduty.com', header: 'authorization', format: 'token', field: 'apiKey' }],
+  },
+  {
+    id: 'datadog',
+    name: 'Datadog',
+    description: 'Datadog metrics, logs and monitors for diagnosing incidents.',
+    setupUrl: 'https://app.datadoghq.com/organization-settings/api-keys',
+    setupLabel: 'Create an API key and an application key',
+    fields: [
+      { key: 'apiUrl', label: 'API URL (https://api.datadoghq.com, https://api.datadoghq.eu, ...)', secret: false, env: 'DATADOG_API_URL' },
+      { key: 'apiKey', label: 'API key', secret: true, env: 'DD_API_KEY' },
+      { key: 'appKey', label: 'Application key', secret: true, env: 'DD_APP_KEY' },
+    ],
+    broker: [
+      { hostFromField: 'apiUrl', header: 'dd-api-key', format: 'raw', field: 'apiKey' },
+      { hostFromField: 'apiUrl', header: 'dd-application-key', format: 'raw', field: 'appKey' },
+    ],
+  },
+  {
+    id: 'cloudflare',
+    name: 'Cloudflare',
+    description: 'Cloudflare DNS, Workers and cache: purge, route and inspect.',
+    setupUrl: 'https://dash.cloudflare.com/profile/api-tokens',
+    setupLabel: 'Create an API token',
+    fields: [{ key: 'token', label: 'API token', secret: true, env: 'CLOUDFLARE_API_TOKEN' }],
+    broker: [{ host: 'api.cloudflare.com', header: 'authorization', format: 'bearer', field: 'token' }],
+  },
+  {
     id: 'factory',
     name: 'Factory',
     description: 'Start Factory orchestrations and PRD executions from jobs, and wait for their results.',
@@ -133,6 +227,16 @@ export const INTEGRATIONS: readonly IntegrationDef[] = [
       { key: 'apiToken', label: 'API key', secret: true, env: 'FACTORY_API_KEY' },
     ],
     serverOnly: true,
+  },
+  {
+    id: 'ttyy',
+    name: 'ttyy.ai',
+    description: 'AI SRE platform. Hand incidents and on-call toil to ttyy agents and get the fix back as a runbook.',
+    setupUrl: 'https://ttyy.ai',
+    setupLabel: 'Learn more',
+    fields: [],
+    serverOnly: true,
+    comingSoon: true,
   },
 ]
 
