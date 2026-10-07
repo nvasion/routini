@@ -10,6 +10,7 @@ import type { HttpRunnerOptions } from '../services/http.js'
 import type { SshExecutor, SshShellOpener } from '../services/ssh.js'
 import type { ImapExecutor } from '../services/imap.js'
 import type { FactoryFetch } from './factory.js'
+import type { FetchFn } from '../integrations/providers.js'
 
 export interface StepContext {
   app: AppContext
@@ -50,6 +51,8 @@ export interface EngineOptions {
     imapExecutor?: ImapExecutor
     factoryFetch?: FactoryFetch
     factoryPollMs?: number
+    /** Test double for integration-backed actions (Azure Boards, Teams). */
+    integrationFetch?: FetchFn
     /** Runner commands: how long to wait for an offline runner, and the result poll interval. */
     runnerOfflineGraceMs?: number
     runnerPollMs?: number

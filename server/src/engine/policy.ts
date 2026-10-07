@@ -13,7 +13,7 @@ import { getHost } from '../repos/hosts.js'
 import { getEnvironment } from '../repos/environments.js'
 
 export type PolicyEffect = 'allow' | 'require_approval' | 'deny'
-export type ActionType = 'http' | 'ssh' | 'imap' | 'factory'
+export type ActionType = 'http' | 'ssh' | 'imap' | 'factory' | 'azure-boards' | 'teams'
 
 export interface PolicyMatch {
   kinds?: Array<'action' | 'agent'>
@@ -124,7 +124,7 @@ export function parseRules(raw: unknown): PolicyRule[] {
     if (typeof m !== 'object' || Array.isArray(m)) fail(`${p}.match must be an object`)
     const match: PolicyMatch = {
       kinds: strList(m['kinds'], `${p}.match.kinds`, ['action', 'agent']) as PolicyMatch['kinds'],
-      actionTypes: strList(m['actionTypes'], `${p}.match.actionTypes`, ['http', 'ssh', 'imap', 'factory']) as PolicyMatch['actionTypes'],
+      actionTypes: strList(m['actionTypes'], `${p}.match.actionTypes`, ['http', 'ssh', 'imap', 'factory', 'azure-boards', 'teams']) as PolicyMatch['actionTypes'],
       hostTags: strList(m['hostTags'], `${p}.match.hostTags`),
       hostGroups: strList(m['hostGroups'], `${p}.match.hostGroups`),
       agentOutputs: strList(m['agentOutputs'], `${p}.match.agentOutputs`, ['pr', 'branch', 'none']) as PolicyMatch['agentOutputs'],
