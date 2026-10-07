@@ -261,9 +261,10 @@ export function environmentsRouter(ctx: AppContext): Router {
       const command = (req.body ?? {})['command']
       if (typeof command !== 'string' || !command.trim() || command.length > 8000) throw badRequest('command must be a non-empty string')
       const env = await wrapEnvError(() => envs.ensureRunning(org.id, id))
+      const placed = await wrapEnvError(() => envs.placement(env))
       let output = ''
       let truncated = false
-      const r2 = await envs.runtime.exec(env.containerId!, ['bash', '-lc', command], {
+      const r2 = await placed.runtime.exec(env.containerId!, ['bash', '-lc', command], {
         timeoutMs: 60_000,
         onLine: (l) => {
           if (output.length + l.length + 1 > MAX_EXEC_OUTPUT) truncated = true

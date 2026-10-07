@@ -205,3 +205,38 @@ const defaultExec = (s: ExecStart, r: FakeRunner) => {
   r.output(s.id, `ran: ${s.command}`)
   r.exit(s.id, 0)
 }
+
+/**
+ * Answers env ops the way a real runner would for a happy-path environment
+ * lifecycle (volume/network/session/container), recording every op seen by
+ * name. Pass `overrides` to answer specific ops differently (e.g. to replay a
+ * transcript for a `routini-entrypoint` exec, or to fail one op on purpose).
+ */
+export function fleetEnvHappyPath(overrides: Partial<Record<string, (s: EnvOpStart, r: FakeRunner) => void>> = {}): {
+  onEnvOp: (s: EnvOpStart, r: FakeRunner) => void
+  ops: EnvOpStart[]
+} {
+  const ops: EnvOpStart[] = []
+  const onEnvOp = (s: EnvOpStart, r: FakeRunner) => {
+    ops.push(s)
+    const custom = overrides[s.op]
+    if (custom) return custom(s, r)
+    switch (s.op) {
+      case 'container.start':
+        return r.envDone(s.id, { data: { containerId: `env-container-${s.id.slice(0, 8)}` } })
+      case 'container.state':
+        return r.envDone(s.id, { data: { state: 'running' } })
+      case 'network.ensure':
+        return r.envDone(s.id, { data: { network: s.args['network'] } })
+      case 'session.open':
+        return r.envDone(s.id, { data: { caPem: '-----BEGIN CERTIFICATE-----FAKE-----END CERTIFICATE-----' } })
+      case 'session.close':
+        return r.envDone(s.id, { data: { egress: { requests: 0, intercepted: 0, blocked: [] } } })
+      case 'exec':
+        return r.envDone(s.id, { exitCode: 0 })
+      default:
+        return r.envDone(s.id)
+    }
+  }
+  return { onEnvOp, ops }
+}

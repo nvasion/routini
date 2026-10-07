@@ -10,6 +10,11 @@
 // Protocol: client → server JSON text frames {type:'input', data} and
 // {type:'resize', cols, rows}; server → client raw terminal output (binary).
 // Opening and closing a session is recorded in environment_events.
+//
+// An environment on Routini's own Docker host gets its shell with a plain
+// `docker exec` (services/envRuntime.ts execTty); one on a fleet host gets it
+// from that host's own routini-runner (RunnerGateway.openEnvTty), the same way
+// http/hostTerminal.ts opens a shell on a fleet host itself.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import type { IncomingMessage, Server } from 'node:http'
@@ -20,6 +25,8 @@ import type { Auth } from './auth.js'
 import { getMembershipRole, getOrgBySlug, roleAtLeast } from '../repos/identity.js'
 import { addEnvironmentEvent } from '../repos/environments.js'
 import { EnvError } from '../engine/environments.js'
+import { getHost } from '../repos/hosts.js'
+import { GatewayError } from '../runner/gateway.js'
 import type { TtySession } from '../services/envRuntime.js'
 
 const PATH_RE = /^\/api\/orgs\/([a-z0-9-]{1,40})\/environments\/([0-9a-f-]{36})\/terminal$/i
@@ -28,6 +35,27 @@ const TOUCH_EVERY_MS = 60_000
 function reject(socket: Duplex, status: number, message: string): void {
   socket.write(`HTTP/1.1 ${status} ${message}\r\nConnection: close\r\nContent-Type: text/plain\r\n\r\n${message}`)
   socket.destroy()
+}
+
+/** A shell bridged to the WebSocket: a Docker exec's TtySession and a fleet host's PtySession, in one shape. */
+interface Shell {
+  onData(cb: (chunk: Buffer) => void): void
+  write(data: string): void
+  resize(cols: number, rows: number): void
+  close(): void
+  /** Resolves with the shell's exit code once it exits. */
+  done: Promise<number | null>
+}
+
+/** Adapts a Docker exec's Duplex stream to the same shape a fleet host's PtySession already has. */
+function shellFromTty(tty: TtySession): Shell {
+  return {
+    onData: (cb) => tty.stream.on('data', cb),
+    write: (data) => void tty.stream.write(data),
+    resize: (cols, rows) => void tty.resize(cols, rows),
+    close: () => void tty.stream.end(),
+    done: tty.done,
+  }
 }
 
 export function attachTerminal(server: Server, ctx: AppContext, auth: Auth): WebSocketServer {
@@ -60,14 +88,28 @@ export function attachTerminal(server: Server, ctx: AppContext, auth: Auth): Web
 
       // Open the shell before completing the upgrade, so listeners are attached
       // synchronously and input sent right after "open" is never dropped.
-      let tty: TtySession
-      try {
-        tty = await ctx.envs.runtime.execTty(env.containerId!, { cols, rows })
-      } catch (err) {
-        console.error('[terminal] exec failed:', (err as Error).message)
-        return reject(socket, 502, 'Could not open a shell')
+      let shell: Shell
+      if (env.hostId) {
+        const host = await ctx.db.org(org.id, (q) => getHost(q, org.id, env!.hostId!))
+        if (!host?.runner || host.runner.revoked) return reject(socket, 409, "The environment's host has no active runner")
+        try {
+          shell = await ctx.runners.openEnvTty(host.runner.id, env.containerId!, cols, rows)
+        } catch (err) {
+          if (err instanceof GatewayError) return reject(socket, err.status, err.message)
+          console.error('[terminal] exec failed:', (err as Error).message)
+          return reject(socket, 502, 'Could not open a shell')
+        }
+      } else {
+        let tty: TtySession
+        try {
+          tty = await ctx.envs.runtime.execTty(env.containerId!, { cols, rows })
+        } catch (err) {
+          console.error('[terminal] exec failed:', (err as Error).message)
+          return reject(socket, 502, 'Could not open a shell')
+        }
+        shell = shellFromTty(tty)
       }
-      wss.handleUpgrade(req, socket, head, (ws) => serve(ws, tty, ctx, org.id, env.id, session.user.id))
+      wss.handleUpgrade(req, socket, head, (ws) => serve(ws, shell, ctx, org.id, env.id, session.user.id))
     })().catch((err) => {
       console.error('[terminal] upgrade failed:', (err as Error).message)
       reject(socket, 500, 'Internal Server Error')
@@ -76,13 +118,13 @@ export function attachTerminal(server: Server, ctx: AppContext, auth: Auth): Web
   return wss
 }
 
-function serve(ws: WebSocket, tty: TtySession, ctx: AppContext, orgId: string, envId: string, userId: string): void {
+function serve(ws: WebSocket, shell: Shell, ctx: AppContext, orgId: string, envId: string, userId: string): void {
   const started = Date.now()
   void ctx.db.org(orgId, (q) => addEnvironmentEvent(q, orgId, envId, 'terminal.opened', userId)).catch(() => {})
   void ctx.envs.touch(orgId, envId).catch(() => {})
   const touch = setInterval(() => void ctx.envs.touch(orgId, envId).catch(() => {}), TOUCH_EVERY_MS)
 
-  tty.stream.on('data', (chunk: Buffer) => {
+  shell.onData((chunk) => {
     if (ws.readyState === ws.OPEN) ws.send(chunk, { binary: true })
   })
   ws.on('message', (raw, isBinary) => {
@@ -93,9 +135,9 @@ function serve(ws: WebSocket, tty: TtySession, ctx: AppContext, orgId: string, e
     } catch {
       return
     }
-    if (msg.type === 'input' && typeof msg.data === 'string') tty.stream.write(msg.data)
+    if (msg.type === 'input' && typeof msg.data === 'string') shell.write(msg.data)
     else if (msg.type === 'resize' && Number.isInteger(msg.cols) && Number.isInteger(msg.rows)) {
-      void tty.resize(Math.min(500, Math.max(10, msg.cols as number)), Math.min(200, Math.max(5, msg.rows as number)))
+      shell.resize(Math.min(500, Math.max(10, msg.cols as number)), Math.min(200, Math.max(5, msg.rows as number)))
     }
   })
 
@@ -104,12 +146,12 @@ function serve(ws: WebSocket, tty: TtySession, ctx: AppContext, orgId: string, e
     if (closed) return
     closed = true
     clearInterval(touch)
-    tty.stream.end()
+    shell.close()
     if (ws.readyState === ws.OPEN) ws.close(1000, reason)
     void ctx.db
       .org(orgId, (q) => addEnvironmentEvent(q, orgId, envId, 'terminal.closed', userId, { seconds: Math.round((Date.now() - started) / 1000) }))
       .catch(() => {})
   }
   ws.on('close', () => finish('client closed'))
-  void tty.done.then(() => finish('shell exited'))
+  void shell.done.then(() => finish('shell exited'))
 }
