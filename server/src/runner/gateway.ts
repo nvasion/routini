@@ -28,6 +28,7 @@ import {
   getRunnerTask,
   markRunnerConnected,
   markRunnerDisconnected,
+  setRunnerCapabilities,
   queuedTasksFor,
   recordRunnerFacts,
   RUNNER_CHANNEL,
@@ -459,6 +460,9 @@ export class RunnerGateway {
       case 'facts':
         if (isObj(f['facts'])) void this.onFacts(conn, f['facts'] as Record<string, unknown>)
         return
+      case 'capabilities':
+        if (Array.isArray(f['capabilities'])) void this.onCapabilities(conn, f['capabilities'] as unknown[])
+        return
       case 'exec.output':
       case 'agent.output':
       case 'env.output': {
@@ -502,6 +506,26 @@ export class RunnerGateway {
       default:
         return // unknown types are ignored (forward compatible)
     }
+  }
+
+  /**
+   * The runner's capabilities changed after hello (runner >= 0.4.1: Docker
+   * answered late, so agents and environments came on). Same filtering as hello.
+   */
+  private async onCapabilities(conn: Conn, raw: unknown[]): Promise<void> {
+    const capabilities = raw.filter((c): c is string => typeof c === 'string' && (CAPABILITIES as readonly string[]).includes(c))
+    const before = conn.runner.capabilities
+    if (capabilities.length === before.length && capabilities.every((c) => before.includes(c))) return
+    conn.runner = { ...conn.runner, capabilities }
+    const { orgId, id, hostId } = conn.runner
+    await this.ctx.db
+      .org(orgId, async (q) => {
+        await setRunnerCapabilities(q, orgId, id, capabilities)
+        if (hostId) await addHostEvent(q, orgId, hostId, 'runner.capabilities', null, { capabilities })
+      })
+      .catch((err) => {
+        console.error('[runner] could not record new capabilities:', (err as Error).message)
+      })
   }
 
   private async onFacts(conn: Conn, facts: Record<string, unknown>): Promise<void> {
