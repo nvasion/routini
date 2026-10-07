@@ -20,6 +20,12 @@ const STATUS: Record<Integration['status'], { label: string; cls: string }> = {
   not_connected: { label: 'Not connected', cls: '' },
 }
 
+function statusBadge(i: Integration) {
+  if (i.comingSoon) return <span className="badge">Coming soon</span>
+  const s = STATUS[i.status]
+  return <span className={`badge ${s.cls}`}>{s.label}</span>
+}
+
 export function IntegrationsPage() {
   const org = useOrg()
   const list = useApi<{ integrations: Integration[] }>(org.api('/integrations'))
@@ -45,12 +51,12 @@ export function IntegrationsPage() {
                 <IntegrationIcon id={i.id} name={i.name} />
                 <span style={{ fontFamily: 'var(--font-sign)', fontWeight: 700, fontSize: 18 }}>{i.name}</span>
               </span>
-              <span className={`badge ${STATUS[i.status].cls}`}>{STATUS[i.status].label}</span>
+              {statusBadge(i)}
             </span>
             <span className="muted" style={{ fontSize: 13 }}>
               {i.description}
             </span>
-            {i.status !== 'not_connected' && !i.serverOnly && <span className="meta">agents: {i.scopes.agents.join(', ') || 'none'}</span>}
+            {!i.comingSoon && i.status !== 'not_connected' && !i.serverOnly && <span className="meta">agents: {i.scopes.agents.join(', ') || 'none'}</span>}
           </button>
         ))}
       </div>
@@ -68,6 +74,21 @@ function IntegrationModal({ integration: i, onClose, onChange, canEdit }: { inte
   const [error, setError] = useState<string | null>(null)
   const [note, setNote] = useState<string | null>(null)
   const connected = i.status !== 'not_connected'
+
+  // Coming-soon integrations are never connectable: show only the description
+  // and setup link, no form. Keep this after all hooks above (hooks must run
+  // unconditionally) — do not add hooks below this point.
+  if (i.comingSoon) {
+    return (
+      <Modal title={i.name} onClose={onClose}>
+        <p className="lead">{i.description}</p>
+        <a href={i.setupUrl} target="_blank" rel="noreferrer">
+          {i.setupLabel} ↗
+        </a>
+        <div className="banner info">{i.name} is coming soon.</div>
+      </Modal>
+    )
+  }
 
   async function run(fn: () => Promise<void>) {
     setBusy(true)

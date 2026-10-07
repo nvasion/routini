@@ -255,6 +255,8 @@ export interface Integration {
   scopes: { agents: AgentId[] }
   /** Used by Routini itself (e.g. Factory steps), never handed to agents. */
   serverOnly?: boolean
+  /** Listed but not connectable yet. */
+  comingSoon?: boolean
 }
 
 export type AIEndpoint = 'anthropic' | 'openrouter' | 'digitalocean' | 'aws-bedrock' | 'openai' | 'google' | 'azure' | 'gateway'
