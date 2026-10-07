@@ -14,6 +14,7 @@ import { createEnvManager, type EnvManager } from '../engine/environments.js'
 import { DockerEnvRuntime, type EnvRuntime } from '../services/envRuntime.js'
 import { BrokerClient, brokerConfigFromEnv } from '../egress/client.js'
 import { RunnerGateway, type GatewayOptions } from '../runner/gateway.js'
+import { runnerReleasesFromEnv, type RunnerReleases } from '../services/runnerReleases.js'
 import type { ApiToken } from '../repos/apiTokens.js'
 import type { MailTransporter } from '../services/email.js'
 
@@ -34,6 +35,8 @@ export interface AppContext {
   broker: BrokerClient | null
   /** routini-runner connections (only accepting connections in the API process, once attached). */
   runners: RunnerGateway
+  /** The newest routini-runner release, for "Update runner". */
+  runnerReleases: RunnerReleases
   /** Test doubles for http/ssh/imap (shared by the engine and the host check). */
   actions?: EngineOptions['actions']
   /** Mail transport for account emails; undefined = from SMTP_* env, null = none (tests). */
@@ -43,9 +46,10 @@ export interface AppContext {
 export function createContext(
   base: { config: Config; db: Db; box: SecretBox },
   engineOpts: EngineOptions = {},
-  extra: { envRuntime?: EnvRuntime; broker?: BrokerClient | null; gateway?: GatewayOptions } = {},
+  extra: { envRuntime?: EnvRuntime; broker?: BrokerClient | null; gateway?: GatewayOptions; runnerReleases?: RunnerReleases } = {},
 ): AppContext {
   const ctx = { ...base, actions: engineOpts.actions } as AppContext
+  ctx.runnerReleases = extra.runnerReleases ?? runnerReleasesFromEnv()
   ctx.hub = new EventHub(base.db)
   ctx.broker = extra.broker === undefined ? brokerFromEnv() : extra.broker
   ctx.envs = createEnvManager({ db: base.db, box: base.box, runtime: extra.envRuntime ?? new DockerEnvRuntime(), broker: ctx.broker, mode: base.config.mode, requireVerifiedEmail: base.config.requireVerifiedEmail })

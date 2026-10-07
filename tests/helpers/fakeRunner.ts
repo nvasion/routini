@@ -50,6 +50,10 @@ export interface FakeRunnerOptions {
   onExec?: (start: ExecStart, r: FakeRunner) => void | Promise<void>
   /** Only called when the runner advertises the `agents` capability. */
   onAgent?: (start: AgentStart, r: FakeRunner) => void | Promise<void>
+  /** Answers runner.update frames (PROTOCOL.md 2.7). */
+  onUpdate?: (u: { id: string; version: string }, r: FakeRunner) => void | Promise<void>
+  /** The version sent in hello (default 0.1.0-test). */
+  version?: string
 }
 
 export class FakeRunner {
@@ -75,7 +79,7 @@ export class FakeRunner {
         this.send({
           type: 'hello',
           protocol: 1,
-          version: '0.1.0-test',
+          version: this.o.version ?? '0.1.0-test',
           hostname: 'web-01.prod.example',
           os: 'linux',
           arch: 'amd64',
@@ -92,6 +96,7 @@ export class FakeRunner {
         }
         if (f['type'] === 'exec.start') void (this.o.onExec ?? defaultExec)(f as unknown as ExecStart, this)
         if (f['type'] === 'agent.start' && this.o.onAgent) void this.o.onAgent(f as unknown as AgentStart, this)
+        if (f['type'] === 'runner.update' && this.o.onUpdate) void this.o.onUpdate(f as unknown as { id: string; version: string }, this)
       })
     })
   }
@@ -114,6 +119,10 @@ export class FakeRunner {
 
   agentExit(id: string, exitCode: number | null, extra: ExitExtra = {}): void {
     this.send({ type: 'agent.exit', id, ...exitFields(exitCode, extra), egress: extra.egress ?? null })
+  }
+
+  updateResult(id: string, version: string, ok: boolean, extra: { error?: string; output?: string } = {}): void {
+    this.send({ type: 'runner.update.result', id, version, ok, error: ok ? null : (extra.error ?? 'update failed'), output: extra.output ?? '' })
   }
 
   /** Waits for a frame of `type` (optionally matching `pred`). */

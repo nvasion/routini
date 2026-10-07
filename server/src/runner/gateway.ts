@@ -44,7 +44,7 @@ import {
 /** A runner without the "agents" capability cannot be asked to run one. */
 export const NO_AGENTS_ERROR = 'This host\'s runner does not run agents; enable "agents" in its config.json'
 
-const CAPABILITIES = ['exec', 'pty', 'agents'] as const
+const CAPABILITIES = ['exec', 'pty', 'agents', 'update'] as const
 
 export const PROTOCOL_VERSION = 1
 const CONNECT_PATH = '/api/runner/connect'
@@ -93,8 +93,15 @@ interface Conn {
   flushTimer: NodeJS.Timeout | null
   flushing: Promise<void>
   ptys: Map<string, PtyImpl>
+  /** runner.update requests sent on this connection, by request id. */
+  updates: Map<string, { version: string; userId: string | null }>
   closed: boolean
 }
+
+/** Shown when a runner cannot update itself (no helper, or before v0.3.0). */
+export const NO_UPDATE_ERROR = 'This runner cannot be updated from Routini. Re-run install.sh on the host once (v0.3.0 or newer); after that, updates work from here.'
+
+const MAX_UPDATE_OUTPUT = 4000
 
 class PtyImpl extends EventEmitter implements PtySession {
   done: Promise<number | null>
@@ -151,7 +158,7 @@ export class RunnerGateway {
 
   async start(): Promise<void> {
     this.unlisten = await this.ctx.db.listen(RUNNER_CHANNEL, (payload) => {
-      let msg: { op?: string; taskId?: string; runnerId?: string; instance?: string }
+      let msg: { op?: string; taskId?: string; runnerId?: string; instance?: string; requestId?: string; version?: string; userId?: string | null }
       try {
         msg = JSON.parse(payload) as typeof msg
       } catch {
@@ -162,6 +169,7 @@ export class RunnerGateway {
       if (msg.op === 'start' && msg.taskId) void this.dispatch(conn, msg.taskId)
       else if (msg.op === 'cancel' && msg.taskId) void this.cancel(conn, msg.taskId)
       else if (msg.op === 'revoke') this.revokeLocal(conn)
+      else if (msg.op === 'update' && msg.requestId && msg.version) void this.updateLocal(conn, msg.requestId, msg.version, msg.userId ?? null)
       else if (msg.op === 'replace' && msg.instance !== conn.key) this.drop(conn, 4000, 'replaced by a newer connection')
     })
   }
@@ -193,6 +201,48 @@ export class RunnerGateway {
     const local = this.conns.get(runnerId)
     if (local) this.revokeLocal(local)
     else await this.ctx.db.query('SELECT pg_notify($1, $2)', [RUNNER_CHANNEL, JSON.stringify({ op: 'revoke', runnerId })])
+  }
+
+  /**
+   * Asks a runner, wherever it is connected, to update itself to `version`
+   * (PROTOCOL.md section 2.7). The outcome lands in the host's events:
+   * runner.update.succeeded / runner.update.failed, then runner.connected
+   * with the new version once the service has restarted.
+   */
+  async requestUpdate(runnerId: string, r: { requestId: string; version: string; userId: string | null }): Promise<void> {
+    const local = this.conns.get(runnerId)
+    if (local) await this.updateLocal(local, r.requestId, r.version, r.userId)
+    else await this.ctx.db.query('SELECT pg_notify($1, $2)', [RUNNER_CHANNEL, JSON.stringify({ op: 'update', runnerId, ...r })])
+  }
+
+  private async updateLocal(conn: Conn, requestId: string, version: string, userId: string | null): Promise<void> {
+    if (!conn.runner.capabilities.includes('update')) {
+      await this.updateEvent(conn, 'runner.update.failed', userId, { version, error: NO_UPDATE_ERROR })
+      return
+    }
+    conn.updates.set(requestId, { version, userId })
+    this.send(conn, { type: 'runner.update', id: requestId, version })
+  }
+
+  private async onUpdateResult(conn: Conn, id: string, f: Record<string, unknown>): Promise<void> {
+    const req = conn.updates.get(id)
+    if (!req) return // not a request this connection sent
+    conn.updates.delete(id)
+    const ok = f['ok'] === true
+    const text = (v: unknown, max: number) => (typeof v === 'string' ? v.slice(0, max) : null)
+    await this.updateEvent(conn, ok ? 'runner.update.succeeded' : 'runner.update.failed', req.userId, {
+      version: req.version,
+      ...(ok ? {} : { error: text(f['error'], 500) ?? 'The update failed' }),
+      output: text(f['output'], MAX_UPDATE_OUTPUT) ?? '',
+    })
+  }
+
+  private async updateEvent(conn: Conn, type: string, userId: string | null, data: Record<string, unknown>): Promise<void> {
+    const { orgId, hostId } = conn.runner
+    if (!hostId) return
+    await this.ctx.db.org(orgId, (q) => addHostEvent(q, orgId, hostId, type, userId, data)).catch((err) => {
+      console.error('[runner] could not record an update event:', (err as Error).message)
+    })
   }
 
   /** Opens a terminal on a runner held by this instance. */
@@ -315,6 +365,7 @@ export class RunnerGateway {
       flushTimer: null,
       flushing: Promise.resolve(),
       ptys: new Map(),
+      updates: new Map(),
       closed: false,
     }
     ws.on('pong', () => {
@@ -403,6 +454,9 @@ export class RunnerGateway {
       case 'exec.exit':
       case 'agent.exit':
         if (id) void this.onExit(conn, id, f)
+        return
+      case 'runner.update.result':
+        if (id) void this.onUpdateResult(conn, id, f)
         return
       case 'pty.opened':
         conn.ptys.get(id)?.emit('opened')

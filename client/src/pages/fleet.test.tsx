@@ -61,7 +61,12 @@ describe('fleet', () => {
     const agents = runnerHost({
       id: 'h4',
       name: 'build-01',
-      runner: { ...runnerHost().runner!, id: 'r4', capabilities: ['exec', 'pty', 'agents'], facts: { osPretty: 'Debian 12', docker: '27.1.1' } },
+      runner: {
+        ...runnerHost().runner!,
+        id: 'r4',
+        capabilities: ['exec', 'pty', 'agents'],
+        facts: { osPretty: 'Debian 12', docker: { available: true, version: '27.1.1', agentsRunning: 0, maxAgents: 2 } },
+      },
     })
     mockFetch(baseRoutes({ 'GET /api/orgs/acme/hosts': () => ({ hosts: [runnerHost(), agents] }) }))
     renderAt('/o/acme/fleet')
@@ -77,7 +82,44 @@ describe('fleet', () => {
 
     fireEvent.click(within(web01).getByRole('button', { name: 'Details' }))
     const dialog = await screen.findByRole('dialog', { name: 'web-01' })
-    expect(within(dialog).getByText('not found')).toBeTruthy()
+    expect(within(dialog).getByText('not available')).toBeTruthy()
+  })
+
+  it('updates runners that can update themselves, and says what to run on the host otherwise', async () => {
+    const commands = {
+      reinstall: 'curl -fsSL https://raw.githubusercontent.com/nvasion/routini-runner/main/scripts/install.sh | sudo sh',
+      enableAgents: 'sudo routini-runner-update --enable-agents',
+    }
+    const current = runnerHost({
+      runner: { ...runnerHost().runner!, version: '0.3.0', capabilities: ['exec', 'pty', 'update'], facts: { agents: { configured: false } } },
+    })
+    const old = runnerHost({ id: 'h5', name: 'old-01', runner: { ...runnerHost().runner!, id: 'r5', version: '0.1.1', facts: {} } })
+    const log = mockFetch(
+      baseRoutes({
+        'GET /api/orgs/acme/hosts': () => ({ hosts: [current, old] }),
+        'GET /api/orgs/acme/runners/latest': () => ({ version: 'v0.3.1', commands }),
+        'POST /api/orgs/acme/hosts/h1/runner/update': () => [202, { requestId: 'q1', version: 'v0.3.1' }],
+        'GET /api/orgs/acme/hosts/h1/events': () => ({ events: [] }),
+        'GET /api/orgs/acme/hosts/h5/events': () => ({ events: [] }),
+      }),
+    )
+    renderAt('/o/acme/fleet')
+    const main = await screen.findByRole('main')
+
+    const web01 = await within(main).findByRole('article', { name: 'web-01' })
+    fireEvent.click(await within(web01).findByRole('button', { name: 'Update to v0.3.1' }))
+    await within(web01).findByText(/Updating to v0\.3\.1/)
+    expect(log.calls.find((c) => c.method === 'POST' && c.url.endsWith('/hosts/h1/runner/update'))).toBeTruthy()
+
+    // A runner from before 0.3.0: no button, but the one-time upgrade and the agents command.
+    const oldCard = within(main).getByRole('article', { name: 'old-01' })
+    expect(within(oldCard).queryByRole('button', { name: /^Update to/ })).toBeNull()
+    expect(within(oldCard).getByText('update')).toBeTruthy()
+    fireEvent.click(within(oldCard).getByRole('button', { name: 'Details' }))
+    const dialog = await screen.findByRole('dialog', { name: 'old-01' })
+    expect(within(dialog).getByLabelText('Upgrade command').textContent).toBe(commands.reinstall)
+    expect(within(dialog).getByLabelText('Enable agents command').textContent).toBe(`${commands.reinstall} -s -- --enable-agents`)
+    expect(within(dialog).getAllByText(/too old to run agents/).length).toBeGreaterThan(0)
   })
 
   it('adds a server: install commands, then waits for the runner to connect', async () => {

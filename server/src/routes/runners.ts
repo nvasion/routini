@@ -28,6 +28,16 @@ export function installCommands(url: string, token: string, name?: string) {
   }
 }
 
+/** Commands an admin runs on the host itself (Routini cannot: they need root). */
+export function hostCommands() {
+  return {
+    /** Upgrades an enrolled runner and installs the update helper (once, for runners before v0.3.0). */
+    reinstall: `curl -fsSL ${INSTALL_SCRIPT} | sudo sh`,
+    /** Puts the runner's user in the docker group (root-equivalent) and turns agents on. */
+    enableAgents: 'sudo routini-runner-update --enable-agents',
+  }
+}
+
 export function runnersRouter(ctx: AppContext): Router {
   const r = Router({ mergeParams: true })
 
@@ -53,6 +63,15 @@ export function runnersRouter(ctx: AppContext): Router {
     ah(async (req, res) => {
       const org = currentOrg(req)
       res.json({ runners: await ctx.db.org(org.id, (q) => listRunners(q, org.id)) })
+    }),
+  )
+
+  // The newest routini-runner release (null when unknown), plus the commands
+  // the console shows for what Routini cannot do itself.
+  r.get(
+    '/runners/latest',
+    ah(async (_req, res) => {
+      res.json({ version: await ctx.runnerReleases.latest(), commands: hostCommands() })
     }),
   )
 
