@@ -521,6 +521,14 @@ CREATE TABLE auth_tokens (
 CREATE INDEX auth_tokens_user_idx ON auth_tokens (user_id, purpose, created_at);
 `,
   },
+  {
+    version: 9,
+    name: 'Environments on fleet hosts',
+    sql: `
+ALTER TABLE environments ADD COLUMN host_id uuid REFERENCES hosts(id) ON DELETE RESTRICT;
+CREATE INDEX environments_host_idx ON environments (host_id) WHERE host_id IS NOT NULL;
+`,
+  },
 ]
 
 /** Grants the app role access to everything a migration created. Runs after every migration. */

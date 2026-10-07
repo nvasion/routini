@@ -96,6 +96,15 @@ export function fleetAgentImages(env: NodeJS.ProcessEnv = process.env): Partial<
   }
 }
 
+/**
+ * Images an environment on a fleet host may use: ROUTINI_FLEET_ENV_IMAGES
+ * (comma list), else the configured fleet agent images.
+ */
+export function fleetEnvImages(env: NodeJS.ProcessEnv = process.env): string[] {
+  const configured = (env['ROUTINI_FLEET_ENV_IMAGES'] ?? '').split(',').map((s) => s.trim()).filter(Boolean)
+  return configured.length ? configured : Object.values(fleetAgentImages(env)).filter((v): v is string => Boolean(v))
+}
+
 export function fleetEgressImage(env: NodeJS.ProcessEnv = process.env): string {
   return env['ROUTINI_FLEET_EGRESS_IMAGE']?.trim() || 'ghcr.io/nvasion/routini-egress:latest'
 }
