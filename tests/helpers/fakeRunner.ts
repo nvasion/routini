@@ -40,6 +40,22 @@ export interface ExitExtra {
   egress?: EgressStats
 }
 
+/** An env.op frame (volume/network/container/exec/pull ops on a fleet host). */
+export interface EnvOpStart {
+  id: string
+  op: string
+  args: Record<string, unknown>
+}
+
+export interface EnvDoneExtra {
+  ok?: boolean
+  canceled?: boolean
+  timedOut?: boolean
+  error?: string | null
+  exitCode?: number | null
+  data?: Record<string, unknown> | null
+}
+
 export interface FakeRunnerOptions {
   baseUrl: string
   credential: string
@@ -50,6 +66,8 @@ export interface FakeRunnerOptions {
   onExec?: (start: ExecStart, r: FakeRunner) => void | Promise<void>
   /** Only called when the runner advertises the `agents` capability. */
   onAgent?: (start: AgentStart, r: FakeRunner) => void | Promise<void>
+  /** Only called when the runner advertises the `environments` capability. */
+  onEnvOp?: (start: EnvOpStart, r: FakeRunner) => void | Promise<void>
   /** Answers runner.update frames (PROTOCOL.md 2.7). */
   onUpdate?: (u: { id: string; version: string }, r: FakeRunner) => void | Promise<void>
   /** The version sent in hello (default 0.1.0-test). */
@@ -96,6 +114,7 @@ export class FakeRunner {
         }
         if (f['type'] === 'exec.start') void (this.o.onExec ?? defaultExec)(f as unknown as ExecStart, this)
         if (f['type'] === 'agent.start' && this.o.onAgent) void this.o.onAgent(f as unknown as AgentStart, this)
+        if (f['type'] === 'env.op' && this.o.onEnvOp) void this.o.onEnvOp(f as unknown as EnvOpStart, this)
         if (f['type'] === 'runner.update' && this.o.onUpdate) void this.o.onUpdate(f as unknown as { id: string; version: string }, this)
       })
     })
@@ -119,6 +138,40 @@ export class FakeRunner {
 
   agentExit(id: string, exitCode: number | null, extra: ExitExtra = {}): void {
     this.send({ type: 'agent.exit', id, ...exitFields(exitCode, extra), egress: extra.egress ?? null })
+  }
+
+  envOutput(id: string, data: string, stream: 'stdout' | 'stderr' = 'stdout'): void {
+    this.send({ type: 'env.output', id, stream, data })
+  }
+
+  envDone(id: string, extra: EnvDoneExtra = {}): void {
+    this.send({
+      type: 'env.done',
+      id,
+      ok: extra.ok ?? true,
+      canceled: extra.canceled ?? false,
+      timedOut: extra.timedOut ?? false,
+      error: extra.error ?? null,
+      exitCode: extra.exitCode ?? null,
+      data: extra.data ?? null,
+    })
+  }
+
+  /** Answers an `env.tty.open` with an opened terminal; data/error/exit push further frames. */
+  envTtyOpened(id: string): void {
+    this.send({ type: 'env.tty.opened', id })
+  }
+
+  envTtyError(id: string, message: string): void {
+    this.send({ type: 'env.tty.error', id, message })
+  }
+
+  envTtyData(id: string, data: string): void {
+    this.send({ type: 'env.tty.data', id, b64: Buffer.from(data, 'utf8').toString('base64') })
+  }
+
+  envTtyExit(id: string, exitCode: number | null): void {
+    this.send({ type: 'env.tty.exit', id, exitCode })
   }
 
   updateResult(id: string, version: string, ok: boolean, extra: { error?: string; output?: string } = {}): void {

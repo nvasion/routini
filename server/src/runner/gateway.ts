@@ -44,7 +44,10 @@ import {
 /** A runner without the "agents" capability cannot be asked to run one. */
 export const NO_AGENTS_ERROR = 'This host\'s runner does not run agents; enable "agents" in its config.json'
 
-const CAPABILITIES = ['exec', 'pty', 'agents', 'update'] as const
+/** A runner without the "environments" capability cannot be asked to run environment ops. */
+export const NO_ENVIRONMENTS_ERROR = 'This host\'s runner does not run environments; it needs routini-runner v0.4.0 or newer with agents enabled'
+
+const CAPABILITIES = ['exec', 'pty', 'agents', 'update', 'environments'] as const
 
 export const PROTOCOL_VERSION = 1
 const CONNECT_PATH = '/api/runner/connect'
@@ -103,12 +106,16 @@ export const NO_UPDATE_ERROR = 'This runner cannot be updated from Routini. Re-r
 
 const MAX_UPDATE_OUTPUT = 4000
 
+/** Frame prefix for a PtyImpl: a host shell (pty.*) or a shell inside an environment container (env.tty.*). */
+type PtyFramePrefix = 'pty' | 'env.tty'
+
 class PtyImpl extends EventEmitter implements PtySession {
   done: Promise<number | null>
   private resolveDone!: (code: number | null) => void
   private ended = false
   constructor(
     readonly id: string,
+    private readonly prefix: PtyFramePrefix,
     private readonly send: (frame: object) => void,
   ) {
     super()
@@ -125,14 +132,14 @@ class PtyImpl extends EventEmitter implements PtySession {
     for (const c of this.early.splice(0)) cb(c)
   }
   write(data: string) {
-    if (!this.ended) this.send({ type: 'pty.input', id: this.id, b64: Buffer.from(data, 'utf8').toString('base64') })
+    if (!this.ended) this.send({ type: `${this.prefix}.input`, id: this.id, b64: Buffer.from(data, 'utf8').toString('base64') })
   }
   resize(cols: number, rows: number) {
-    if (!this.ended) this.send({ type: 'pty.resize', id: this.id, cols, rows })
+    if (!this.ended) this.send({ type: `${this.prefix}.resize`, id: this.id, cols, rows })
   }
   close() {
     if (this.ended) return
-    this.send({ type: 'pty.close', id: this.id })
+    this.send({ type: `${this.prefix}.close`, id: this.id })
     this.end(null)
   }
   end(code: number | null) {
@@ -250,8 +257,20 @@ export class RunnerGateway {
     const conn = this.conns.get(runnerId)
     if (!conn) throw new GatewayError(503, 'The runner is offline or connected to another Routini API instance')
     if (!conn.runner.capabilities.includes('pty')) throw new GatewayError(409, 'Terminals are disabled on this runner')
+    return this.openPtySession(conn, 'pty', { cols, rows }, timeoutMs)
+  }
+
+  /** Opens a shell inside an environment's container on a runner held by this instance. */
+  async openEnvTty(runnerId: string, containerId: string, cols: number, rows: number, timeoutMs = 10_000): Promise<PtySession> {
+    const conn = this.conns.get(runnerId)
+    if (!conn) throw new GatewayError(503, 'The runner is offline or connected to another Routini API instance')
+    if (!conn.runner.capabilities.includes('environments')) throw new GatewayError(409, NO_ENVIRONMENTS_ERROR)
+    return this.openPtySession(conn, 'env.tty', { cols, rows, containerId }, timeoutMs)
+  }
+
+  private async openPtySession(conn: Conn, prefix: PtyFramePrefix, open: Record<string, unknown>, timeoutMs: number): Promise<PtySession> {
     const id = randomUUID()
-    const pty = new PtyImpl(id, (f) => this.send(conn, f))
+    const pty = new PtyImpl(id, prefix, (f) => this.send(conn, f))
     conn.ptys.set(id, pty)
     void pty.done.then(() => conn.ptys.delete(id))
     const opened = new Promise<void>((resolve, rejectP) => {
@@ -265,7 +284,7 @@ export class RunnerGateway {
         rejectP(new GatewayError(409, message))
       })
     })
-    this.send(conn, { type: 'pty.open', id, cols, rows })
+    this.send(conn, { type: `${prefix}.open`, id, ...open })
     try {
       await opened
     } catch (err) {
@@ -441,7 +460,8 @@ export class RunnerGateway {
         if (isObj(f['facts'])) void this.onFacts(conn, f['facts'] as Record<string, unknown>)
         return
       case 'exec.output':
-      case 'agent.output': {
+      case 'agent.output':
+      case 'env.output': {
         if (!id || typeof f['data'] !== 'string') return
         const s = f['stream'] === 'stderr' ? 'stderr' : 'stdout'
         const d = (f['data'] as string).length > MAX_LINE ? `${(f['data'] as string).slice(0, MAX_LINE)}…` : (f['data'] as string)
@@ -455,21 +475,28 @@ export class RunnerGateway {
       case 'agent.exit':
         if (id) void this.onExit(conn, id, f)
         return
+      case 'env.done':
+        if (id) void this.onEnvDone(conn, id, f)
+        return
       case 'runner.update.result':
         if (id) void this.onUpdateResult(conn, id, f)
         return
       case 'pty.opened':
+      case 'env.tty.opened':
         conn.ptys.get(id)?.emit('opened')
         return
       case 'pty.error':
+      case 'env.tty.error':
         conn.ptys.get(id)?.emit('error', typeof f['message'] === 'string' ? f['message'] : 'The runner could not open a terminal')
         return
-      case 'pty.data': {
+      case 'pty.data':
+      case 'env.tty.data': {
         const p = conn.ptys.get(id)
         if (p && typeof f['b64'] === 'string') p.push(Buffer.from(f['b64'] as string, 'base64'))
         return
       }
       case 'pty.exit':
+      case 'env.tty.exit':
         conn.ptys.get(id)?.end(typeof f['exitCode'] === 'number' ? (f['exitCode'] as number) : null)
         return
       default:
@@ -497,6 +524,21 @@ export class RunnerGateway {
       egress: egressStats(f['egress']),
     }
     const status = result.canceled ? 'canceled' : result.error ? 'failed' : 'done'
+    await this.finish(conn.runner.orgId, taskId, status, result)
+  }
+
+  private async onEnvDone(conn: Conn, taskId: string, f: Record<string, unknown>): Promise<void> {
+    await this.flush(conn)
+    const canceled = f['canceled'] === true
+    const ok = f['ok'] === true
+    const result: ExecResultData = {
+      exitCode: typeof f['exitCode'] === 'number' ? (f['exitCode'] as number) : null,
+      timedOut: f['timedOut'] === true,
+      canceled,
+      error: typeof f['error'] === 'string' && f['error'] ? (f['error'] as string).slice(0, 500) : null,
+      data: isObj(f['data']) ? (f['data'] as Record<string, unknown>) : null,
+    }
+    const status = canceled ? 'canceled' : ok ? 'done' : 'failed'
     await this.finish(conn.runner.orgId, taskId, status, result)
   }
 
@@ -553,8 +595,20 @@ export class RunnerGateway {
   /** Builds the start frame for a task; throws a runner-visible message it cannot run. */
   private startFrame(conn: Conn, task: RunnerTask): object {
     const p = task.payload
-    if (p.type !== 'agent') {
+    if (p.type === 'exec') {
       return { type: 'exec.start', id: task.id, command: p.command, env: p.env ?? {}, cwd: p.cwd ?? null, timeoutSec: p.timeoutSec }
+    }
+    if (p.type === 'env') {
+      if (!conn.runner.capabilities.includes('environments')) throw new Error(NO_ENVIRONMENTS_ERROR)
+      let openedSecretArgs: Record<string, unknown> = {}
+      if (p.sealed) {
+        try {
+          openedSecretArgs = JSON.parse(this.ctx.box.open(p.sealed, sealedAad(task.id))) as Record<string, unknown>
+        } catch (err) {
+          throw new Error(`Could not open the environment task's secrets: ${(err as Error).message}`)
+        }
+      }
+      return { type: 'env.op', id: task.id, op: p.op, args: { ...p.args, ...openedSecretArgs } }
     }
     if (!conn.runner.capabilities.includes('agents')) throw new Error(NO_AGENTS_ERROR)
     let secret: AgentSecret
@@ -593,7 +647,7 @@ export class RunnerGateway {
   }
 }
 
-const cancelType = (task: RunnerTask) => (task.payload.type === 'agent' ? 'agent.cancel' : 'exec.cancel')
+const cancelType = (task: RunnerTask) => (task.payload.type === 'agent' ? 'agent.cancel' : task.payload.type === 'env' ? 'env.cancel' : 'exec.cancel')
 
 /**
  * Validates the egress counters an agent.exit reports; null when absent or
