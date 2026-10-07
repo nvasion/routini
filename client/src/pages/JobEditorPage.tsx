@@ -7,7 +7,7 @@ import { api } from '../lib/api'
 import { useApi } from '../lib/hooks'
 import type { Environment, Host, Job, PolicyDecision, StepKind } from '../lib/types'
 import { useOrg } from '../shell/OrgContext'
-import { ALERT_HOST, emptyJob, emptyStep, fromJob, runOnOptions, toPayload, type JobForm, type StepForm } from './jobForm'
+import { ALERT_HOST, POOL_HOST, emptyJob, emptyStep, fromJob, poolMatch, poolTags, runOnOptions, toPayload, type JobForm, type StepForm } from './jobForm'
 
 export function JobEditorPage() {
   const org = useOrg()
@@ -477,6 +477,31 @@ function StepEditor(props: {
               )}
             </Field>
           </div>
+          {s.runOnHostId === POOL_HOST && (
+            <>
+              <div className="row">
+                <Field label="Group" hint="Blank matches any group.">
+                  {(id) => (
+                    <>
+                      <input id={id} className="input" list={`${id}-groups`} value={s.runOnPoolGroup} onChange={(e) => set({ runOnPoolGroup: e.target.value })} />
+                      <datalist id={`${id}-groups`}>
+                        {[...new Set(props.hosts.filter((h) => h.transport === 'runner' && h.group).map((h) => h.group))].map((g) => (
+                          <option key={g} value={g} />
+                        ))}
+                      </datalist>
+                    </>
+                  )}
+                </Field>
+                <Field label="Tags" hint="Space or comma separated.">{(id) => <input id={id} className="input" value={s.runOnPoolTags} onChange={(e) => set({ runOnPoolTags: e.target.value })} />}</Field>
+              </div>
+              <span className="hint">
+                {(() => {
+                  const { matches, canRunNow } = poolMatch(props.hosts, s.runOnPoolGroup, poolTags(s.runOnPoolTags))
+                  return `${matches} runner hosts match; ${canRunNow} can run agents now`
+                })()}
+              </span>
+            </>
+          )}
           <div className="row">
             {!s.environmentId && (
               <>

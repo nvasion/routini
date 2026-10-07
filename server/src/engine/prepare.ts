@@ -11,6 +11,7 @@ import { getHost } from '../repos/hosts.js'
 import { getIncident } from '../repos/incidents.js'
 import type { Run, RunStep } from '../repos/runs.js'
 import { alertContext } from './alerts.js'
+import { pickPoolHost, PoolError } from './pool.js'
 import type { Step } from './spec.js'
 import { renderStep, type TemplateData } from './template.js'
 
@@ -45,6 +46,16 @@ export async function prepareStep(app: AppContext, run: Run, spec: Step, steps: 
     if (t.kind !== 'alert') return { error: 'This agent step runs on the alert\'s host, but the run was not started by an alert' }
     if (!t.hostId) return { error: 'This agent step runs on the alert\'s host, but the alert did not match a host in the fleet' }
     step = { ...step, config: { ...step.config, runOn: { hostId: t.hostId } } }
+  }
+  if (step.kind === 'agent' && step.config.runOn && 'pool' in step.config.runOn) {
+    const pool = step.config.runOn.pool
+    try {
+      const picked = await app.db.org(run.orgId, (q) => pickPoolHost(q, run.orgId, pool))
+      step = { ...step, config: { ...step.config, runOn: picked } }
+    } catch (err) {
+      if (err instanceof PoolError) return { error: err.message }
+      throw err
+    }
   }
 
   step = renderStep(step, data)

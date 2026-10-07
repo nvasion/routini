@@ -181,10 +181,19 @@ export function RunPage() {
   )
 }
 
-/** " · on <where>" for an agent step pinned to a fleet host, else ''. */
+/** How a pool reads for display: group and/or tags, whichever are set. */
+function describePool(pool: { group?: string; tags?: string[] }): string {
+  const parts: string[] = []
+  if (pool.group) parts.push(`group "${pool.group}"`)
+  if (pool.tags?.length) parts.push(`tags ${pool.tags.join(', ')}`)
+  return parts.join(', ')
+}
+
+/** " · on <where>" for an agent step pinned to a fleet host or a pool, else ''. */
 function runOnSummary(runOn: AgentConfig['runOn'], hostNames: Map<string, string>): string {
   if (!runOn) return ''
   if ('host' in runOn) return " · on alert's host"
+  if ('pool' in runOn) return ` - on a host from pool ${describePool(runOn.pool)}`
   return ` · on ${hostNames.get(runOn.hostId) ?? 'a fleet host'}`
 }
 

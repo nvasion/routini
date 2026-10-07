@@ -19,7 +19,8 @@ import { requireRole } from '../http/orgContext.js'
 import { parseJobSpec, SpecError, type JobSpec } from '../engine/spec.js'
 import { archiveJob, createJob, getJob, isHiddenJob, listJobs, updateJob, type Job } from '../repos/jobs.js'
 import { createRun, type Run } from '../repos/runs.js'
-import { getHost } from '../repos/hosts.js'
+import { getHost, listHosts } from '../repos/hosts.js'
+import { describePool, matchesPool } from '../engine/pool.js'
 import { getEnvironment } from '../repos/environments.js'
 import { deleteSecret, hasSecret, putSecret } from '../repos/credentials.js'
 import type { Queryable } from '../db/index.js'
@@ -62,6 +63,11 @@ async function checkReferences(q: Queryable, orgId: string, spec: JobSpec): Prom
         const host = await hostOr400(runOn.hostId, `${p}.runOn.hostId`)
         if (host.transport === 'ssh') {
           throw badRequest(`${p}.runOn: agents need a host connected with routini-runner; "${host.name}" uses SSH`)
+        }
+      } else if (runOn && 'pool' in runOn) {
+        const hosts = await listHosts(q, orgId)
+        if (!hosts.some((h) => h.transport === 'runner' && matchesPool(h, runOn.pool))) {
+          throw badRequest(`${p}.runOn: no runner host matches ${describePool(runOn.pool)}`)
         }
       }
     }
