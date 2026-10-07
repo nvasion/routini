@@ -9,6 +9,16 @@ import type { Environment, Host, Job, PolicyDecision, StepKind } from '../lib/ty
 import { useOrg } from '../shell/OrgContext'
 import { ALERT_HOST, POOL_HOST, emptyJob, emptyStep, fromJob, poolMatch, poolTags, runOnOptions, toPayload, type JobForm, type StepForm } from './jobForm'
 
+/** Labels for the action-type segmented control, keyed by ActionConfig type. */
+const ACTION_LABELS: Record<StepForm['actionType'], string> = {
+  http: 'HTTP',
+  ssh: 'Command',
+  imap: 'IMAP',
+  factory: 'Factory',
+  'azure-boards': 'Azure Boards',
+  teams: 'Teams',
+}
+
 export function JobEditorPage() {
   const org = useOrg()
   const navigate = useNavigate()
@@ -311,9 +321,9 @@ function StepEditor(props: {
       {s.kind === 'action' && (
         <>
           <div className="segmented" role="group" aria-label="Action type" style={{ alignSelf: 'flex-start' }}>
-            {(['http', 'ssh', 'imap', 'factory'] as const).map((t) => (
+            {(['http', 'ssh', 'imap', 'factory', 'azure-boards', 'teams'] as const).map((t) => (
               <button key={t} type="button" aria-pressed={s.actionType === t} onClick={() => set({ actionType: t })}>
-                {t === 'factory' ? 'Factory' : t === 'ssh' ? 'Command' : t.toUpperCase()}
+                {ACTION_LABELS[t]}
               </button>
             ))}
           </div>
@@ -420,6 +430,44 @@ function StepEditor(props: {
                 )}
               </Field>
             </div>
+          )}
+          {s.actionType === 'azure-boards' && (
+            <>
+              <div className="row">
+                <Field label="Project">{(id) => <input id={id} className="input" value={s.boardsProject} placeholder="Fabrikam" onChange={(e) => set({ boardsProject: e.target.value })} />}</Field>
+                <Field label="Limit" hint="1 to 200; the default is 50.">
+                  {(id) => <input id={id} className="input" inputMode="numeric" placeholder="50" value={s.boardsLimit} onChange={(e) => set({ boardsLimit: e.target.value })} />}
+                </Field>
+              </div>
+              <Field label="WIQL query" hint="Optional. Blank reads open work items in the project, newest change first.">
+                {(id) => (
+                  <textarea
+                    id={id}
+                    className="textarea mono"
+                    rows={3}
+                    value={s.boardsQuery}
+                    placeholder={`SELECT [System.Id] FROM WorkItems WHERE [System.AssignedTo] = @me`}
+                    onChange={(e) => set({ boardsQuery: e.target.value })}
+                  />
+                )}
+              </Field>
+              <span className="hint">
+                Uses the Azure DevOps integration. Later steps can use {'{{'}steps.{s.id || 'this-step'}.summary{'}}'} (one line per work item), .count and .items.
+              </span>
+            </>
+          )}
+          {s.actionType === 'teams' && (
+            <>
+              <Field label="Title" hint="Optional.">
+                {(id) => <input id={id} className="input" value={s.teamsTitle} onChange={(e) => set({ teamsTitle: e.target.value })} />}
+              </Field>
+              <Field label="Message">
+                {(id) => (
+                  <textarea id={id} className="textarea" rows={4} value={s.teamsMessage} placeholder={'Board sweep finished: {{steps.board.count}} open items.'} onChange={(e) => set({ teamsMessage: e.target.value })} />
+                )}
+              </Field>
+              <span className="hint">Posts to the channel of the Microsoft Teams integration. {'{{'}...{'}}'} templates work here.</span>
+            </>
           )}
         </>
       )}

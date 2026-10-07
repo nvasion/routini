@@ -12,7 +12,7 @@ export interface StepForm {
   retries: string
   timeoutSec: string
   // action
-  actionType: 'http' | 'ssh' | 'imap' | 'factory'
+  actionType: 'http' | 'ssh' | 'imap' | 'factory' | 'azure-boards' | 'teams'
   url: string
   method: string
   expectStatus: string
@@ -35,6 +35,13 @@ export interface StepForm {
   factoryProvider: string
   factoryModel: string
   factoryCreatePr: boolean
+  // azure-boards
+  boardsProject: string
+  boardsQuery: string
+  boardsLimit: string
+  // teams
+  teamsTitle: string
+  teamsMessage: string
   // agent
   agent: AgentId
   prompt: string
@@ -195,6 +202,11 @@ export function emptyStep(kind: StepKind, index: number): StepForm {
     factoryProvider: '',
     factoryModel: '',
     factoryCreatePr: true,
+    boardsProject: '',
+    boardsQuery: '',
+    boardsLimit: '',
+    teamsTitle: '',
+    teamsMessage: '',
     agent: 'claude',
     prompt: '',
     repoUrl: '',
@@ -264,7 +276,11 @@ function fromStep(s: Step, i: number): StepForm {
         factoryModel: c.model ?? '',
         factoryCreatePr: c.createPr ?? true,
       })
-    } else {
+    } else if (c.type === 'azure-boards') {
+      Object.assign(f, { boardsProject: c.project, boardsQuery: c.query ?? '', boardsLimit: c.limit ? String(c.limit) : '' })
+    } else if (c.type === 'teams') {
+      Object.assign(f, { teamsTitle: c.title ?? '', teamsMessage: c.message })
+    } else if (c.type === 'imap') {
       Object.assign(f, { imapHost: c.host, imapPort: c.port ? String(c.port) : '', imapUser: c.username, imapCredential: c.credentialKey, mailbox: c.mailbox ?? '', search: c.search ?? '' })
     }
   } else if (s.kind === 'agent') {
@@ -339,7 +355,28 @@ export function toPayload(form: JobForm): PayloadResult {
           if (s.factoryModel.trim()) cfg['model'] = s.factoryModel.trim()
           base['config'] = cfg
         }
-      } else {
+      } else if (s.actionType === 'azure-boards') {
+        const project = s.boardsProject.trim()
+        if (!project) errors.push(`${label}: enter the Azure DevOps project.`)
+        const limitTrim = s.boardsLimit.trim()
+        if (limitTrim) {
+          const n = Number(limitTrim)
+          if (!Number.isInteger(n) || n < 1 || n > 200) errors.push(`${label}: limit must be a whole number from 1 to 200.`)
+        }
+        const cfg: Record<string, unknown> = { type: 'azure-boards', project }
+        if (s.boardsQuery.trim()) cfg['query'] = s.boardsQuery
+        if (limitTrim) {
+          const n = Number(limitTrim)
+          if (Number.isInteger(n) && n >= 1 && n <= 200) cfg['limit'] = n
+        }
+        base['config'] = cfg
+      } else if (s.actionType === 'teams') {
+        if (!s.teamsMessage.trim()) errors.push(`${label}: enter the message to post.`)
+        if (s.teamsTitle.length > 200) errors.push(`${label}: the title can be at most 200 characters.`)
+        const cfg: Record<string, unknown> = { type: 'teams', message: s.teamsMessage }
+        if (s.teamsTitle.trim()) cfg['title'] = s.teamsTitle.trim()
+        base['config'] = cfg
+      } else if (s.actionType === 'imap') {
         if (!s.imapHost.trim() || !s.imapUser.trim() || !s.imapCredential.trim()) errors.push(`${label}: IMAP needs host, username and a credential.`)
         const cfg: Record<string, unknown> = { type: 'imap', host: s.imapHost.trim(), username: s.imapUser.trim(), credentialKey: s.imapCredential.trim() }
         if (s.imapPort.trim()) cfg['port'] = Number(s.imapPort)

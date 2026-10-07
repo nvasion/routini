@@ -205,6 +205,8 @@ function stepSummary(spec: Step | undefined, hostNames: Map<string, string>): st
     if (c.type === 'http') return `${c.method ?? 'GET'} ${c.url}`
     if (c.type === 'ssh') return `${c.host === 'alert' ? "alert's host" : 'host'}: ${c.command}`
     if (c.type === 'factory') return c.operation === 'prd' ? `factory: execute PRD ${c.prdId}` : `factory: orchestrate ${c.projectId} · ${c.runtime ?? 'claude-code'}${c.model ? ` · ${c.model}` : ''}`
+    if (c.type === 'azure-boards') return `azure boards: ${c.project}${c.limit ? ` · limit ${c.limit}` : ''}`
+    if (c.type === 'teams') return `teams: ${c.title ? c.title + ' · ' : ''}${c.message}`
     return `imap: ${c.username}@${c.host}`
   }
   if (spec.kind === 'agent')
