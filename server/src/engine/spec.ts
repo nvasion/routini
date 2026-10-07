@@ -57,8 +57,12 @@ export interface AgentConfig {
   model?: string
   /** Run inside this persistent environment (and its repository) instead of a fresh container. */
   environmentId?: string
-  /** Run on this fleet host (routini-runner with the agents capability) instead of the Routini sandbox. */
-  runOn?: { hostId: string } | { host: 'alert' }
+  /**
+   * Run on this fleet host (routini-runner with the agents capability)
+   * instead of the Routini sandbox; `pool` picks the least busy host that
+   * matches, resolved at run time (see engine/pool.ts).
+   */
+  runOn?: { hostId: string } | { host: 'alert' } | { pool: { group?: string; tags?: string[] } }
   /** Give the agent Routini's own MCP tools (fleet commands, runs, incidents) with a run-scoped token. */
   routini?: boolean
   resources?: { cpus?: number; memoryMb?: number }
@@ -255,15 +259,38 @@ function parseAction(c: Record<string, unknown>, p: string): ActionConfig {
   }
 }
 
-/** `runOn` names exactly one target: a fleet host id, or the alert's host. */
-function parseRunOn(raw: unknown, p: string): NonNullable<AgentConfig['runOn']> {
-  const bad = (): never => fail(`${p}.runOn must be { hostId } or { host: 'alert' }`)
+const GROUP_RE = /^[A-Za-z0-9 ._-]{1,60}$/
+const TAG_RE = /^[A-Za-z0-9._:-]{1,40}$/
+
+/** `pool.group` and `pool.tags`, validated; at least one of them is required. */
+function parsePool(raw: unknown, p: string, bad: () => never): { pool: { group?: string; tags?: string[] } } {
   if (!isObj(raw)) return bad()
-  const hostId = raw['hostId']
-  const host = raw['host']
-  if ((hostId === undefined) === (host === undefined)) return bad()
-  if (hostId !== undefined) return typeof hostId === 'string' && UUID_RE.test(hostId) ? { hostId } : bad()
-  return host === 'alert' ? { host: 'alert' } : bad()
+  const pool: { group?: string; tags?: string[] } = {}
+  if (raw['group'] !== undefined) {
+    if (typeof raw['group'] !== 'string' || !GROUP_RE.test(raw['group'])) return bad()
+    pool.group = raw['group']
+  }
+  if (raw['tags'] !== undefined) {
+    const tags = raw['tags']
+    if (!Array.isArray(tags) || tags.length > 20 || !tags.every((t) => typeof t === 'string' && TAG_RE.test(t))) return bad()
+    pool.tags = [...new Set(tags as string[])]
+  }
+  if (!pool.group && !pool.tags?.length) return bad()
+  return { pool }
+}
+
+/** `runOn` names exactly one target: a fleet host id, the alert's host, or a pool of fleet hosts. */
+function parseRunOn(raw: unknown, p: string): NonNullable<AgentConfig['runOn']> {
+  const bad = (): never => fail(`${p}.runOn must be { hostId }, { host: 'alert' } or { pool: { group?, tags? } }`)
+  if (!isObj(raw)) return bad()
+  const keys = (['hostId', 'host', 'pool'] as const).filter((k) => raw[k] !== undefined)
+  if (keys.length !== 1) return bad()
+  if (raw['hostId'] !== undefined) {
+    const hostId = raw['hostId']
+    return typeof hostId === 'string' && UUID_RE.test(hostId) ? { hostId } : bad()
+  }
+  if (raw['host'] !== undefined) return raw['host'] === 'alert' ? { host: 'alert' } : bad()
+  return parsePool(raw['pool'], p, bad)
 }
 
 function parseAgent(c: Record<string, unknown>, p: string): AgentConfig {

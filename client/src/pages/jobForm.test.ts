@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Host, Job } from '../lib/types'
-import { ALERT_HOST, emptyJob, emptyStep, fromJob, runOnBlocked, runOnOptions, toPayload } from './jobForm'
+import { ALERT_HOST, POOL_HOST, emptyJob, emptyStep, fromJob, poolMatch, runOnBlocked, runOnOptions, toPayload } from './jobForm'
 
 const job: Job = {
   id: 'j1',
@@ -125,6 +125,70 @@ describe('job form: agent "Run on"', () => {
     const r = toPayload(form)
     expect(!r.ok && r.errors).toEqual(['Step 1 (Agent): run on a fleet host or in an environment, not both.'])
   })
+
+  it('round-trips a step pinned to a pool (group and tags)', () => {
+    const steps = agentStep({ agent: 'claude', prompt: 'Fix the flaky test', runOn: { pool: { group: 'prod', tags: ['gpu', 'linux'] } } })
+    const form = fromJob({ ...base, steps })
+    expect(form.steps[0]).toMatchObject({ runOnHostId: POOL_HOST, runOnPoolGroup: 'prod', runOnPoolTags: 'gpu linux' })
+    const r = toPayload(form)
+    expect(r.ok && r.payload['steps']).toEqual([
+      { id: 'fix', name: 'Fix', kind: 'agent', when: 'on_success', config: { agent: 'claude', prompt: 'Fix the flaky test', runOn: { pool: { group: 'prod', tags: ['gpu', 'linux'] } } } },
+    ])
+  })
+
+  it('round-trips a pool with only a group, and one with only tags', () => {
+    const groupOnly = fromJob({ ...base, steps: agentStep({ agent: 'claude', prompt: 'x', runOn: { pool: { group: 'prod' } } }) })
+    expect(toPayload(groupOnly).ok && (toPayload(groupOnly) as { payload: Record<string, unknown> }).payload['steps']).toEqual([
+      { id: 'fix', name: 'Fix', kind: 'agent', when: 'on_success', config: { agent: 'claude', prompt: 'x', runOn: { pool: { group: 'prod' } } } },
+    ])
+    const tagsOnly = fromJob({ ...base, steps: agentStep({ agent: 'claude', prompt: 'x', runOn: { pool: { tags: ['gpu'] } } }) })
+    expect(toPayload(tagsOnly).ok && (toPayload(tagsOnly) as { payload: Record<string, unknown> }).payload['steps']).toEqual([
+      { id: 'fix', name: 'Fix', kind: 'agent', when: 'on_success', config: { agent: 'claude', prompt: 'x', runOn: { pool: { tags: ['gpu'] } } } },
+    ])
+  })
+
+  it('splits pool tags on spaces or commas, deduplicated', () => {
+    const form = { ...emptyJob(), name: 'pool' }
+    form.steps = [{ ...emptyStep('agent', 0), prompt: 'Do it', runOnHostId: POOL_HOST, runOnPoolTags: 'gpu, linux  gpu,prod' }]
+    const r = toPayload(form)
+    expect(r.ok && (r.payload['steps'] as Array<{ config: { runOn: unknown } }>)[0]!.config.runOn).toEqual({ pool: { tags: ['gpu', 'linux', 'prod'] } })
+  })
+
+  it('a pool needs a group or at least one tag', () => {
+    const form = { ...emptyJob(), name: 'empty pool' }
+    form.steps = [{ ...emptyStep('agent', 0), prompt: 'Do it', runOnHostId: POOL_HOST }]
+    const r = toPayload(form)
+    expect(!r.ok && r.errors).toEqual(['Step 1 (Agent): a host pool needs a group or at least one tag.'])
+  })
+
+  it('a pool and an environment are mutually exclusive, either way round', () => {
+    const poolForm = { ...emptyJob(), name: 'pool+env' }
+    poolForm.steps = [{ ...emptyStep('agent', 0), prompt: 'Do it', environmentId: '9a1f0c2e-0000-4000-8000-000000000001', runOnHostId: POOL_HOST, runOnPoolGroup: 'prod' }]
+    const r = toPayload(poolForm)
+    expect(!r.ok && r.errors).toEqual(['Step 1 (Agent): run on a fleet host or in an environment, not both.'])
+
+    // Picking an environment in the editor clears a pool selection, and vice versa (JobEditorPage's onChange); fromJob never produces both at once.
+    const envForm = { ...emptyStep('agent', 0), environmentId: '9a1f0c2e-0000-4000-8000-000000000001', runOnHostId: POOL_HOST }
+    expect({ ...envForm, environmentId: '' }).toMatchObject({ runOnHostId: POOL_HOST })
+    expect({ ...envForm, runOnHostId: '' }).toMatchObject({ environmentId: '9a1f0c2e-0000-4000-8000-000000000001' })
+  })
+})
+
+describe('job form: poolMatch', () => {
+  const runner = (over: Partial<Host> = {}): Host => ({ ...host(), transport: 'runner', ...over })
+
+  it('counts runner hosts matching a group and/or tags, and how many can run agents now', () => {
+    const prodGpu = runner({ id: 'h1', name: 'h1', group: 'prod', tags: ['gpu'] })
+    const prodCpu = runner({ id: 'h2', name: 'h2', group: 'prod', tags: ['cpu'] })
+    const labGpu = runner({ id: 'h3', name: 'h3', group: 'lab', tags: ['gpu'], runner: { ...host().runner!, online: false } })
+    const ssh = host({ id: 'h4', name: 'h4', transport: 'ssh', runner: null, group: 'prod', tags: ['gpu'] })
+    const hosts = [prodGpu, prodCpu, labGpu, ssh]
+
+    expect(poolMatch(hosts, 'prod', ['gpu'])).toEqual({ matches: 1, canRunNow: 1 })
+    expect(poolMatch(hosts, 'prod', [])).toEqual({ matches: 2, canRunNow: 2 })
+    expect(poolMatch(hosts, '', ['gpu'])).toEqual({ matches: 2, canRunNow: 1 })
+    expect(poolMatch(hosts, '', [])).toEqual({ matches: 3, canRunNow: 2 })
+  })
 })
 
 describe('job form: runOnOptions', () => {
@@ -135,6 +199,7 @@ describe('job form: runOnOptions', () => {
     expect(opts({ hosts: [host(), ssh] })).toEqual([
       { value: '', label: 'Routini sandbox' },
       { value: ALERT_HOST, label: "The alert's host (alert-triggered jobs only)", disabled: true },
+      { value: POOL_HOST, label: 'A host from a pool...' },
       { value: HOST_ID, label: 'web-01', disabled: false },
     ])
   })
@@ -149,7 +214,7 @@ describe('job form: runOnOptions', () => {
     const revoked = host({ id: 'h-rev', name: 'web-03', runner: { ...host().runner!, revoked: true } })
     const noAgents = host({ id: 'h-exec', name: 'web-04', runner: { ...host().runner!, capabilities: ['exec'] } })
     const gone = host({ id: 'h-null', name: 'web-05', runner: null })
-    expect(opts({ hosts: [offline, revoked, noAgents, gone] }).slice(2)).toEqual([
+    expect(opts({ hosts: [offline, revoked, noAgents, gone] }).slice(3)).toEqual([
       { value: 'h-off', label: 'web-02 (offline)', disabled: true },
       { value: 'h-rev', label: 'web-03 (offline)', disabled: true },
       { value: 'h-exec', label: 'web-04 (agents not enabled)', disabled: true },
@@ -164,9 +229,10 @@ describe('job form: runOnOptions', () => {
     expect(opts({ hosts: [host()], selected: HOST_ID }).filter((o) => o.value === HOST_ID)).toHaveLength(1)
   })
 
-  it('never adds a ghost entry for the sandbox or the alert host', () => {
-    expect(opts({ selected: '' })).toHaveLength(2)
-    expect(opts({ selected: ALERT_HOST, alertTrigger: true })).toHaveLength(2)
+  it('never adds a ghost entry for the sandbox, the alert host or the pool option', () => {
+    expect(opts({ selected: '' })).toHaveLength(3)
+    expect(opts({ selected: ALERT_HOST, alertTrigger: true })).toHaveLength(3)
+    expect(opts({ selected: POOL_HOST })).toHaveLength(3)
   })
 
   it('names why a host is blocked', () => {

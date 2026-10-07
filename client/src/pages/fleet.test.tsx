@@ -194,6 +194,7 @@ describe('job editor: running an agent on a fleet host', () => {
     expect([...runOn.options].map((o) => [o.textContent, o.disabled])).toEqual([
       ['Routini sandbox', false],
       ["The alert's host (alert-triggered jobs only)", true],
+      ['A host from a pool...', false],
       ['web-01', false],
       ['web-02 (agents not enabled)', true],
     ])
