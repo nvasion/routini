@@ -179,7 +179,9 @@ export async function stepFacts(q: Queryable, orgId: string, step: Step): Promis
     inEnvironment: Boolean(cfg.environmentId),
     repoHost,
   }
-  // After prepare, runOn is always { hostId }; a draft may still carry { host: 'alert' }, whose host is unknown here.
+  // After prepare, runOn is always { hostId }; a draft may still carry { host: 'alert' }, whose host is unknown here,
+  // or { pool }, whose group/tags stand in for a host until prepare picks one.
   if (cfg.runOn && 'hostId' in cfg.runOn) facts.host = await hostFacts(q, orgId, cfg.runOn.hostId)
+  else if (cfg.runOn && 'pool' in cfg.runOn) facts.host = { tags: cfg.runOn.pool.tags ?? [], group: cfg.runOn.pool.group ?? '' }
   return facts
 }
