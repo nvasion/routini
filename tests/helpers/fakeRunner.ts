@@ -153,7 +153,8 @@ export class FakeRunner {
       timedOut: extra.timedOut ?? false,
       error: extra.error ?? null,
       exitCode: extra.exitCode ?? null,
-      data: extra.data ?? null,
+      // On the wire the payload is `result` (PROTOCOL.md 2.8), as the real runner sends it.
+      result: extra.data ?? null,
     })
   }
 

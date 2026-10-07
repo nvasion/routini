@@ -560,7 +560,8 @@ export class RunnerGateway {
       timedOut: f['timedOut'] === true,
       canceled,
       error: typeof f['error'] === 'string' && f['error'] ? (f['error'] as string).slice(0, 500) : null,
-      data: isObj(f['data']) ? (f['data'] as Record<string, unknown>) : null,
+      // PROTOCOL.md 2.8: env.done carries the op's payload in `result`.
+      data: isObj(f['result']) ? (f['result'] as Record<string, unknown>) : null,
     }
     const status = canceled ? 'canceled' : ok ? 'done' : 'failed'
     await this.finish(conn.runner.orgId, taskId, status, result)
