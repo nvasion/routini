@@ -54,6 +54,14 @@ alert
   their own git worktree inside it, so your checkout is untouched and you can
   inspect the result. Stopping keeps `/workspace`; idle environments stop on
   their own.
+  - **Fleet environments:** pick a **Host** when creating one (any server whose
+    routini-runner is online, not revoked, and has the `agents` capability —
+    that needs routini-runner v0.4.0 or newer) and its container, terminal and
+    agent steps all run there instead of on Routini's own Docker host, behind
+    that host's own egress proxy. The image comes from `ROUTINI_FLEET_ENV_IMAGES`.
+    Stopping, deleting and agent steps all work the same as on Routini's Docker
+    host; the sweeper leaves a fleet environment alone while its runner is
+    offline and picks its session back up as soon as it reconnects.
 - **Policy** gates steps before they run: ordered rules (first match wins) can
   require an approval from a given role, or block a step outright, by step kind,
   action type, SSH host tags and groups, agent result, repository host, or
@@ -174,6 +182,7 @@ stored secrets cannot be decrypted.
 | `ROUTINI_RUNNER_RELEASES` | — | `off`: never ask GitHub for the latest runner release (no update offers). |
 | `ROUTINI_WORKER_CONCURRENCY` | `4` | Runs per worker process. |
 | `ROUTINI_ENV_IMAGES` | agent images | Hosted mode: images environments may use (comma separated). Self-host allows any image. |
+| `ROUTINI_FLEET_ENV_IMAGES` | fleet agent images | Images a fleet-hosted environment (`hostId`) may use (comma separated); needs routini-runner v0.4.0+ with `agents`. |
 | `ROUTINI_PUBLIC_URL` | `CLIENT_URL` | Where runners and monitoring tools reach this server (install commands and the alert endpoint use it). |
 | `ROUTINI_AGENT_API_URL` | the public URL | Where agent containers reach this server for Routini's MCP tools. |
 | `ROUTINI_OIDC_ISSUER`, `ROUTINI_OIDC_CLIENT_ID`, `ROUTINI_OIDC_CLIENT_SECRET` | — | Sign in with TynHub (or any OIDC provider). Redirect URI: `<public URL>/api/auth/oidc/callback`. |

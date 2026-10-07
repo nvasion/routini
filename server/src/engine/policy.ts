@@ -175,11 +175,16 @@ export async function stepFacts(q: Queryable, orgId: string, step: Step): Promis
   const facts: StepFacts = {
     kind: 'agent',
     agentOutput: repoUrl ? (cfg.output ?? 'pr') : 'none',
-    agentPlacement: cfg.runOn ? 'fleet' : 'sandbox',
+    // A step runs on a fleet host directly (runOn), or indirectly through an environment
+    // pinned to one (env.hostId) — either way it is the org's own server time, not the sandbox's.
+    agentPlacement: cfg.runOn || env?.hostId ? 'fleet' : 'sandbox',
     inEnvironment: Boolean(cfg.environmentId),
     repoHost,
   }
-  // After prepare, runOn is always { hostId }; a draft may still carry { host: 'alert' }, whose host is unknown here.
+  // After prepare, runOn is always { hostId }; a draft may still carry { host: 'alert' }, whose host is unknown here,
+  // or { pool }, whose group/tags stand in for a host until prepare picks one.
   if (cfg.runOn && 'hostId' in cfg.runOn) facts.host = await hostFacts(q, orgId, cfg.runOn.hostId)
+  else if (cfg.runOn && 'pool' in cfg.runOn) facts.host = { tags: cfg.runOn.pool.tags ?? [], group: cfg.runOn.pool.group ?? '' }
+  else if (env?.hostId) facts.host = await hostFacts(q, orgId, env.hostId)
   return facts
 }

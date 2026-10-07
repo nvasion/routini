@@ -1,7 +1,7 @@
 // Job editor form model ⇄ API payload. Pure; see jobForm.test.ts.
 // The server validates everything again; this catches the obvious early.
 
-import type { AgentId, Host, Job, Step, StepKind, When } from '../lib/types'
+import type { AgentConfig, AgentId, Host, Job, Step, StepKind, When } from '../lib/types'
 
 export interface StepForm {
   key: string
@@ -45,8 +45,12 @@ export interface StepForm {
   model: string
   /** Run in this environment (its repository) instead of a fresh container. */
   environmentId: string
-  /** Run on a fleet host: a host id, or ALERT_HOST. Blank is the Routini sandbox. */
+  /** Run on a fleet host: a host id, ALERT_HOST, or POOL_HOST. Blank is the Routini sandbox. */
   runOnHostId: string
+  /** POOL_HOST: the group to match (free text; blank matches any group). */
+  runOnPoolGroup: string
+  /** POOL_HOST: tags to match, space or comma separated. */
+  runOnPoolTags: string
   /** Give the agent Routini's MCP tools (fleet commands, runs, incidents). */
   routini: boolean
   // approval
@@ -70,6 +74,8 @@ export interface JobForm {
 
 /** Step host value meaning "the host the alert is about" (config `host: 'alert'`). */
 export const ALERT_HOST = 'alert'
+/** Agent step "Run on" value meaning "a host picked from a pool at run time" (config `runOn: { pool }`). */
+export const POOL_HOST = '__pool__'
 
 /** A spec's host fields as one form value: ALERT_HOST, a host id, or blank. */
 function hostValue(target: { hostId?: string; host?: 'alert' } | undefined): string {
@@ -80,6 +86,32 @@ function hostValue(target: { hostId?: string; host?: 'alert' } | undefined): str
 /** The form value back as the spec writes it: `host: 'alert'` or a host id. */
 function hostTarget(value: string): { host: 'alert' } | { hostId: string } {
   return value === ALERT_HOST ? { host: 'alert' } : { hostId: value }
+}
+
+/** An agent step's `runOn` as one form value: ALERT_HOST, POOL_HOST, a host id, or blank. */
+function agentRunOnValue(target: AgentConfig['runOn'] | undefined): string {
+  if (!target) return ''
+  if ('pool' in target) return POOL_HOST
+  return hostValue(target)
+}
+
+/** Tags from the free-text pool tags field: space or comma separated, deduplicated. */
+export function poolTags(raw: string): string[] {
+  return [
+    ...new Set(
+      raw
+        .split(/[\s,]+/)
+        .map((t) => t.trim())
+        .filter(Boolean),
+    ),
+  ]
+}
+
+/** How many runner hosts match a pool's group/tags, and how many of those can run agents right now. */
+export function poolMatch(hosts: Host[], group: string, tags: string[]): { matches: number; canRunNow: number } {
+  const g = group.trim()
+  const matches = hosts.filter((h) => h.transport === 'runner' && (!g || h.group === g) && tags.every((t) => h.tags.includes(t)))
+  return { matches: matches.length, canRunNow: matches.filter((h) => runOnBlocked(h) === null).length }
 }
 
 /** Only alert-triggered jobs can target the host an alert is about. */
@@ -117,6 +149,7 @@ export function runOnOptions(opts: { hosts: Host[]; alertTrigger: boolean; selec
   // alert trigger stays visible after the trigger changes — but only selectable
   // on alert-triggered jobs, which is what toPayload enforces.
   options.push({ value: ALERT_HOST, label: `The alert's host${opts.alertTrigger ? '' : ' (alert-triggered jobs only)'}`, disabled: !opts.alertTrigger })
+  options.push({ value: POOL_HOST, label: 'A host from a pool...' })
   for (const h of opts.hosts) {
     if (h.transport !== 'runner') continue
     const blocked = runOnBlocked(h)
@@ -171,6 +204,8 @@ export function emptyStep(kind: StepKind, index: number): StepForm {
     model: '',
     environmentId: '',
     runOnHostId: '',
+    runOnPoolGroup: '',
+    runOnPoolTags: '',
     routini: false,
     message: '',
     minRole: 'member',
@@ -243,7 +278,9 @@ function fromStep(s: Step, i: number): StepForm {
       checkCommand: c.check?.command ?? '',
       model: c.model ?? '',
       environmentId: c.environmentId ?? '',
-      runOnHostId: hostValue(c.runOn),
+      runOnHostId: agentRunOnValue(c.runOn),
+      runOnPoolGroup: c.runOn && 'pool' in c.runOn ? (c.runOn.pool.group ?? '') : '',
+      runOnPoolTags: c.runOn && 'pool' in c.runOn ? (c.runOn.pool.tags ?? []).join(' ') : '',
       routini: c.routini === true,
     })
   } else {
@@ -325,8 +362,15 @@ export function toPayload(form: JobForm): PayloadResult {
         // The server rejects both too; catching it here keeps the message next
         // to the two fields that disagree.
         if (s.environmentId) errors.push(`${label}: run on a fleet host or in an environment, not both.`)
-        checkAlertHost(s.runOnHostId, form, label, errors)
-        cfg['runOn'] = hostTarget(s.runOnHostId)
+        if (s.runOnHostId === POOL_HOST) {
+          const group = s.runOnPoolGroup.trim()
+          const tags = poolTags(s.runOnPoolTags)
+          if (!group && !tags.length) errors.push(`${label}: a host pool needs a group or at least one tag.`)
+          else cfg['runOn'] = { pool: { ...(group ? { group } : {}), ...(tags.length ? { tags } : {}) } }
+        } else {
+          checkAlertHost(s.runOnHostId, form, label, errors)
+          cfg['runOn'] = hostTarget(s.runOnHostId)
+        }
       }
       if (s.checkCommand.trim()) cfg['check'] = { command: s.checkCommand.trim() }
       if (s.model.trim()) cfg['model'] = s.model.trim()

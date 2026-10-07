@@ -34,8 +34,8 @@ import { createPullRequest, parseGithubRepo } from '../integrations/github.js'
 import type { FetchFn } from '../integrations/providers.js'
 import type { AgentId } from '../integrations/catalog.js'
 import { AgentStreamParser } from './agentStream.js'
-import { EnvError } from './environments.js'
-import { addEnvironmentEvent, type Environment } from '../repos/environments.js'
+import { EnvError, type EnvPlacement } from './environments.js'
+import { addEnvironmentEvent, getEnvironment, type Environment } from '../repos/environments.js'
 import type { AgentConfig } from './spec.js'
 import type { StepContext, StepExecutor, StepResult } from './types.js'
 import { emitPlacement } from './placement.js'
@@ -43,6 +43,7 @@ import { dockerHostLabel, sandboxHostConfig } from '../services/dockerClient.js'
 import { orgHasVerifiedOwner } from '../repos/identity.js'
 import { runAgentOnRunner, type RunnerAgentOutcome } from '../runner/agent.js'
 import { NO_AGENTS_ERROR } from '../runner/gateway.js'
+import { fleetAgentImages, fleetEgressImage } from './fleetImages.js'
 
 export const DEFAULT_AGENT_TIMEOUT_SEC = 30 * 60
 const DEFAULT_CPUS = 2
@@ -84,21 +85,9 @@ export function defaultAgentImages(env: NodeJS.ProcessEnv = process.env): Partia
   }
 }
 
-/**
- * Images a fleet host pulls for `runOn` steps. Separate from the sandbox's:
- * a runner pulls from a registry, while the sandbox may use a local build.
- */
-export function fleetAgentImages(env: NodeJS.ProcessEnv = process.env): Partial<Record<AgentId, string>> {
-  return {
-    claude: env['ROUTINI_FLEET_AGENT_IMAGE_CLAUDE'] || 'ghcr.io/nvasion/routini-agent-claude:latest',
-    omnimancer: env['ROUTINI_FLEET_AGENT_IMAGE_OMNIMANCER'] || undefined,
-    opencode: env['ROUTINI_FLEET_AGENT_IMAGE_OPENCODE'] || undefined,
-  }
-}
-
-export function fleetEgressImage(env: NodeJS.ProcessEnv = process.env): string {
-  return env['ROUTINI_FLEET_EGRESS_IMAGE']?.trim() || 'ghcr.io/nvasion/routini-egress:latest'
-}
+// Fleet images live in fleetImages.ts (environments.ts needs them too, and
+// importing agent.ts from there would be a cycle); re-exported for callers.
+export { fleetAgentImages, fleetEgressImage, fleetEnvImages } from './fleetImages.js'
 
 class StepFailure extends Error {}
 
@@ -250,26 +239,33 @@ export function agentExecutor(opts: AgentRunnerOptions = {}): StepExecutor {
         }
         // After prepare, runOn is always { hostId }: one of the org's own hosts runs this step.
         const runOnHostId = cfg.runOn && 'hostId' in cfg.runOn ? cfg.runOn.hostId : null
+        // A quick row read, before the limit checks: an environment pinned to a fleet host
+        // (env.hostId) is fleet compute too, same as runOn, even though it is reached below.
+        const envRow = cfg.environmentId ? await db.org(orgId, (q) => getEnvironment(q, orgId, cfg.environmentId!)) : null
+        const fleetCompute = !!runOnHostId || !!envRow?.hostId
         const usage = await db.org(orgId, (q) => usageToday(q, orgId))
         const { agentMinutesPerDay, dailyBudgetUsd } = ctx.org.limits
         // Fleet agents spend the org's own server time, so the agent-minute budget does not apply.
-        if (!runOnHostId && agentMinutesPerDay !== null && usage.agentSeconds >= agentMinutesPerDay * 60) {
+        if (!fleetCompute && agentMinutesPerDay !== null && usage.agentSeconds >= agentMinutesPerDay * 60) {
           throw new StepFailure(`limit_exceeded:agent_minutes — this org used its ${agentMinutesPerDay} agent minutes for today (UTC)`)
         }
         if (dailyBudgetUsd !== null && usage.costUsd >= dailyBudgetUsd) {
           throw new StepFailure(`limit_exceeded:daily_budget — this org reached its $${dailyBudgetUsd} model budget for today (UTC)`)
         }
         let timeoutSec = ctx.step.timeoutSec ?? DEFAULT_AGENT_TIMEOUT_SEC
-        if (!runOnHostId && agentMinutesPerDay !== null) timeoutSec = Math.min(timeoutSec, agentMinutesPerDay * 60 - usage.agentSeconds)
+        if (!fleetCompute && agentMinutesPerDay !== null) timeoutSec = Math.min(timeoutSec, agentMinutesPerDay * 60 - usage.agentSeconds)
 
         // ── Where it runs: a fleet host, a persistent environment, or a fresh container ─
         const fleet = runOnHostId ? await fleetTarget(ctx, runOnHostId) : null
         let environment: Environment | null = null
+        let envPlacement: EnvPlacement | null = null
         // `runOn` and `environmentId` are mutually exclusive (see spec.ts), so a
         // fleet step never has one — and must not wake a container it won't use.
         if (cfg.environmentId && !fleet) {
           try {
             environment = await ctx.app.envs.ensureRunning(orgId, cfg.environmentId)
+            // Where the environment's own container lives: Routini's Docker host, or (env.hostId) a fleet host.
+            envPlacement = await ctx.app.envs.placement(environment)
           } catch (err) {
             if (err instanceof EnvError) throw new StepFailure(err.message)
             throw err
@@ -286,9 +282,10 @@ export function agentExecutor(opts: AgentRunnerOptions = {}): StepExecutor {
         const repo = cfg.repo ?? (environment?.repo ? { url: environment.repo.url, baseBranch: environment.repo.branch } : undefined)
 
         // ── Credentials: brokered (placeholders + proxy bindings) or direct env ─
-        // A fleet step is always brokered, by the egress proxy the runner starts
-        // on its host; this server's own broker has nothing to do with it.
-        const broker = fleet ? null : ctx.app.broker
+        // A fleet step is always brokered, by the egress proxy the runner starts on its
+        // host; so is a step in a fleet environment, by that same host's proxy. Neither
+        // has anything to do with this server's own broker (ctx.app.broker).
+        const broker = fleet ? null : envPlacement ? envPlacement.broker : ctx.app.broker
         const brokered = fleet !== null || broker !== null
         if (!fleet && !broker && ctx.app.config.mode === 'hosted') {
           throw new StepFailure('Agent steps on this server require the credential broker, which is not configured; ask the operator')
@@ -410,11 +407,16 @@ export function agentExecutor(opts: AgentRunnerOptions = {}): StepExecutor {
             fleetEgress = outcome.egress
             result = fleetResult(outcome, ctx.signal.aborted)
           } else if (environment) {
-            await emitPlacement(ctx, { target: 'sandbox', host: dockerHostLabel(), environment: environment.name })
-            await ctx.log(`Starting ${cfg.agent} agent in environment "${environment.name}"${repo ? ` (worktree ${workBranch} from ${repo.baseBranch})` : ''}`)
+            if (envPlacement!.host) {
+              await emitPlacement(ctx, { target: 'fleet', via: 'runner', host: envPlacement!.host.name, hostId: envPlacement!.host.id, environment: environment.name })
+              await ctx.log(`Starting ${cfg.agent} agent in environment "${environment.name}" on ${envPlacement!.host.name} via routini-runner`)
+            } else {
+              await emitPlacement(ctx, { target: 'sandbox', host: dockerHostLabel(), environment: environment.name })
+              await ctx.log(`Starting ${cfg.agent} agent in environment "${environment.name}"${repo ? ` (worktree ${workBranch} from ${repo.baseBranch})` : ''}`)
+            }
             await ctx.app.envs.touch(orgId, environment.id)
             await ctx.app.db.org(orgId, (q) => addEnvironmentEvent(q, orgId, environment!.id, 'agent.run', null, { runNumber: ctx.run.number, step: ctx.step.name }))
-            result = await ctx.app.envs.runtime.exec(environment.containerId!, ['routini-entrypoint'], { env, timeoutMs: timeoutSec * 1000, signal: ctx.signal, onLine })
+            result = await envPlacement!.runtime.exec(environment.containerId!, ['routini-entrypoint'], { env, timeoutMs: timeoutSec * 1000, signal: ctx.signal, onLine })
             await ctx.app.envs.touch(orgId, environment.id)
             if (result.exitCode === 127) result.error = `The environment's image (${environment.image}) has no routini-entrypoint; use a Routini agent image`
           } else {
@@ -441,8 +443,9 @@ export function agentExecutor(opts: AgentRunnerOptions = {}): StepExecutor {
           await revokeRoutiniToken()
         }
         const facts = parser.facts
-        // Fleet minutes are the org's own server time, so only the sandbox adds agent seconds.
-        await ctx.addUsage({ costUsd: facts.costUsd, ...(fleet ? {} : { agentSeconds: (Date.now() - started) / 1000 }) })
+        // Fleet minutes (runOn, or an environment pinned to a host) are the org's own server
+        // time, so only the sandbox and Routini-hosted environments add agent seconds.
+        await ctx.addUsage({ costUsd: facts.costUsd, ...(fleet || envPlacement?.host ? {} : { agentSeconds: (Date.now() - started) / 1000 }) })
 
         // ── Outcome ─────────────────────────────────────────────────────
         const base = { costUsd: facts.costUsd, model: facts.model ?? null, turns: facts.turns ?? null, summary: facts.resultText ?? null }

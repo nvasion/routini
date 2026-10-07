@@ -3,11 +3,13 @@
 // back, and wait for the result. Works across processes: the runner gateway may
 // live in any API instance; everything goes through runner_tasks and NOTIFY.
 //
-// runTaskOnRunner() is the loop both kinds of task share (exec here, agents in
-// agent.ts): queue, wait out an offline runner, stream output, cancel on abort.
+// runRunnerTask() is the loop every task kind shares (exec here, agents in
+// agent.ts, environment ops in env.ts): queue, wait out an offline runner,
+// stream output, cancel on abort. runTaskOnRunner() is the StepContext-bound
+// convenience wrapper step executors use.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import type { Queryable } from '../db/index.js'
+import type { Db, Queryable } from '../db/index.js'
 import { createRunnerTask, finishRunnerTask, getRunnerTask, requestTaskCancel, RUNNER_OUT_CHANNEL, type ExecResultData, type RunnerTask } from '../repos/runners.js'
 import type { StepContext } from '../engine/types.js'
 
@@ -33,14 +35,20 @@ export interface RunnerTaskOptions {
 /** How a task's wait ended: with a result (possibly none), or with the row gone. */
 export type RunnerTaskOutcome = { kind: 'finished'; result: ExecResultData | null } | { kind: 'gone' }
 
+/** runRunnerTask(), bound to a step's StepContext (db, org, cancel signal). What step executors call. */
+export async function runTaskOnRunner(ctx: StepContext, o: RunnerTaskOptions): Promise<RunnerTaskOutcome> {
+  return runRunnerTask({ db: ctx.app.db, orgId: ctx.org.id, signal: ctx.signal }, o)
+}
+
 /**
  * Queues a runner task and waits for it, streaming its output lines to
  * `onLine`. Gives up with an `offline` result when the runner never picks the
- * task up, and asks the runner to cancel when ctx.signal aborts.
+ * task up, and asks the runner to cancel when `t.signal` aborts.
  */
-export async function runTaskOnRunner(ctx: StepContext, o: RunnerTaskOptions): Promise<RunnerTaskOutcome> {
-  const { db } = ctx.app
-  const orgId = ctx.org.id
+export async function runRunnerTask(t: { db: Db; orgId: string; signal?: AbortSignal }, o: RunnerTaskOptions): Promise<RunnerTaskOutcome> {
+  const { db, orgId } = t
+  // No signal: the task still polls and streams output, it just never gets canceled from this side.
+  const signal = t.signal ?? new AbortController().signal
   const grace = o.offlineGraceMs ?? 30_000
   const pollMs = o.pollMs ?? 2_000
 
@@ -99,7 +107,7 @@ export async function runTaskOnRunner(ctx: StepContext, o: RunnerTaskOptions): P
         }
         continue
       }
-      if (ctx.signal.aborted && !cancelSent) {
+      if (signal.aborted && !cancelSent) {
         cancelSent = true
         cancelAt = Date.now()
         await db.org(orgId, (q) => requestTaskCancel(q, orgId, task.id, o.runnerId))
@@ -114,12 +122,12 @@ export async function runTaskOnRunner(ctx: StepContext, o: RunnerTaskOptions): P
       await new Promise<void>((resolve) => {
         const done = () => {
           clearTimeout(timer)
-          ctx.signal.removeEventListener('abort', done)
+          signal.removeEventListener('abort', done)
           resolve()
         }
         const timer = setTimeout(done, pollMs)
         wake = done
-        ctx.signal.addEventListener('abort', done, { once: true })
+        signal.addEventListener('abort', done, { once: true })
       })
       wake = null
     }
