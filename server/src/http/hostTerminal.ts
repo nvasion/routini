@@ -24,7 +24,10 @@ import { openSsh2Shell, sshTargetAllowed, type SshShell } from '../services/ssh.
 const PATH_RE = /^\/api\/orgs\/([a-z0-9-]{1,40})\/hosts\/([0-9a-f-]{36})\/terminal$/i
 
 function reject(socket: Duplex, status: number, message: string): void {
-  socket.write(`HTTP/1.1 ${status} ${message}\r\nConnection: close\r\nContent-Type: text/plain\r\n\r\n${message}`)
+  // The message can come from a runner (pty.error): keep it to one printable
+  // line so it cannot add headers to this raw HTTP response.
+  const text = message.replace(/[\x00-\x1f\x7f]+/g, ' ').trim().slice(0, 300) || 'Error'
+  socket.write(`HTTP/1.1 ${status} ${text}\r\nConnection: close\r\nContent-Type: text/plain\r\n\r\n${text}`)
   socket.destroy()
 }
 

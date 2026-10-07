@@ -43,6 +43,7 @@ import { dockerHostLabel, sandboxHostConfig } from '../services/dockerClient.js'
 import { orgHasVerifiedOwner } from '../repos/identity.js'
 import { runAgentOnRunner, type RunnerAgentOutcome } from '../runner/agent.js'
 import { NO_AGENTS_ERROR } from '../runner/gateway.js'
+import { fleetAgentImages, fleetEgressImage } from './fleetImages.js'
 
 export const DEFAULT_AGENT_TIMEOUT_SEC = 30 * 60
 const DEFAULT_CPUS = 2
@@ -84,30 +85,9 @@ export function defaultAgentImages(env: NodeJS.ProcessEnv = process.env): Partia
   }
 }
 
-/**
- * Images a fleet host pulls for `runOn` steps. Separate from the sandbox's:
- * a runner pulls from a registry, while the sandbox may use a local build.
- */
-export function fleetAgentImages(env: NodeJS.ProcessEnv = process.env): Partial<Record<AgentId, string>> {
-  return {
-    claude: env['ROUTINI_FLEET_AGENT_IMAGE_CLAUDE'] || 'ghcr.io/nvasion/routini-agent-claude:latest',
-    omnimancer: env['ROUTINI_FLEET_AGENT_IMAGE_OMNIMANCER'] || undefined,
-    opencode: env['ROUTINI_FLEET_AGENT_IMAGE_OPENCODE'] || undefined,
-  }
-}
-
-/**
- * Images an environment on a fleet host may use: ROUTINI_FLEET_ENV_IMAGES
- * (comma list), else the configured fleet agent images.
- */
-export function fleetEnvImages(env: NodeJS.ProcessEnv = process.env): string[] {
-  const configured = (env['ROUTINI_FLEET_ENV_IMAGES'] ?? '').split(',').map((s) => s.trim()).filter(Boolean)
-  return configured.length ? configured : Object.values(fleetAgentImages(env)).filter((v): v is string => Boolean(v))
-}
-
-export function fleetEgressImage(env: NodeJS.ProcessEnv = process.env): string {
-  return env['ROUTINI_FLEET_EGRESS_IMAGE']?.trim() || 'ghcr.io/nvasion/routini-egress:latest'
-}
+// Fleet images live in fleetImages.ts (environments.ts needs them too, and
+// importing agent.ts from there would be a cycle); re-exported for callers.
+export { fleetAgentImages, fleetEgressImage, fleetEnvImages } from './fleetImages.js'
 
 class StepFailure extends Error {}
 

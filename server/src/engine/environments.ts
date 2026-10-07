@@ -34,7 +34,7 @@ import type { EnvRuntime } from '../services/envRuntime.js'
 import { redact } from '../utils/redact.js'
 import { getHost } from '../repos/hosts.js'
 import { EnvHostOfflineError, RunnerBroker, RunnerEnvRuntime } from '../runner/env.js'
-import { fleetEgressImage } from './agent.js'
+import { fleetEgressImage } from './fleetImages.js'
 
 export class EnvError extends Error {
   constructor(
