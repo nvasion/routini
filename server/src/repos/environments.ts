@@ -152,9 +152,11 @@ export async function deleteEnvironmentRow(q: Queryable, orgId: string, id: stri
   await q.query('DELETE FROM environments WHERE org_id = $1 AND id = $2', [orgId, id])
 }
 
-export async function countRunningEnvironments(q: Queryable, orgId: string, excludeId?: string): Promise<number> {
+/** Running environments on Routini's own compute; ones pinned to a fleet host (host_id) are the org's servers. */
+export async function countRunningHostedEnvironments(q: Queryable, orgId: string, excludeId?: string): Promise<number> {
   const [row] = await q.query<{ n: string | number }>(
-    `SELECT count(*) AS n FROM environments WHERE org_id = $1 AND status IN ('starting', 'running') AND ($2::uuid IS NULL OR id <> $2)`,
+    `SELECT count(*) AS n FROM environments
+     WHERE org_id = $1 AND host_id IS NULL AND status IN ('starting', 'running') AND ($2::uuid IS NULL OR id <> $2)`,
     [orgId, excludeId ?? null],
   )
   return Number(row?.n ?? 0)

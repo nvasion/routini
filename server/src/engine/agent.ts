@@ -60,6 +60,23 @@ export const SYSTEM_PROMPT = [
   'End with a short summary of what you changed and why.',
 ].join(' ')
 
+/** Hosts named in the network note; the allow-list itself has no such cap. */
+const NOTE_MAX_HOSTS = 40
+
+/**
+ * What a brokered agent is told about its network, so a refused host reads as
+ * a known limit to work around rather than a reason to give up on the task.
+ */
+export function networkNote(hosts: string[]): string {
+  const more = hosts.length > NOTE_MAX_HOSTS ? ` and ${hosts.length - NOTE_MAX_HOSTS} more` : ''
+  return [
+    `Network access is limited to the hosts this org allows: ${hosts.slice(0, NOTE_MAX_HOSTS).join(', ')}${more}.`,
+    `Routini's egress proxy refuses every other host with HTTP 403 "blocked by Routini egress policy"; tools may report it as a 403 from the proxy or a failed CONNECT/tunnel.`,
+    'A blocked host is an expected limit, not a failure of your task: do not retry it or try to get around the block. Carry on without it and finish as much of the task as you can.',
+    'In your final message, name each blocked host you needed and what for, so the org can add it under Settings → Policy → Egress allow-list.',
+  ].join(' ')
+}
+
 export type AgentDocker = Pick<DockerService, 'runStreaming' | 'killByLabels'>
 
 export interface AgentRunnerOptions {
@@ -139,9 +156,9 @@ function routiniEndpointEnv(cfg: AgentEndpointConfig, key: string): Record<strin
 const egressExpiry = (timeoutSec: number) => new Date(Date.now() + (timeoutSec + GRACE_SEC) * 1000).toISOString()
 
 /** Logs and emits what an egress proxy refused, wherever the agent ran. */
-async function reportBlockedEgress(ctx: StepContext, blocked: string[] | undefined): Promise<void> {
-  if (!blocked?.length) return
-  await ctx.log(`Blocked outbound connections (not on the org's allow-list): ${blocked.join(', ')}`)
+async function reportBlockedEgress(ctx: StepContext, blocked: string[]): Promise<void> {
+  if (!blocked.length) return
+  await ctx.log(`Blocked outbound connections (not on the org's egress allow-list, Settings → Policy): ${blocked.join(', ')}`)
   await ctx.emit('egress.blocked', { hosts: blocked })
 }
 
@@ -319,7 +336,7 @@ export function agentExecutor(opts: AgentRunnerOptions = {}): StepExecutor {
         const workBranch = `routini/run-${ctx.run.number}${ctx.run.jobSnapshot.steps.filter((s) => s.kind === 'agent').length > 1 ? `-${ctx.step.id}` : ''}`
         Object.assign(env, {
           ROUTINI_PROMPT: cfg.prompt,
-          ROUTINI_SYSTEM_PROMPT: SYSTEM_PROMPT,
+          ROUTINI_SYSTEM_PROMPT: brokered ? `${SYSTEM_PROMPT} ${networkNote(access.hosts)}` : SYSTEM_PROMPT,
           ROUTINI_OUTPUT: output,
           ROUTINI_COMMIT_MESSAGE: `${ctx.run.jobSnapshot.name} (Routini run #${ctx.run.number})`,
           ...(repo ? { REPO_URL: repo.url, BASE_BRANCH: repo.baseBranch, WORK_BRANCH: workBranch } : {}),
@@ -358,11 +375,13 @@ export function agentExecutor(opts: AgentRunnerOptions = {}): StepExecutor {
           Object.assign(env, await broker.containerEnv(token))
           await ctx.log(`Network: sandboxed; ${access.bindings.length} credential${access.bindings.length === 1 ? '' : 's'} brokered, ${access.hosts.length} hosts allowed`)
         }
+        /** Hosts the egress proxy refused, from this server's broker or the fleet host's. */
+        const blocked: string[] = []
         const closeSession = async () => {
           if (!broker || !session) return
           const stats = await broker.close(session.token)
           session = null
-          await reportBlockedEgress(ctx, stats?.blocked)
+          blocked.push(...(stats?.blocked ?? []))
         }
 
         const labels = { 'routini.managed': 'true', 'routini.org': orgId, 'routini.run': ctx.run.id, 'routini.step': String(ctx.idx) }
@@ -439,7 +458,8 @@ export function agentExecutor(opts: AgentRunnerOptions = {}): StepExecutor {
         } finally {
           await emitting
           await closeSession()
-          await reportBlockedEgress(ctx, fleetEgress?.blocked)
+          blocked.push(...(fleetEgress?.blocked ?? []))
+          await reportBlockedEgress(ctx, blocked)
           await revokeRoutiniToken()
         }
         const facts = parser.facts
@@ -451,13 +471,16 @@ export function agentExecutor(opts: AgentRunnerOptions = {}): StepExecutor {
         const base = { costUsd: facts.costUsd, model: facts.model ?? null, turns: facts.turns ?? null, summary: facts.resultText ?? null }
         if (result.error) throw new StepFailure(result.error)
         if (result.aborted) throw new StepFailure('Agent stopped (canceled)')
-        if (result.timedOut) throw new StepFailure(`Agent timed out after ${timeoutSec}s`)
+        // A refused host is not itself a failure (the agent is told and carries on), but when
+        // the step fails anyway it is the likeliest cause, so the error names it.
+        const blockedHint = blocked.length ? ` (egress blocked: ${blocked.join(', ')}; allow them under Settings → Policy if the agent needs them)` : ''
+        if (result.timedOut) throw new StepFailure(`Agent timed out after ${timeoutSec}s${blockedHint}`)
         if (result.exitCode !== 0) {
-          if (facts.check && facts.check.exitCode !== 0) return { status: 'failed', error: `Check command failed (exit ${facts.check.exitCode})`, output: base }
+          if (facts.check && facts.check.exitCode !== 0) return { status: 'failed', error: `Check command failed (exit ${facts.check.exitCode})${blockedHint}`, output: base }
           const why = facts.errors[0] ?? facts.tail.at(-1) ?? 'no output'
-          return { status: 'failed', error: `Agent exited with code ${result.exitCode}: ${why}`, output: base }
+          return { status: 'failed', error: `Agent exited with code ${result.exitCode}: ${why}${blockedHint}`, output: base }
         }
-        if (facts.resultIsError) return { status: 'failed', error: `The agent reported an error: ${facts.resultText ?? 'unknown'}`, output: base }
+        if (facts.resultIsError) return { status: 'failed', error: `The agent reported an error: ${facts.resultText ?? 'unknown'}${blockedHint}`, output: base }
 
         if (facts.noChanges || !facts.pushed) return { status: 'succeeded', output: { ...base, changes: false } }
         const withBranch = { ...base, changes: true, branch: facts.pushed.branch, commit: facts.commit?.sha ?? null }
