@@ -317,6 +317,26 @@
   padding: 5px 12px;
 }
 
+.integration-strip {
+  list-style: none;
+  margin: 22px 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 14px 10px;
+}
+.integration-strip li {
+  width: 96px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--ink-2);
+  text-align: center;
+}
+
 .story {
   display: flex;
   align-items: flex-start;

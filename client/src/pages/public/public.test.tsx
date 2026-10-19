@@ -52,9 +52,25 @@ describe('landing page', () => {
     expect(within(main).getByText('Add a model key')).toBeTruthy()
     expect(within(main).getByRole('link', { name: /The full 5-minute guide/ }).getAttribute('href')).toBe('/docs/getting-started')
 
+    // What it does now covers agents on your own servers, and shows the integrations.
+    expect(within(main).getByRole('heading', { name: 'Agents on your own servers' })).toBeTruthy()
+    const marks = within(main).getByRole('list', { name: 'Integrations' })
+    expect(within(marks).getByText('Azure DevOps')).toBeTruthy()
+    expect(marks.querySelector('[data-integration="teams"]')).toBeTruthy()
+
     // Where it's at, and the first questions.
     expect(within(main).getByRole('heading', { name: 'Shipped' })).toBeTruthy()
+    expect(within(main).getByText(/Hosted alpha at routini\.tynhub\.com/)).toBeTruthy()
     expect(within(main).getByText('Do I have to open my servers to the internet?')).toBeTruthy()
+    expect(within(main).getByText('Can agents run on my own servers?')).toBeTruthy()
+  })
+
+  it('installs a server with agents enabled', async () => {
+    mockFetch(signedOut())
+    renderAt('/')
+    const main = await screen.findByRole('main')
+    fireEvent.click(await within(main).findByRole('tab', { name: 'Connect a server' }))
+    expect(within(main).getByLabelText('Connect a server').textContent).toContain('--enable-agents')
   })
 
   it('offers sign in instead of sign up when the server has signup closed', async () => {
@@ -83,6 +99,8 @@ describe('getting started', () => {
       'Add a model key',
       'Connect a server',
       'Create your first job',
+      'Connect your tools',
+      'Keep an environment',
       'Set your guardrails',
       'Turn alerts into runbooks',
       'Use Routini from Claude Code',
