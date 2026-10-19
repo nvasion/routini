@@ -16,7 +16,7 @@ import type { Db } from '../db/index.js'
 import type { SecretBox } from '../crypto/secrets.js'
 import {
   addEnvironmentEvent,
-  countRunningEnvironments,
+  countRunningHostedEnvironments,
   getEnvironment,
   listActiveEnvironmentsSystem,
   setEnvironmentState,
@@ -176,10 +176,18 @@ export function createEnvManager(deps: {
     if (deps.requireVerifiedEmail && !(await orgHasVerifiedOwner(db, env.orgId))) {
       throw new EnvError(403, 'Verify your email address (Settings → Account) before starting environments')
     }
+    // Plan limits cover Routini's compute only: an environment on one of the org's own
+    // fleet hosts neither needs a slot nor takes one.
+    if (env.hostId) return
     const org = await getOrgById(db, env.orgId)
     const limit = effectiveLimits(org?.plan ?? 'free', org?.limits).maxRunningEnvironments
-    const running = await db.org(env.orgId, (q) => countRunningEnvironments(q, env.orgId, env.id))
-    if (running >= limit) throw new EnvError(409, `This org can run ${limit} environment${limit === 1 ? '' : 's'} at a time; stop one first`)
+    const running = await db.org(env.orgId, (q) => countRunningHostedEnvironments(q, env.orgId, env.id))
+    if (running >= limit) {
+      throw new EnvError(
+        409,
+        `This org can run ${limit} environment${limit === 1 ? '' : 's'} on Routini's compute at a time; stop one first. Environments on your own servers (Fleet) have no limit`,
+      )
+    }
   }
 
   async function bringUp(env: Environment, cloneRepo: boolean, userId: string | null): Promise<void> {

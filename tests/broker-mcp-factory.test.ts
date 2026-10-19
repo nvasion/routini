@@ -44,17 +44,18 @@ class FakeBroker {
 
 function fakeDocker() {
   const spawned: Array<{ env: Record<string, string>; network?: string }> = []
+  const state = { exitCode: 0 }
   const docker: AgentDocker = {
     async runStreaming(config, opts) {
       spawned.push(config as { env: Record<string, string>; network?: string })
       for (const l of TRANSCRIPT) opts.onLine(l, 'stdout')
-      return { containerId: 'c', exitCode: 0, logs: [], timedOut: false, aborted: false }
+      return { containerId: 'c', exitCode: state.exitCode, logs: [], timedOut: false, aborted: false }
     },
     async killByLabels() {
       return 0
     },
   }
-  return { docker, spawned }
+  return { docker, spawned, state }
 }
 
 let t: TestApp
@@ -109,8 +110,28 @@ describe('agent steps through the credential broker', () => {
     expect(s.allowedHosts).toEqual(expect.arrayContaining(['api.anthropic.com', 'registry.npmjs.org', 'gitlab.com', 'github.com']))
     expect(broker.closed).toEqual([s.token])
     const blocked = events.find((e) => e.type === 'log' && String(e.data['message']).startsWith('Blocked outbound'))
-    expect(blocked?.data['message']).toBe("Blocked outbound connections (not on the org's allow-list): evil.example")
+    expect(blocked?.data['message']).toBe("Blocked outbound connections (not on the org's egress allow-list, Settings → Policy): evil.example")
     expect(events.some((e) => e.type === 'egress.blocked')).toBe(true)
+  })
+
+  it('tells the agent which hosts it can reach and that a blocked host is not a reason to fail', async () => {
+    await u.put(`${base()}/policy`, { egress: { allowedHosts: ['pypi.org'] } })
+    const { detail } = await agentRun()
+    // The proxy refused evil.example (FakeBroker.stats) and the agent still finished, so the step succeeds.
+    expect(detail.run.status).toBe('succeeded')
+    const prompt = fake.spawned[0]!.env['ROUTINI_SYSTEM_PROMPT']!
+    expect(prompt).toMatch(/unattended/)
+    expect(prompt).toContain('Network access is limited to the hosts this org allows:')
+    for (const h of broker.sessions[0]!.allowedHosts) expect(prompt).toContain(h)
+    expect(prompt).toContain('blocked by Routini egress policy')
+    expect(prompt).toMatch(/do not retry it/)
+  })
+
+  it('names the blocked hosts when the agent fails anyway', async () => {
+    fake.state.exitCode = 1
+    const { detail } = await agentRun()
+    expect(detail.steps[0].status).toBe('failed')
+    expect(detail.steps[0].error).toMatch(/^Agent exited with code 1: .*\(egress blocked: evil\.example; allow them under Settings → Policy if the agent needs them\)$/)
   })
 
   it('narrows the allow-list to the org policy plus what the step needs', async () => {
