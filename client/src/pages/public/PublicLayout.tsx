@@ -30,6 +30,7 @@ export function PublicLayout({ children }: { children: ReactNode }) {
           </span>
         </Link>
         <nav className="public-links" aria-label="Site">
+          <NavLink to="/how-it-works">How it works</NavLink>
           <NavLink to="/docs/getting-started">Getting started</NavLink>
           <a href={REPO_URL} target="_blank" rel="noreferrer">
             GitHub
@@ -62,6 +63,7 @@ export function PublicLayout({ children }: { children: ReactNode }) {
             <span>Routini · part of the TynHub network</span>
           </span>
           <span className="public-footer-links">
+            <Link to="/how-it-works">How it works</Link>
             <Link to="/docs/getting-started">Getting started</Link>
             <a href={REPO_URL} target="_blank" rel="noreferrer">
               Source (AGPL-3.0)
