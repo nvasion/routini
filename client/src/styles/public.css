@@ -1,5 +1,5 @@
 /* ─────────────────────────────────────────────────────────────────────────────
-   Public pages: landing and getting started. They follow the selected theme,
+   Public pages: landing and how it works. They follow the selected theme,
    except the hero, which keeps the logo art on its own paper ground.
    ───────────────────────────────────────────────────────────────────────────── */
 
@@ -163,7 +163,7 @@
   transform: translateY(-1px);
 }
 
-/* Getting started */
+/* How it works (walkthrough and setup guide) */
 .doc {
   max-width: 1120px;
   margin: 0 auto;

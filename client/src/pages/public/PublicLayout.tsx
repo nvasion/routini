@@ -1,4 +1,4 @@
-// Frame for the public pages (landing, getting started): a top bar with the
+// Frame for the public pages (landing, how it works): a top bar with the
 // brand and the way in, and a footer. Follows the selected theme.
 
 import type { ReactNode } from 'react'
@@ -31,7 +31,6 @@ export function PublicLayout({ children }: { children: ReactNode }) {
         </Link>
         <nav className="public-links" aria-label="Site">
           <NavLink to="/how-it-works">How it works</NavLink>
-          <NavLink to="/docs/getting-started">Getting started</NavLink>
           <a href={REPO_URL} target="_blank" rel="noreferrer">
             GitHub
           </a>
@@ -64,7 +63,6 @@ export function PublicLayout({ children }: { children: ReactNode }) {
           </span>
           <span className="public-footer-links">
             <Link to="/how-it-works">How it works</Link>
-            <Link to="/docs/getting-started">Getting started</Link>
             <a href={REPO_URL} target="_blank" rel="noreferrer">
               Source (AGPL-3.0)
             </a>

@@ -1,4 +1,4 @@
-// Public pages: landing, getting started and sign up.
+// Public pages: landing, how it works (with the old getting-started URL) and sign up.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, screen, within } from '@testing-library/react'
@@ -50,7 +50,7 @@ describe('landing page', () => {
     expect(within(main).getByLabelText('Connect a server').textContent).toContain('install.sh')
     fireEvent.click(within(main).getByRole('tab', { name: 'Use it hosted' }))
     expect(within(main).getByText('Add a model key')).toBeTruthy()
-    expect(within(main).getByRole('link', { name: /The full 5-minute guide/ }).getAttribute('href')).toBe('/docs/getting-started')
+    expect(within(main).getByRole('link', { name: /The full 5-minute walkthrough/ }).getAttribute('href')).toBe('/how-it-works')
 
     // What it does now covers agents on your own servers, and shows the integrations.
     expect(within(main).getByRole('heading', { name: 'Agents on your own servers' })).toBeTruthy()
@@ -69,7 +69,8 @@ describe('landing page', () => {
     mockFetch(signedOut())
     renderAt('/')
     const main = await screen.findByRole('main')
-    expect(within(main).getByRole('link', { name: 'See how it works' }).getAttribute('href')).toBe('/how-it-works')
+    // Hero and closing call to action both lead to the walkthrough.
+    expect(within(main).getAllByRole('link', { name: 'See how it works' }).map((a) => a.getAttribute('href'))).toEqual(['/how-it-works', '/how-it-works'])
     const how = within(main).getByRole('heading', { name: 'How it works' }).closest('section') as HTMLElement
     expect(within(how).getAllByRole('heading', { level: 3 }).map((h) => h.textContent)).toEqual([
       'Connect your servers',
@@ -110,12 +111,15 @@ describe('landing page', () => {
 })
 
 describe('how it works', () => {
-  it('walks through every part with a screenshot and where to find it', async () => {
+  it('is the one walkthrough: setup in order, screenshots and the commands to copy', async () => {
     mockFetch(signedOut())
     renderAt('/how-it-works')
     expect(await screen.findByRole('heading', { level: 1, name: 'How Routini works' })).toBeTruthy()
     const toc = screen.getByRole('complementary', { name: 'On this page' })
-    expect(within(toc).getAllByRole('link').map((a) => a.textContent)).toEqual([
+    const links = within(toc).getAllByRole('link')
+    expect(links.map((a) => a.textContent)).toEqual([
+      'Create your account',
+      'Add a model key',
       'Connect your servers',
       'Describe the job',
       'Set the guardrails',
@@ -123,37 +127,34 @@ describe('how it works', () => {
       'Watch it run',
       'Turn alerts into postmortems',
       'Connect your tools',
-    ])
-    const run = document.getElementById('run') as HTMLElement
-    expect(within(run).getByText('Runs → a run')).toBeTruthy()
-    expect(within(run).getAllByRole('img', { name: /Disk runbook/ })).toHaveLength(3)
-    // Every step has a real capture in every theme (none fall back to a placeholder).
-    expect(document.querySelectorAll('.shot-missing')).toHaveLength(0)
-    expect(document.querySelectorAll('img.shot-img')).toHaveLength(7 * 3)
-    expect((await screen.findAllByRole('link', { name: 'Create your account' }))[0]!.getAttribute('href')).toBe('/signup')
-  })
-})
-
-describe('getting started', () => {
-  it('walks through setup in order, with a contents list', async () => {
-    mockFetch(signedOut())
-    renderAt('/docs/getting-started')
-    expect(await screen.findByRole('heading', { level: 1, name: 'Getting started' })).toBeTruthy()
-    const toc = screen.getByRole('complementary', { name: 'On this page' })
-    expect(within(toc).getAllByRole('link').map((a) => a.textContent)).toEqual([
-      'Create your account',
-      'Add a model key',
-      'Connect a server',
-      'Create your first job',
-      'Connect your tools',
       'Keep an environment',
-      'Set your guardrails',
-      'Turn alerts into runbooks',
       'Use Routini from Claude Code',
       'Run it yourself',
     ])
+    // The old guide's anchors are all still here, so its links keep working.
+    const ids = links.map((a) => a.getAttribute('href'))
+    for (const old of ['#account', '#model', '#server', '#job', '#integrations', '#environments', '#guardrails', '#alerts', '#mcp', '#self-host']) expect(ids).toContain(old)
+
+    const run = document.getElementById('run') as HTMLElement
+    expect(within(run).getByText('Runs → a run')).toBeTruthy()
+    expect(within(run).getAllByRole('img', { name: /Disk runbook/ })).toHaveLength(3)
+    // Every screenshot step has a real capture in every theme (none fall back to a placeholder).
+    expect(document.querySelectorAll('.shot-missing')).toHaveLength(0)
+    expect(document.querySelectorAll('img.shot-img')).toHaveLength(7 * 3)
+
+    // The commands from the old guide.
+    expect(within(document.getElementById('server') as HTMLElement).getByText(/install\.sh/).textContent).toContain('--enable-agents')
     expect(screen.getByText(/claude mcp add --transport http routini/)).toBeTruthy()
     expect(screen.getByText(/make local/)).toBeTruthy()
+    const create = (await screen.findAllByRole('link', { name: 'Create your account' })).find((a) => a.getAttribute('href') === '/signup')
+    expect(create).toBeTruthy()
+  })
+
+  it('takes over the old getting-started URL', async () => {
+    mockFetch(signedOut())
+    renderAt('/docs/getting-started')
+    expect(await screen.findByRole('heading', { level: 1, name: 'How Routini works' })).toBeTruthy()
+    expect(within(screen.getByRole('navigation', { name: 'Site' })).queryByRole('link', { name: 'Getting started' })).toBeNull()
   })
 })
 
