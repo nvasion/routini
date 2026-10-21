@@ -65,6 +65,27 @@ describe('landing page', () => {
     expect(within(main).getByText('Can agents run on my own servers?')).toBeTruthy()
   })
 
+  it('shows how it works in screenshots of the console, one per theme', async () => {
+    mockFetch(signedOut())
+    renderAt('/')
+    const main = await screen.findByRole('main')
+    expect(within(main).getByRole('link', { name: 'See how it works' }).getAttribute('href')).toBe('/how-it-works')
+    const how = within(main).getByRole('heading', { name: 'How it works' }).closest('section') as HTMLElement
+    expect(within(how).getAllByRole('heading', { level: 3 }).map((h) => h.textContent)).toEqual([
+      'Connect your servers',
+      'Describe the job',
+      'Watch it run',
+      'Turn alerts into postmortems',
+    ])
+    // Each step's shot is framed with its console URL and has a capture for every theme.
+    const fleet = within(how).getAllByRole('img', { name: /^Fleet: four servers/ })
+    expect(fleet.map((img) => img.className)).toEqual(['shot-img shot-routini', 'shot-img shot-light', 'shot-img shot-dark'])
+    expect(fleet.every((img) => img.getAttribute('src') && img.getAttribute('loading') === 'lazy')).toBe(true)
+    expect(within(how).getByText('routini.tynhub.com/o/northwind/fleet')).toBeTruthy()
+    expect(within(how).getByRole('link', { name: /The full walkthrough/ }).getAttribute('href')).toBe('/how-it-works')
+    expect(within(screen.getByRole('navigation', { name: 'Site' })).getByRole('link', { name: 'How it works' }).getAttribute('href')).toBe('/how-it-works')
+  })
+
   it('installs a server with agents enabled', async () => {
     mockFetch(signedOut())
     renderAt('/')
@@ -85,6 +106,31 @@ describe('landing page', () => {
     mockFetch(baseRoutes({ 'GET /api/auth/providers': () => ({ oidc: null, signupOpen: true }) }))
     renderAt('/')
     expect(await screen.findByRole('heading', { name: 'Inbox' })).toBeTruthy()
+  })
+})
+
+describe('how it works', () => {
+  it('walks through every part with a screenshot and where to find it', async () => {
+    mockFetch(signedOut())
+    renderAt('/how-it-works')
+    expect(await screen.findByRole('heading', { level: 1, name: 'How Routini works' })).toBeTruthy()
+    const toc = screen.getByRole('complementary', { name: 'On this page' })
+    expect(within(toc).getAllByRole('link').map((a) => a.textContent)).toEqual([
+      'Connect your servers',
+      'Describe the job',
+      'Set the guardrails',
+      'Approve what matters',
+      'Watch it run',
+      'Turn alerts into postmortems',
+      'Connect your tools',
+    ])
+    const run = document.getElementById('run') as HTMLElement
+    expect(within(run).getByText('Runs → a run')).toBeTruthy()
+    expect(within(run).getAllByRole('img', { name: /Disk runbook/ })).toHaveLength(3)
+    // Every step has a real capture in every theme (none fall back to a placeholder).
+    expect(document.querySelectorAll('.shot-missing')).toHaveLength(0)
+    expect(document.querySelectorAll('img.shot-img')).toHaveLength(7 * 3)
+    expect((await screen.findAllByRole('link', { name: 'Create your account' }))[0]!.getAttribute('href')).toBe('/signup')
   })
 })
 

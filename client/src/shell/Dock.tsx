@@ -217,7 +217,8 @@ export function ServersPanel() {
             <span>
               {selected.transport === 'runner' ? `runner · ${selected.runner?.hostname ?? selected.address}` : `${selected.username}@${selected.address}:${selected.port}`}
             </span>
-            <span>{selected.lastCheck?.kernel ?? '—'}</span>
+            {/* As on the Fleet page: the runner's OS name when it reports one, else the kernel. */}
+            <span>{(typeof selected.runner?.facts?.['osPretty'] === 'string' && selected.runner.facts['osPretty']) || selected.lastCheck?.kernel || '—'}</span>
             <span>{selected.lastCheck?.uptime ?? '—'}</span>
             <span>{selected.tags.join(' · ') || 'no tags'}</span>
           </div>

@@ -236,9 +236,103 @@
 .doc-next {
   margin-top: 32px;
 }
+.doc-where {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: -4px;
+}
+.walk-step .shot {
+  margin-top: 16px;
+}
+
+/* How it works: framed screenshots of the console */
+.preview-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 480px), 1fr));
+  gap: 16px;
+}
+.preview-step {
+  display: flex;
+  flex-direction: column;
+  padding: 12px;
+  gap: 14px;
+}
+.preview-body {
+  display: flex;
+  gap: 12px;
+  align-items: baseline;
+  padding: 0 4px 4px;
+}
+.preview-body h3 {
+  margin: 0 0 4px;
+  font-size: 17px;
+}
+.preview-body p {
+  margin: 0;
+  color: var(--ink-2);
+  line-height: 1.55;
+}
+.shot {
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--sunken);
+}
+.shot-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 30px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+.shot-dots {
+  display: flex;
+  gap: 6px;
+}
+.shot-dots i {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--line);
+}
+.shot-url {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.shot-img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+/* One capture per theme; only the matching one is shown (and, lazy, fetched). */
+.shot-img:not(.shot-routini),
+[data-theme='tynhub-light'] .shot-routini,
+[data-theme='tynhub-dark'] .shot-routini {
+  display: none;
+}
+[data-theme='tynhub-light'] .shot-light,
+[data-theme='tynhub-dark'] .shot-dark {
+  display: block;
+}
+.shot-missing {
+  aspect-ratio: 16 / 10;
+}
 @media (max-width: 820px) {
   .doc {
     flex-direction: column;
+    /* Full width, not the width of the widest content (a 1440px screenshot). */
+    align-items: stretch;
     gap: 16px;
   }
   .doc-toc {

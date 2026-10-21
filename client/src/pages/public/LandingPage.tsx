@@ -1,6 +1,6 @@
-// The public front page, campaign style: a bold pitch, the story behind it
-// (with "Read more"), then how to install, what it does, where it's at, and
-// the questions people ask first.
+// The public front page, campaign style: a bold pitch, how it works in four
+// screenshots of the real console, the story behind it (with "Read more"), then
+// how to install, what it does, where it's at, and the questions people ask first.
 
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
@@ -8,111 +8,11 @@ import emblemLg from '../../brand/emblem-lg.webp'
 import wordmark from '../../brand/wordmark.webp'
 import character from '../../brand/character.webp'
 import { IntegrationIcon } from '../../components/IntegrationIcon'
+import { FAQ, FEATURES, INTEGRATIONS, NEXT, PREVIEW, SHIPPED, STEPS } from './content'
 import { PublicLayout, REPO_URL, RUNNER_REPO_URL, useSignupOpen } from './PublicLayout'
+import { Shot } from './Shot'
 
 const BADGES = ['Open source · AGPL-3.0', 'Hosted free during the alpha', 'No inbound ports', 'Bring your own model keys', 'Self-host in one command']
-
-const FEATURES: Array<{ title: string; body: string }> = [
-  {
-    title: 'Jobs and coding agents',
-    body: 'Schedules, webhooks and alerts start jobs. Steps call APIs, run commands, or hand a task to a coding agent (Claude Code or Omnimancer) that works in a sandbox, runs your checks and opens a pull request.',
-  },
-  {
-    title: 'Agents on your own servers',
-    body: 'Run agent steps and persistent environments on your own hosts instead of Routini’s: pick a server, the alert’s host, or a pool by group and tags. Keys stay in a broker on that host, and your own compute never counts against your plan.',
-  },
-  {
-    title: 'Your fleet, without the keys',
-    body: 'Connect servers with routini-runner, a small open-source agent that only dials out: no inbound ports, no SSH keys stored in Routini. Live health, audited terminals, commands from jobs, and runner updates from the console.',
-  },
-  {
-    title: 'Alerts to runbooks to postmortems',
-    body: 'Alertmanager, Grafana or any webhook opens an incident and runs the matching runbook on the affected server. When it resolves, Routini drafts the postmortem from what actually happened.',
-  },
-  {
-    title: 'Plugged into your tools',
-    body: 'GitHub, GitLab, Azure DevOps, Jira, Linear, Slack, Teams, Sentry, PagerDuty, Datadog, Cloudflare, DigitalOcean and Factory. Query an Azure Boards backlog or post to a Teams channel as a step, and choose which agents may use each one.',
-  },
-  {
-    title: 'Guardrails by default',
-    body: 'Org policy decides what needs a person to approve it. Agents work behind a credential broker that keeps real keys out of their sandbox and refuses hosts off your allow-list, and the run says which ones it refused. Nothing approves itself.',
-  },
-  {
-    title: 'From Claude Code',
-    body: 'Connect Claude Code or any MCP client with an API token. Ask what failed overnight, start a job, run a command on a server, all under the same policy.',
-  },
-  {
-    title: 'Open source, run it anywhere',
-    body: 'AGPL-3.0, with the runner under Apache-2.0. Use the hosted version on TynHub, or run the whole thing on your own machine with Docker Compose.',
-  },
-]
-
-// Shown as marks under "What it does"; ids match the console's integration catalog.
-const INTEGRATIONS: Array<[id: string, name: string]> = [
-  ['github', 'GitHub'],
-  ['gitlab', 'GitLab'],
-  ['azure-devops', 'Azure DevOps'],
-  ['jira', 'Jira'],
-  ['linear', 'Linear'],
-  ['slack', 'Slack'],
-  ['teams', 'Microsoft Teams'],
-  ['sentry', 'Sentry'],
-  ['pagerduty', 'PagerDuty'],
-  ['datadog', 'Datadog'],
-  ['cloudflare', 'Cloudflare'],
-  ['digitalocean', 'DigitalOcean'],
-  ['factory', 'Factory'],
-]
-
-const SHIPPED = [
-  'Hosted alpha at routini.tynhub.com, free while in alpha',
-  'Jobs, runs and approvals on Postgres, with a live timeline that shows where each step ran',
-  'Coding agents in sandboxes that open pull requests: Claude Code and Omnimancer',
-  'Model keys for Anthropic, OpenRouter, AWS Bedrock, OpenAI, Google, Azure and DigitalOcean',
-  'routini-runner: the fleet without inbound ports, updated from the console',
-  'Agents and environments on your own servers, with host pools',
-  'Persistent environments with browser terminals',
-  'Org policy, approvals and the credential broker',
-  'Alerts → incidents → runbooks → postmortems',
-  '13 integrations, with Azure Boards and Teams steps',
-  'Routini as an MCP server for Claude Code',
-  'Email verification, password reset and account deletion',
-]
-const NEXT = [
-  'Start a job when a board work item changes',
-  'Run notifications to Slack and Teams',
-  'Import DigitalOcean droplets into the fleet',
-  'Sign in with TynHub across the network',
-  'ttyy.ai integration',
-  'Paid plans with more managed compute',
-]
-
-const FAQ: Array<{ q: string; a: string }> = [
-  {
-    q: 'What does it cost?',
-    a: 'Running it yourself is free: it is open source. Hosted Routini is free during the alpha, with limits on Routini’s own compute (2 runs at a time, 1 running environment, 120 agent minutes a day). Agents and environments on your own servers are not counted. You bring your own model keys, so model spend goes to your own provider account.',
-  },
-  {
-    q: 'Do I have to open my servers to the internet?',
-    a: 'No. routini-runner only dials out to Routini over HTTPS, so there are no inbound ports, and Routini never stores SSH keys for runner servers. SSH hosts are supported too, if you prefer them.',
-  },
-  {
-    q: 'Can agents run on my own servers?',
-    a: 'Yes. Install the runner with --enable-agents on a host with Docker, then choose that host, the alert’s host, or a pool in the step’s “Run on”. The runner starts a local credential broker next to the agent, so keys never enter its container and your allow-list still applies.',
-  },
-  {
-    q: 'Can an agent change production on its own?',
-    a: 'Only if your policy allows it. Rules can require a person to approve commands on servers tagged prod, branch pushes and more. Agents and MCP clients cannot approve anything, including their own work.',
-  },
-  {
-    q: 'Which models and agents?',
-    a: 'Claude Code and Omnimancer run agent steps, with your own key. Claude Code works with Anthropic, OpenRouter and AWS Bedrock; Omnimancer adds OpenAI, Google, Azure and DigitalOcean.',
-  },
-  {
-    q: 'Where does my data live?',
-    a: 'In your Postgres when you self-host. On the hosted version, each org’s rows are kept apart by row-level security. Secrets are encrypted at rest, scoped to their org, and never shown again after you save them.',
-  },
-]
 
 function CopyBlock({ code, label }: { code: string; label: string }) {
   const [copied, setCopied] = useState(false)
@@ -170,15 +70,38 @@ export function LandingPage() {
         <p className="hero-lead">Hand Routini the routine: jobs, fleet commands, coding agents and incident runbooks. It does the work and asks before anything that matters.</p>
         <div className="hero-cta">
           {primary}
-          <a className="btn hero-btn" href="#story" onClick={() => setMore(true)}>
-            Read more ↓
-          </a>
+          <Link className="btn hero-btn" to="/how-it-works">
+            See how it works
+          </Link>
         </div>
         <ul className="badges" aria-label="Highlights">
           {BADGES.map((b) => (
             <li key={b}>{b}</li>
           ))}
         </ul>
+      </section>
+
+      <section className="public-section" aria-labelledby="how">
+        <h2 id="how" className="public-h2">
+          How it works
+        </h2>
+        <ol className="preview-steps">
+          {STEPS.filter((s) => PREVIEW.includes(s.id)).map((s, i) => (
+            <li key={s.id} className="card preview-step">
+              <Shot name={s.shot.name} alt={s.shot.alt} path={s.shot.path} />
+              <div className="preview-body">
+                <span className="step-n">{i + 1}</span>
+                <div>
+                  <h3>{s.title}</h3>
+                  <p>{s.body}</p>
+                </div>
+              </div>
+            </li>
+          ))}
+        </ol>
+        <Link className="install-more" to="/how-it-works">
+          The full walkthrough, screen by screen →
+        </Link>
       </section>
 
       <section id="story" className="public-section story" aria-labelledby="story-h">
