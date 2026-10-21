@@ -4,7 +4,7 @@
 
 <p align="center">
   <a href="https://routini.tynhub.com"><b>routini.tynhub.com</b></a> ·
-  <a href="https://routini.tynhub.com/docs/getting-started">Getting started</a> ·
+  <a href="https://routini.tynhub.com/how-it-works">How it works</a> ·
   <a href="https://github.com/nvasion/routini-runner">routini-runner</a> ·
   <a href="brand/README.md">Brand</a>
 </p>

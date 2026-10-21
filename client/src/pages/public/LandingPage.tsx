@@ -88,7 +88,7 @@ export function LandingPage() {
         <ol className="preview-steps">
           {STEPS.filter((s) => PREVIEW.includes(s.id)).map((s, i) => (
             <li key={s.id} className="card preview-step">
-              <Shot name={s.shot.name} alt={s.shot.alt} path={s.shot.path} />
+              {s.shot && <Shot name={s.shot.name} alt={s.shot.alt} path={s.shot.path} />}
               <div className="preview-body">
                 <span className="step-n">{i + 1}</span>
                 <div>
@@ -219,8 +219,8 @@ export function LandingPage() {
             </>
           )}
         </div>
-        <Link className="install-more" to="/docs/getting-started">
-          The full 5-minute guide: first job, guardrails, alerts, Claude Code →
+        <Link className="install-more" to="/how-it-works">
+          The full 5-minute walkthrough: first job, guardrails, alerts, Claude Code →
         </Link>
       </section>
 
@@ -298,8 +298,8 @@ export function LandingPage() {
         <h2 className="public-h2">Give the routine to Routini.</h2>
         <div className="hero-cta">
           {primary}
-          <Link className="btn hero-btn" to="/docs/getting-started">
-            Read the guide
+          <Link className="btn hero-btn" to="/how-it-works">
+            See how it works
           </Link>
         </div>
       </section>
