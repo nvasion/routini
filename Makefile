@@ -1,4 +1,4 @@
-.PHONY: install dev dev-server dev-client build start worker test test-server test-client test-pg test-docker agents up down local local-down clean
+.PHONY: install dev dev-server dev-client build start worker test test-server test-client test-pg test-docker agents up down local local-down shots clean
 
 # Install all dependencies
 install:
@@ -51,6 +51,10 @@ local:
 	bash scripts/local.sh
 local-down:
 	bash scripts/local.sh down
+
+# Screenshots of the real console for the public pages (client/src/assets/shots)
+shots:
+	bash scripts/shots.sh
 
 clean:
 	rm -rf server/dist client/dist node_modules server/node_modules client/node_modules

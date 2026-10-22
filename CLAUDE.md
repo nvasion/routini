@@ -20,6 +20,7 @@ make test           # server + client tests — run before every commit
 make test-pg        # opt-in: ROUTINI_TEST_PG_URL=postgres://… (non-superuser owner)
 make test-docker    # opt-in: real agent containers (needs Docker)
 make agents         # build agent images
+make shots          # re-capture the public pages' console screenshots (needs Docker, ../routini-runner, Playwright)
 cd server && npx tsc --noEmit -p .   # typecheck server
 cd client && npx tsc --noEmit -p .   # typecheck client
 ```

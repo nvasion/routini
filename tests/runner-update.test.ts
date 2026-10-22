@@ -191,3 +191,26 @@ describe('runner releases', () => {
     expect(await rel.latest()).toBe('v0.3.1')
   })
 })
+
+describe('capabilities that change mid-connection (runner >= 0.4.1)', () => {
+  it('records agents and environments when Docker comes up after hello', async () => {
+    const { r, hostId } = await enrolledRunner({ capabilities: ['exec', 'pty'] })
+    const caps = async () => (await u.get(`${base}/hosts`)).body.hosts.find((h: { id: string }) => h.id === hostId).runner.capabilities as string[]
+    expect(await caps()).toEqual(['exec', 'pty'])
+
+    // Unknown capabilities are dropped, as in hello.
+    r.send({ type: 'capabilities', capabilities: ['exec', 'pty', 'agents', 'environments', 'teleport'] })
+    await waitForEvent(hostId, 'runner.capabilities')
+    expect(await caps()).toEqual(['exec', 'pty', 'agents', 'environments'])
+    const ev = (await events(hostId)).find((e) => e.type === 'runner.capabilities')!
+    expect(ev.data).toEqual({ capabilities: ['exec', 'pty', 'agents', 'environments'] })
+
+    // The live connection uses the new list: an agent task is no longer refused for a missing capability.
+    expect((await t.ctx.db.org(u.orgId, (q) => q.query<{ capabilities: string[] }>('SELECT capabilities FROM runners WHERE host_id = $1', [hostId])))[0]!.capabilities).toContain('agents')
+
+    // The same list again records nothing new.
+    r.send({ type: 'capabilities', capabilities: ['exec', 'pty', 'agents', 'environments'] })
+    await new Promise((res) => setTimeout(res, 150))
+    expect((await events(hostId)).filter((e) => e.type === 'runner.capabilities')).toHaveLength(1)
+  })
+})

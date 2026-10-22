@@ -63,7 +63,8 @@ export async function runAzureBoardsAction(
   const limit = cfg.limit ?? 50
   const query = cfg.query?.trim() || DEFAULT_WIQL
 
-  const call = async <T>(what: 'query' | 'work item fetch', path: string, body: unknown): Promise<T | StepResult> => {
+  /** A successful call yields `{ data }`; anything else is the step's failure result. */
+  const call = async <T>(what: 'query' | 'work item fetch', path: string, body: unknown): Promise<{ data: T } | StepResult> => {
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), 30_000)
     const onAbort = () => controller.abort()
@@ -84,12 +85,13 @@ export async function runAzureBoardsAction(
       } catch {
         parseFailed = true
       }
-      if (res.ok && parseFailed) return fail('Azure DevOps did not accept the token (sign-in page returned)')
+      // An empty or non-object 2xx body is not an ADO API answer either.
+      if (res.ok && (parseFailed || !data || typeof data !== 'object')) return fail('Azure DevOps did not accept the token (sign-in page returned)')
       if (!res.ok) {
         const msg = data && typeof data === 'object' && typeof (data as { message?: unknown }).message === 'string' ? `: ${(data as { message: string }).message.slice(0, 300)}` : ''
         return fail(`Azure DevOps ${what} failed (HTTP ${res.status})${msg}`)
       }
-      return data as T
+      return { data: data as T }
     } catch (err) {
       if (ctx.signal.aborted) throw err
       if (err instanceof Error && err.name === 'AbortError') return fail('Azure DevOps did not answer within 30s')
@@ -102,9 +104,9 @@ export async function runAzureBoardsAction(
 
   const wiqlUrl = `${adoBaseUrl(org)}/${encodeURIComponent(cfg.project)}/_apis/wit/wiql?api-version=${ADO_API_VERSION}&$top=${limit}`
   const wiqlResult = await call<WiqlResponse>('query', wiqlUrl, { query })
-  if (isStepResult(wiqlResult)) return wiqlResult
+  if (!('data' in wiqlResult)) return wiqlResult
 
-  const ids = (wiqlResult.workItems ?? []).map((w) => w.id).slice(0, limit)
+  const ids = (wiqlResult.data.workItems ?? []).map((w) => w.id).slice(0, limit)
 
   const itemsById = new Map<number, { fields?: Record<string, unknown> }>()
   if (ids.length) {
@@ -113,8 +115,8 @@ export async function runAzureBoardsAction(
       ids,
       fields: ['System.Id', 'System.Title', 'System.State', 'System.WorkItemType', 'System.AssignedTo', 'System.Tags'],
     })
-    if (isStepResult(batchResult)) return batchResult
-    for (const w of batchResult.value ?? []) itemsById.set(w.id, w)
+    if (!('data' in batchResult)) return batchResult
+    for (const w of batchResult.data.value ?? []) itemsById.set(w.id, w)
   }
 
   const items: BoardsWorkItem[] = []
@@ -144,8 +146,4 @@ export async function runAzureBoardsAction(
 
   await ctx.log(`Azure Boards: ${items.length} work item(s) from ${cfg.project}`)
   return { status: 'succeeded', output: { count: items.length, items, summary } }
-}
-
-function isStepResult(v: unknown): v is StepResult {
-  return !!v && typeof v === 'object' && 'status' in v
 }

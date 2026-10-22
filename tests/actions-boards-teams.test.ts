@@ -87,6 +87,12 @@ describe('azure-boards and teams actions', () => {
       expect(res.body.error).toMatch(/config\.project is not a valid Azure DevOps project name/)
     })
 
+    it('rejects control characters in a project name', async () => {
+      const res = await createJob([boardsStep({ project: 'Fab\nrikam' })])
+      expect(res.status).toBe(400)
+      expect(res.body.error).toMatch(/config\.project is not a valid Azure DevOps project name/)
+    })
+
     it('rejects limit 0', async () => {
       const res = await createJob([boardsStep({ limit: 0 })])
       expect(res.status).toBe(400)
@@ -160,6 +166,14 @@ describe('azure-boards and teams actions', () => {
       await connectAzureDevops()
       wiql = { status: 203, body: '<html>sign in</html>' }
       const { detail } = await createAndRun([boardsStep()])
+      expect(detail.steps[0].error).toMatch(/did not accept the token \(sign-in page returned\)/)
+    })
+
+    it('treats a 2xx body that is not a JSON object as an invalid token, not a crash', async () => {
+      await connectAzureDevops()
+      wiql = { status: 200, body: null }
+      const { detail } = await createAndRun([boardsStep()])
+      expect(detail.steps[0].status).toBe('failed')
       expect(detail.steps[0].error).toMatch(/did not accept the token \(sign-in page returned\)/)
     })
 

@@ -3,7 +3,8 @@
 //
 // Proxy port (default 3128), used by containers via HTTPS_PROXY:
 //   – Proxy-Authorization carries the session token (routini:<token>).
-//   – CONNECT to a host not on the session's allow-list → 403, recorded.
+//   – CONNECT to a host not on the session's allow-list → 403 whose body tells
+//     the agent it is policy, not an outage (X-Routini-Egress: blocked), recorded.
 //   – CONNECT to an allowed host *without* a credential binding → plain TCP
 //     tunnel; the container talks TLS to the real server.
 //   – CONNECT to a host *with* a binding → intercepted: TLS terminated with a
@@ -45,6 +46,13 @@ interface Live {
 
 const HOP_BY_HOP = ['proxy-authorization', 'proxy-connection', 'connection', 'keep-alive', 'transfer-encoding', 'te', 'trailer', 'upgrade']
 const MAX_BLOCKED = 50
+/** Marks a refusal as policy (not an outage), for clients and agents that read headers. */
+const BLOCKED_HEADER = 'X-Routini-Egress: blocked'
+
+/** The refusal body: written for the agent reading it, so it says what to do next. */
+const blockedBody = (host: string) =>
+  `${host || 'this host'} is blocked by Routini egress policy: it is not on this org's allow-list. ` +
+  `This is expected, not an outage: do not retry; carry on without it (an org admin can allow it under Settings → Policy).\n`
 
 /**
  * Answers a CONNECT with a complete (length-delimited) response and closes.
@@ -168,7 +176,7 @@ export class EgressProxy {
     const port = Number(rawPort) || 443
     if (!host || !hostAllowed(live.session.allowedHosts, host)) {
       this.block(live, host)
-      refuseConnect(socket, '403 Forbidden', `${host || 'this host'} is blocked by Routini egress policy (add it to the org's allowed hosts)\n`)
+      refuseConnect(socket, '403 Forbidden', blockedBody(host), [BLOCKED_HEADER])
       return
     }
     live.stats.requests++
@@ -260,7 +268,7 @@ export class EgressProxy {
     const host = url.hostname.toLowerCase()
     if (!hostAllowed(live.session.allowedHosts, host)) {
       this.block(live, host)
-      res.writeHead(403, { 'content-type': 'text/plain' }).end('blocked by Routini egress policy\n')
+      res.writeHead(403, { 'content-type': 'text/plain', 'x-routini-egress': 'blocked' }).end(blockedBody(host))
       return
     }
     live.stats.requests++

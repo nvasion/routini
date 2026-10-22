@@ -33,7 +33,10 @@ const PATH_RE = /^\/api\/orgs\/([a-z0-9-]{1,40})\/environments\/([0-9a-f-]{36})\
 const TOUCH_EVERY_MS = 60_000
 
 function reject(socket: Duplex, status: number, message: string): void {
-  socket.write(`HTTP/1.1 ${status} ${message}\r\nConnection: close\r\nContent-Type: text/plain\r\n\r\n${message}`)
+  // The message can come from a runner (env.tty.error): keep it to one
+  // printable line so it cannot add headers to this raw HTTP response.
+  const text = message.replace(/[\x00-\x1f\x7f]+/g, ' ').trim().slice(0, 300) || 'Error'
+  socket.write(`HTTP/1.1 ${status} ${text}\r\nConnection: close\r\nContent-Type: text/plain\r\n\r\n${text}`)
   socket.destroy()
 }
 
@@ -91,7 +94,9 @@ export function attachTerminal(server: Server, ctx: AppContext, auth: Auth): Web
       let shell: Shell
       if (env.hostId) {
         const host = await ctx.db.org(org.id, (q) => getHost(q, org.id, env!.hostId!))
-        if (!host?.runner || host.runner.revoked) return reject(socket, 409, "The environment's host has no active runner")
+        if (!host?.runner || host.runner.revoked) {
+          return reject(socket, 409, host ? `The environment's host "${host.name}" has no active runner` : "The environment's host has no active runner")
+        }
         try {
           shell = await ctx.runners.openEnvTty(host.runner.id, env.containerId!, cols, rows)
         } catch (err) {

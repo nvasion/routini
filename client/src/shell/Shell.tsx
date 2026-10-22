@@ -5,7 +5,7 @@ import { Link, NavLink, Outlet, useNavigate, useParams } from 'react-router-dom'
 import { Icon, type IconName } from '../components/ui'
 import { Lockup } from '../components/Brand'
 import { rememberOrg, useAuth } from '../lib/auth'
-import { initials } from '../lib/format'
+import { initials, planLabel } from '../lib/format'
 import { useApi, useEventStream } from '../lib/hooks'
 import { THEMES, useTheme } from '../lib/theme'
 import type { Host, Inbox, Job } from '../lib/types'
@@ -253,9 +253,14 @@ function LeftNav() {
       {limits && (
         <div className="nav-foot">
           <span>
-            {org.org?.plan} plan · {limits.maxConcurrentRuns} concurrent
+            {planLabel(org.org?.plan)} · {limits.maxConcurrentRuns} runs at a time
           </span>
-          <span>{limits.agentMinutesPerDay === null ? 'agent minutes: unlimited' : `agent minutes: ${limits.agentMinutesPerDay}/day`}</span>
+          {/* Plan limits cover Routini's own compute; agents and environments on the org's fleet hosts are not counted. */}
+          <span>
+            Routini compute: {limits.maxRunningEnvironments} env{limits.maxRunningEnvironments === 1 ? '' : 's'} ·{' '}
+            {limits.agentMinutesPerDay === null ? 'agent minutes unlimited' : `${limits.agentMinutesPerDay} agent min/day`}
+          </span>
+          {org.org?.plan !== 'selfhost' && <span>Your servers: no limits</span>}
           <span>{limits.dailyBudgetUsd === null ? 'model budget: your keys, no cap' : `model budget: $${limits.dailyBudgetUsd}/day`}</span>
         </div>
       )}

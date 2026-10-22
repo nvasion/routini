@@ -1,4 +1,4 @@
-// Public pages: landing, getting started and sign up.
+// Public pages: landing, how it works (with the old getting-started URL) and sign up.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, screen, within } from '@testing-library/react'
@@ -50,11 +50,49 @@ describe('landing page', () => {
     expect(within(main).getByLabelText('Connect a server').textContent).toContain('install.sh')
     fireEvent.click(within(main).getByRole('tab', { name: 'Use it hosted' }))
     expect(within(main).getByText('Add a model key')).toBeTruthy()
-    expect(within(main).getByRole('link', { name: /The full 5-minute guide/ }).getAttribute('href')).toBe('/docs/getting-started')
+    expect(within(main).getByRole('link', { name: /The full 5-minute walkthrough/ }).getAttribute('href')).toBe('/how-it-works')
+
+    // What it does now covers agents on your own servers, and shows the integrations.
+    expect(within(main).getByRole('heading', { name: 'Agents on your own servers' })).toBeTruthy()
+    const marks = within(main).getByRole('list', { name: 'Integrations' })
+    expect(within(marks).getByText('Azure DevOps')).toBeTruthy()
+    expect(marks.querySelector('[data-integration="teams"]')).toBeTruthy()
 
     // Where it's at, and the first questions.
     expect(within(main).getByRole('heading', { name: 'Shipped' })).toBeTruthy()
+    expect(within(main).getByText(/Hosted alpha at routini\.tynhub\.com/)).toBeTruthy()
     expect(within(main).getByText('Do I have to open my servers to the internet?')).toBeTruthy()
+    expect(within(main).getByText('Can agents run on my own servers?')).toBeTruthy()
+  })
+
+  it('shows how it works in screenshots of the console, one per theme', async () => {
+    mockFetch(signedOut())
+    renderAt('/')
+    const main = await screen.findByRole('main')
+    // Hero and closing call to action both lead to the walkthrough.
+    expect(within(main).getAllByRole('link', { name: 'See how it works' }).map((a) => a.getAttribute('href'))).toEqual(['/how-it-works', '/how-it-works'])
+    const how = within(main).getByRole('heading', { name: 'How it works' }).closest('section') as HTMLElement
+    expect(within(how).getAllByRole('heading', { level: 3 }).map((h) => h.textContent)).toEqual([
+      'Connect your servers',
+      'Describe the job',
+      'Watch it run',
+      'Turn alerts into postmortems',
+    ])
+    // Each step's shot is framed with its console URL and has a capture for every theme.
+    const fleet = within(how).getAllByRole('img', { name: /^Fleet: four servers/ })
+    expect(fleet.map((img) => img.className)).toEqual(['shot-img shot-routini', 'shot-img shot-light', 'shot-img shot-dark'])
+    expect(fleet.every((img) => img.getAttribute('src') && img.getAttribute('loading') === 'lazy')).toBe(true)
+    expect(within(how).getByText('routini.tynhub.com/o/northwind/fleet')).toBeTruthy()
+    expect(within(how).getByRole('link', { name: /The full walkthrough/ }).getAttribute('href')).toBe('/how-it-works')
+    expect(within(screen.getByRole('navigation', { name: 'Site' })).getByRole('link', { name: 'How it works' }).getAttribute('href')).toBe('/how-it-works')
+  })
+
+  it('installs a server with agents enabled', async () => {
+    mockFetch(signedOut())
+    renderAt('/')
+    const main = await screen.findByRole('main')
+    fireEvent.click(await within(main).findByRole('tab', { name: 'Connect a server' }))
+    expect(within(main).getByLabelText('Connect a server').textContent).toContain('--enable-agents')
   })
 
   it('offers sign in instead of sign up when the server has signup closed', async () => {
@@ -72,24 +110,51 @@ describe('landing page', () => {
   })
 })
 
-describe('getting started', () => {
-  it('walks through setup in order, with a contents list', async () => {
+describe('how it works', () => {
+  it('is the one walkthrough: setup in order, screenshots and the commands to copy', async () => {
     mockFetch(signedOut())
-    renderAt('/docs/getting-started')
-    expect(await screen.findByRole('heading', { level: 1, name: 'Getting started' })).toBeTruthy()
+    renderAt('/how-it-works')
+    expect(await screen.findByRole('heading', { level: 1, name: 'How Routini works' })).toBeTruthy()
     const toc = screen.getByRole('complementary', { name: 'On this page' })
-    expect(within(toc).getAllByRole('link').map((a) => a.textContent)).toEqual([
+    const links = within(toc).getAllByRole('link')
+    expect(links.map((a) => a.textContent)).toEqual([
       'Create your account',
       'Add a model key',
-      'Connect a server',
-      'Create your first job',
-      'Set your guardrails',
-      'Turn alerts into runbooks',
+      'Connect your servers',
+      'Describe the job',
+      'Set the guardrails',
+      'Approve what matters',
+      'Watch it run',
+      'Turn alerts into postmortems',
+      'Connect your tools',
+      'Keep an environment',
       'Use Routini from Claude Code',
       'Run it yourself',
     ])
+    // The old guide's anchors are all still here, so its links keep working.
+    const ids = links.map((a) => a.getAttribute('href'))
+    for (const old of ['#account', '#model', '#server', '#job', '#integrations', '#environments', '#guardrails', '#alerts', '#mcp', '#self-host']) expect(ids).toContain(old)
+
+    const run = document.getElementById('run') as HTMLElement
+    expect(within(run).getByText('Runs → a run')).toBeTruthy()
+    expect(within(run).getAllByRole('img', { name: /Disk runbook/ })).toHaveLength(3)
+    // Every screenshot step has a real capture in every theme (none fall back to a placeholder).
+    expect(document.querySelectorAll('.shot-missing')).toHaveLength(0)
+    expect(document.querySelectorAll('img.shot-img')).toHaveLength(7 * 3)
+
+    // The commands from the old guide.
+    expect(within(document.getElementById('server') as HTMLElement).getByText(/install\.sh/).textContent).toContain('--enable-agents')
     expect(screen.getByText(/claude mcp add --transport http routini/)).toBeTruthy()
     expect(screen.getByText(/make local/)).toBeTruthy()
+    const create = (await screen.findAllByRole('link', { name: 'Create your account' })).find((a) => a.getAttribute('href') === '/signup')
+    expect(create).toBeTruthy()
+  })
+
+  it('takes over the old getting-started URL', async () => {
+    mockFetch(signedOut())
+    renderAt('/docs/getting-started')
+    expect(await screen.findByRole('heading', { level: 1, name: 'How Routini works' })).toBeTruthy()
+    expect(within(screen.getByRole('navigation', { name: 'Site' })).queryByRole('link', { name: 'Getting started' })).toBeNull()
   })
 })
 

@@ -162,6 +162,9 @@ describe('proxying', () => {
     expect(blocked.status).toBe(403)
     expect(Number(blocked.headers['content-length'])).toBe(Buffer.byteLength(blocked.body))
     expect(blocked.body).toContain('evil.example is blocked by Routini egress policy')
+    // Written for the agent that reads it: policy, not an outage, so carry on.
+    expect(blocked.body).toMatch(/do not retry; carry on without it/)
+    expect(blocked.headers['x-routini-egress']).toBe('blocked')
 
     // The retry, on a new connection with credentials, gets its tunnel.
     const r = await viaProxy('tunnel.example', token, upstreamCa.certPem)

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { describeTrigger, duration, initials, money, relativeTime, runStatusLabel } from './format'
+import { describeTrigger, duration, initials, money, planLabel, relativeTime, runStatusLabel } from './format'
 
 const NOW = new Date('2026-10-04T12:00:00Z').getTime()
 
@@ -33,5 +33,14 @@ describe('format', () => {
     expect(initials('ada.lovelace@example.com')).toBe('AL')
     expect(describeTrigger({ kind: 'cron', expr: '0 9 * * *', tz: 'UTC' })).toBe('cron 0 9 * * *')
     expect(describeTrigger({ kind: 'cron', expr: '0 9 * * *', tz: 'America/Los_Angeles' })).toBe('cron 0 9 * * * (America/Los_Angeles)')
+  })
+})
+
+describe('planLabel', () => {
+  it('names the alpha plan for people, and falls back to the raw plan', () => {
+    expect(planLabel('free')).toBe('Free during alpha')
+    expect(planLabel('selfhost')).toBe('Self-hosted')
+    expect(planLabel('team')).toBe('team plan')
+    expect(planLabel(undefined)).toBe('Plan')
   })
 })

@@ -258,7 +258,8 @@ function parseAction(c: Record<string, unknown>, p: string): ActionConfig {
     }
     case 'azure-boards': {
       const project = str(c['project'], `${p}.project`, 64)!
-      if (!/^[^\/\\?#%*:|"<>.][^\/\\?#%*:|"<>]*$/.test(project)) fail(`${p}.project is not a valid Azure DevOps project name`)
+      // ADO forbids these characters (and a leading dot); control characters would also forge log lines.
+      if (!/^[^\/\\?#%*:|"<>.\x00-\x1f\x7f][^\/\\?#%*:|"<>\x00-\x1f\x7f]*$/.test(project)) fail(`${p}.project is not a valid Azure DevOps project name`)
       return {
         type: 'azure-boards',
         project,

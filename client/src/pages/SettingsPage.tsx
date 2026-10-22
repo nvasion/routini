@@ -5,7 +5,7 @@ import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import { Link, NavLink, useParams } from 'react-router-dom'
 import { Empty, ErrorBanner, Field, Modal } from '../components/ui'
 import { api } from '../lib/api'
-import { relativeTime } from '../lib/format'
+import { planLabel, relativeTime } from '../lib/format'
 import { useApi } from '../lib/hooks'
 import type { AIEndpoint, AgentId, CredentialMeta, Host, Member, OrgSettings, Role } from '../lib/types'
 import { useOrg } from '../shell/OrgContext'
@@ -125,11 +125,11 @@ function General() {
       <fieldset disabled={!org.can('admin') || busy} style={{ border: 0, padding: 0, margin: 0 }} className="stack">
         <Field label="Org name">{(id) => <input id={id} className="input" value={name} onChange={(e) => setName(e.target.value)} />}</Field>
         <p className="muted" style={{ margin: 0 }}>
-          Plan <span className="mono">{o.plan}</span>. Limits below can be tightened, not raised past the plan.
+          {planLabel(o.plan)}. Environment and agent-minute limits cover Routini&apos;s own compute only; agents and environments on your own servers (Fleet) are not counted. Limits below can be tightened, not raised past the plan.
         </p>
         <div className="row">
           <Field label="Concurrent runs">{(id) => <input id={id} className="input" inputMode="numeric" value={maxRuns} onChange={(e) => setMaxRuns(e.target.value)} />}</Field>
-          <Field label="Running environments">{(id) => <input id={id} className="input" inputMode="numeric" value={maxEnvs} onChange={(e) => setMaxEnvs(e.target.value)} />}</Field>
+          <Field label="Running environments" hint="On Routini's compute.">{(id) => <input id={id} className="input" inputMode="numeric" value={maxEnvs} onChange={(e) => setMaxEnvs(e.target.value)} />}</Field>
           <Field label="Agent minutes per day" hint="Blank = no limit (if the plan allows).">
             {(id) => <input id={id} className="input" inputMode="numeric" value={minutes} onChange={(e) => setMinutes(e.target.value)} />}
           </Field>

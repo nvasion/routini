@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from 'react'
+import { IntegrationIcon } from '../components/IntegrationIcon'
 import { ErrorBanner, Field, Modal } from '../components/ui'
 import { api } from '../lib/api'
 import { relativeTime } from '../lib/format'
@@ -46,7 +47,10 @@ export function IntegrationsPage() {
         {list.data?.integrations.map((i) => (
           <button key={i.id} type="button" className="card" style={{ textAlign: 'left', cursor: 'pointer', color: 'var(--ink)' }} onClick={() => setOpen(i)}>
             <span className="inline" style={{ justifyContent: 'space-between', width: '100%' }}>
-              <span style={{ fontFamily: 'var(--font-sign)', fontWeight: 700, fontSize: 18 }}>{i.name}</span>
+              <span className="inline" style={{ gap: 10 }}>
+                <IntegrationIcon id={i.id} name={i.name} />
+                <span style={{ fontFamily: 'var(--font-sign)', fontWeight: 700, fontSize: 18 }}>{i.name}</span>
+              </span>
               {statusBadge(i)}
             </span>
             <span className="muted" style={{ fontSize: 13 }}>

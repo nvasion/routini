@@ -215,7 +215,7 @@ describe('agent steps on a fleet host', () => {
 
     // What the host's proxy refused, reported from the exit.
     expect(events.filter((e) => e.type === 'egress.blocked').map((e) => e.data)).toEqual([{ hosts: ['evil.example', 'tracker.example'] }])
-    expect(events.some((e) => e.type === 'log' && e.data['message'] === "Blocked outbound connections (not on the org's allow-list): evil.example, tracker.example")).toBe(true)
+    expect(events.some((e) => e.type === 'log' && e.data['message'] === "Blocked outbound connections (not on the org's egress allow-list, Settings → Policy): evil.example, tracker.example")).toBe(true)
 
     // Model spend counts; the org's agent minutes do not (it is their own server).
     expect(detail.steps[0]!.output).toMatchObject({ costUsd: 0.0421, model: 'claude-sonnet-5', changes: false })

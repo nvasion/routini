@@ -15,7 +15,7 @@ import { EnvironmentsPage } from './pages/EnvironmentsPage'
 import { FleetPage } from './pages/FleetPage'
 import { IncidentPage, IncidentsPage } from './pages/IncidentsPage'
 import { LandingPage } from './pages/public/LandingPage'
-import { GettingStartedPage } from './pages/public/GettingStartedPage'
+import { HowItWorksPage } from './pages/public/HowItWorksPage'
 import { ForgotPasswordPage, ResetPasswordPage, VerifyEmailPage } from './pages/AccountPages'
 
 function RequireAuth({ children }: { children: ReactNode }) {
@@ -46,6 +46,12 @@ function Home() {
   return <Navigate to={`/o/${org.slug}/inbox`} replace />
 }
 
+/** The old getting-started guide is part of How it works now; its section anchors carry over. */
+function ToHowItWorks() {
+  const { hash } = useLocation()
+  return <Navigate to={`/how-it-works${hash}`} replace />
+}
+
 export function AppRoutes() {
   return (
     <Routes>
@@ -54,7 +60,8 @@ export function AppRoutes() {
       <Route path="/forgot-password" element={<ForgotPasswordPage />} />
       <Route path="/reset-password" element={<ResetPasswordPage />} />
       <Route path="/verify-email" element={<VerifyEmailPage />} />
-      <Route path="/docs/getting-started" element={<GettingStartedPage />} />
+      <Route path="/docs/getting-started" element={<ToHowItWorks />} />
+      <Route path="/how-it-works" element={<HowItWorksPage />} />
       <Route path="/" element={<Front />} />
       <Route
         path="/app"

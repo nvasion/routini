@@ -35,6 +35,13 @@ USER node
 # The proxy (3128) and its control API (3129). Fleet hosts pull this image to
 # give agent containers their only way out (ROUTINI_FLEET_EGRESS_IMAGE).
 FROM base AS egress
+# Fleet hosts (routini-runner) mount the CA volume here (ROUTINI_EGRESS_CA_DIR).
+# It must exist and belong to `node` in the image: Docker gives a new (or
+# empty) named volume the ownership of the image directory it is mounted on,
+# and a root-owned one makes the proxy die with EACCES writing ca-key.pem.
+USER root
+RUN mkdir -p /var/lib/routini-egress && chown node:node /var/lib/routini-egress
+USER node
 EXPOSE 3128 3129
 CMD ["node", "dist/egress.js"]
 

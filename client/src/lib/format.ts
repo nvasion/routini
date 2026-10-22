@@ -67,3 +67,7 @@ export function describeTrigger(t: { kind: string; expr?: string; tz?: string })
   if (t.kind === 'webhook') return 'webhook'
   return 'manual'
 }
+
+/** The org's plan as people should read it. Hosted Routini is free while it is in alpha; paid plans come later. */
+const PLAN_LABELS: Record<string, string> = { free: 'Free during alpha', selfhost: 'Self-hosted' }
+export const planLabel = (plan: string | undefined) => (plan ? (PLAN_LABELS[plan] ?? `${plan} plan`) : 'Plan')

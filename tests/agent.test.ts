@@ -209,6 +209,8 @@ describe('agent steps', () => {
     expect(spawned.memoryBytes).toBe(4096 * 1024 * 1024)
     expect(spawned.env).toMatchObject({ ROUTINI_PROMPT: 'Fix the disk alert', ROUTINI_OUTPUT: 'none', ANTHROPIC_API_KEY: 'sk-ant-api03-REALKEY-0123456789' })
     expect(spawned.env['ROUTINI_SYSTEM_PROMPT']).toMatch(/unattended/)
+    // No broker, no allow-list: nothing to tell the agent about its network.
+    expect(spawned.env['ROUTINI_SYSTEM_PROMPT']).not.toContain('Network access')
     expect(spawned.env).not.toHaveProperty('REPO_URL')
     expect(spawned.labels).toMatchObject({ 'routini.managed': 'true', 'routini.run': detail.run.id, 'routini.step': '0' })
     expect(step.output).toMatchObject({ costUsd: 0.0421, model: 'claude-sonnet-5', changes: false })

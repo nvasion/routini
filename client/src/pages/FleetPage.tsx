@@ -265,6 +265,7 @@ const EVENT_LABEL: Record<string, string> = {
   'runner.update.requested': 'Runner update requested',
   'runner.update.succeeded': 'Runner updated',
   'runner.update.failed': 'Runner update failed',
+  'runner.capabilities': 'Runner capabilities changed',
 }
 
 /** A command only root on the host can run, with a copy button. */
@@ -408,6 +409,7 @@ function HostDetails({
                 {typeof e.data['via'] === 'string' ? ` · via ${e.data['via']}` : ''}
                 {e.type.startsWith('runner.update') && typeof e.data['version'] === 'string' ? ` · ${e.data['version']}` : ''}
                 {e.type === 'runner.connected' && typeof e.data['version'] === 'string' ? ` · v${String(e.data['version']).replace(/^v/, '')}` : ''}
+                {e.type === 'runner.capabilities' && Array.isArray(e.data['capabilities']) ? ` · ${(e.data['capabilities'] as string[]).join(', ')}` : ''}
                 {typeof e.data['error'] === 'string' ? ` · ${e.data['error']}` : ''}
               </span>
             </span>

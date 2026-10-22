@@ -219,6 +219,20 @@ describe('environments on a fleet host', () => {
     expect(res.status).toBe(409)
     expect(res.body.error).toBe('Host is used by environments: fleet-env-2')
   })
+
+  it("leaves fleet environments out of the plan's limit: it covers Routini's compute only", async () => {
+    const put = await u.put(`/api/orgs/${u.orgSlug}`, { limits: { maxRunningEnvironments: 1 } })
+    expect(put.status, JSON.stringify(put.body)).toBe(200)
+    expect((await create({ name: 'hosted-1' })).environment.status).toBe('running')
+    // The one Routini slot is taken; environments on the org's own server don't need one...
+    const hostId = await connectedRunnerHost('fleet-05')
+    expect((await create({ name: 'fleet-a', hostId })).environment.status).toBe('running')
+    expect((await create({ name: 'fleet-b', hostId })).environment.status).toBe('running')
+    // ...and don't take one: a second Routini-hosted environment is refused for the hosted one alone.
+    const second = await u.post(base(), { name: 'hosted-2' })
+    expect(second.status).toBe(409)
+    expect(second.body.error).toBe("This org can run 1 environment on Routini's compute at a time; stop one first. Environments on your own servers (Fleet) have no limit")
+  })
 })
 
 describe('limits and the sweeper', () => {
@@ -230,7 +244,7 @@ describe('limits and the sweeper', () => {
     await t.ctx.envs.idle()
     const second = await free.post(b, { name: 'two' })
     expect(second.status).toBe(409)
-    expect(second.body.error).toMatch(/1 environment at a time/)
+    expect(second.body.error).toMatch(/1 environment on Routini's compute at a time/)
     expect((await free.get(b)).body.environments).toHaveLength(1)
   })
 

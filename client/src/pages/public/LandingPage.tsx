@@ -1,67 +1,18 @@
-// The public front page, campaign style: a bold pitch, the story behind it
-// (with "Read more"), then how to install, what it does, where it's at, and
-// the questions people ask first.
+// The public front page, campaign style: a bold pitch, how it works in four
+// screenshots of the real console, the story behind it (with "Read more"), then
+// how to install, what it does, where it's at, and the questions people ask first.
 
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import emblemLg from '../../brand/emblem-lg.webp'
 import wordmark from '../../brand/wordmark.webp'
 import character from '../../brand/character.webp'
+import { IntegrationIcon } from '../../components/IntegrationIcon'
+import { FAQ, FEATURES, INTEGRATIONS, NEXT, PREVIEW, SHIPPED, STEPS } from './content'
 import { PublicLayout, REPO_URL, RUNNER_REPO_URL, useSignupOpen } from './PublicLayout'
+import { Shot } from './Shot'
 
-const BADGES = ['Open source · AGPL-3.0', 'No inbound ports', 'Bring your own model keys', 'Self-host in one command']
-
-const FEATURES: Array<{ title: string; body: string }> = [
-  {
-    title: 'Jobs and coding agents',
-    body: 'Schedules, webhooks and alerts start jobs. Steps call APIs, run commands, or hand a task to a coding agent that works in a sandbox, runs your checks and opens a pull request.',
-  },
-  {
-    title: 'Your fleet, without the keys',
-    body: 'Connect servers with routini-runner, a small open-source agent that only dials out: no inbound ports, no SSH keys stored in Routini. Live health, audited terminals, and commands from jobs.',
-  },
-  {
-    title: 'Alerts to runbooks to postmortems',
-    body: 'Alertmanager, Grafana or any webhook opens an incident and runs the matching runbook on the affected server. When it resolves, Routini drafts the postmortem from what actually happened.',
-  },
-  {
-    title: 'Guardrails by default',
-    body: 'Org policy decides what needs a person to approve it. Agents work behind a credential broker that keeps real keys out of their sandbox. Nothing approves itself.',
-  },
-  {
-    title: 'From Claude Code',
-    body: 'Connect Claude Code or any MCP client with an API token. Ask what failed overnight, start a job, run a command on a server, all under the same policy.',
-  },
-  {
-    title: 'Open source, run it anywhere',
-    body: 'AGPL-3.0, with the runner under Apache-2.0. Use the hosted version on TynHub, or run the whole thing on your own machine with Docker Compose.',
-  },
-]
-
-const SHIPPED = [
-  'Jobs, runs and approvals on Postgres, with a live timeline',
-  'Coding agents in sandboxes that open pull requests',
-  'Persistent environments with browser terminals',
-  'Org policy, approvals and the credential broker',
-  'routini-runner: the fleet without inbound ports',
-  'Alerts → incidents → runbooks → postmortems',
-  'Routini as an MCP server for Claude Code',
-]
-const NEXT = ['routini-runner v0.1.0 release (binaries and image)', 'Hosted alpha at routini.tynhub.com', 'Sign in with TynHub across the network']
-
-const FAQ: Array<{ q: string; a: string }> = [
-  { q: 'What does it cost?', a: 'Running it yourself is free: it is open source. You bring your own model keys, so model spend goes to your own provider account.' },
-  {
-    q: 'Do I have to open my servers to the internet?',
-    a: 'No. routini-runner only dials out to Routini over HTTPS, so there are no inbound ports, and Routini never stores SSH keys for runner servers. SSH hosts are supported too, if you prefer them.',
-  },
-  {
-    q: 'Can an agent change production on its own?',
-    a: 'Only if your policy allows it. Rules can require a person to approve commands on servers tagged prod, branch pushes and more. Agents and MCP clients cannot approve anything, including their own work.',
-  },
-  { q: 'Which models and agents?', a: 'Claude Code runs agent steps today, on Anthropic, OpenRouter, OpenAI, Google, DigitalOcean and other endpoints, with your own key.' },
-  { q: 'Where does my data live?', a: 'In your Postgres when you self-host. Secrets are encrypted at rest, scoped to their org, and never shown again after you save them.' },
-]
+const BADGES = ['Open source · AGPL-3.0', 'Hosted free during the alpha', 'No inbound ports', 'Bring your own model keys', 'Self-host in one command']
 
 function CopyBlock({ code, label }: { code: string; label: string }) {
   const [copied, setCopied] = useState(false)
@@ -119,15 +70,38 @@ export function LandingPage() {
         <p className="hero-lead">Hand Routini the routine: jobs, fleet commands, coding agents and incident runbooks. It does the work and asks before anything that matters.</p>
         <div className="hero-cta">
           {primary}
-          <a className="btn hero-btn" href="#story" onClick={() => setMore(true)}>
-            Read more ↓
-          </a>
+          <Link className="btn hero-btn" to="/how-it-works">
+            See how it works
+          </Link>
         </div>
         <ul className="badges" aria-label="Highlights">
           {BADGES.map((b) => (
             <li key={b}>{b}</li>
           ))}
         </ul>
+      </section>
+
+      <section className="public-section" aria-labelledby="how">
+        <h2 id="how" className="public-h2">
+          How it works
+        </h2>
+        <ol className="preview-steps">
+          {STEPS.filter((s) => PREVIEW.includes(s.id)).map((s, i) => (
+            <li key={s.id} className="card preview-step">
+              {s.shot && <Shot name={s.shot.name} alt={s.shot.alt} path={s.shot.path} />}
+              <div className="preview-body">
+                <span className="step-n">{i + 1}</span>
+                <div>
+                  <h3>{s.title}</h3>
+                  <p>{s.body}</p>
+                </div>
+              </div>
+            </li>
+          ))}
+        </ol>
+        <Link className="install-more" to="/how-it-works">
+          The full walkthrough, screen by screen →
+        </Link>
       </section>
 
       <section id="story" className="public-section story" aria-labelledby="story-h">
@@ -145,11 +119,13 @@ export function LandingPage() {
           <div className="story-more" id="story-more" hidden={!more}>
             <p>
               <strong>It works where you work.</strong> Jobs start on a schedule, from a webhook, or when an alert fires. Each step is a check, a command on one of your
-              servers, or a coding agent that clones your repository, makes the change, runs your tests and opens a pull request for review.
+              servers, a query of your Azure Boards backlog, a message to Teams, or a coding agent that clones your repository, makes the change, runs your tests and opens
+              a pull request for review.
             </p>
             <p>
               <strong>It reaches your servers without opening them.</strong> The routini-runner agent connects out to Routini, so you never expose SSH or hand over keys.
-              You see each server&rsquo;s health live, open an audited terminal, and point runbooks at whichever host an alert names.
+              You see each server&rsquo;s health live, open an audited terminal, and point runbooks at whichever host an alert names. Let the runner host agents too, and
+              the work runs on your own hardware, with the keys kept on that host.
             </p>
             <p>
               <strong>It knows when to stop and ask.</strong> Your org policy decides which steps need a person to approve them. Agents run in sandboxes behind a
@@ -201,7 +177,7 @@ export function LandingPage() {
                   <span className="step-n">1</span>
                   <span>
                     <strong>Create your account</strong>
-                    <span className="muted"> with email, or continue with TynHub.</span>
+                    <span className="muted"> with email and confirm it from your inbox. It is free during the alpha.</span>
                   </span>
                 </li>
                 <li>
@@ -230,10 +206,11 @@ export function LandingPage() {
               </p>
               <CopyBlock
                 label="Connect a server"
-                code={`curl -fsSL https://raw.githubusercontent.com/nvasion/routini-runner/main/scripts/install.sh \\\n  | sudo sh -s -- --url https://your-routini --token rre_…`}
+                code={`curl -fsSL https://raw.githubusercontent.com/nvasion/routini-runner/main/scripts/install.sh \\\n  | sudo sh -s -- --url https://your-routini --token rre_… --enable-agents`}
               />
               <p className="muted">
-                Docker and manual installs are on the same screen. The runner is{' '}
+                Leave off <span className="mono">--enable-agents</span> if the server should only run commands, not agents and environments. Docker and manual installs are
+                on the same screen, and later updates are one click in Fleet. The runner is{' '}
                 <a href={RUNNER_REPO_URL} target="_blank" rel="noreferrer">
                   open source (Apache-2.0)
                 </a>
@@ -242,8 +219,8 @@ export function LandingPage() {
             </>
           )}
         </div>
-        <Link className="install-more" to="/docs/getting-started">
-          The full 5-minute guide: first job, guardrails, alerts, Claude Code →
+        <Link className="install-more" to="/how-it-works">
+          The full 5-minute walkthrough: first job, guardrails, alerts, Claude Code →
         </Link>
       </section>
 
@@ -259,6 +236,14 @@ export function LandingPage() {
             </article>
           ))}
         </div>
+        <ul className="integration-strip" aria-label="Integrations">
+          {INTEGRATIONS.map(([id, name]) => (
+            <li key={id} title={name}>
+              <IntegrationIcon id={id} name={name} size={40} />
+              <span>{name}</span>
+            </li>
+          ))}
+        </ul>
       </section>
 
       <section className="public-section" aria-labelledby="progress">
@@ -313,8 +298,8 @@ export function LandingPage() {
         <h2 className="public-h2">Give the routine to Routini.</h2>
         <div className="hero-cta">
           {primary}
-          <Link className="btn hero-btn" to="/docs/getting-started">
-            Read the guide
+          <Link className="btn hero-btn" to="/how-it-works">
+            See how it works
           </Link>
         </div>
       </section>
