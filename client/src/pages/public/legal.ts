@@ -17,7 +17,7 @@ export interface LegalDoc {
   sections: LegalSection[]
 }
 
-export const LEGAL_CONTACT = 'privacy@tynhub.com'
+export const LEGAL_CONTACT = 'privacy@notify.tynhub.com'
 
 const UPDATED = 'October 2026'
 
