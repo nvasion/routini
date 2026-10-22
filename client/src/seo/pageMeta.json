@@ -1,0 +1,81 @@
+{
+  "site": {
+    "origin": "https://routini.tynhub.com",
+    "name": "Routini",
+    "image": "/og.png",
+    "imageWidth": 1200,
+    "imageHeight": 630
+  },
+  "routes": {
+    "/": {
+      "title": "Routini - Open-source AI engineer for jobs, fleet and incidents",
+      "description": "Routini runs coding agents that open pull requests and SRE agents that triage alerts, on your servers or ours, and asks before it touches production.",
+      "index": true,
+      "changefreq": "weekly",
+      "priority": 1.0
+    },
+    "/how-it-works": {
+      "title": "How Routini works - from model key to merged pull request",
+      "description": "Twelve steps from sign-up to running jobs: add a model key, connect servers, set guardrails, approve what matters and turn alerts into postmortems.",
+      "index": true,
+      "changefreq": "monthly",
+      "priority": 0.8
+    },
+    "/pricing": {
+      "title": "Routini pricing - free to self-host, free hosted alpha",
+      "description": "Self-host Routini free under AGPL, or use the hosted alpha free with fair compute limits. Bring your own model keys; your own servers are never counted.",
+      "index": true,
+      "changefreq": "monthly",
+      "priority": 0.8
+    },
+    "/privacy": {
+      "title": "Privacy policy - Routini",
+      "description": "What Routini stores about you and your org, why it keeps it, how long it keeps it, and how to export or delete it.",
+      "index": true,
+      "changefreq": "yearly",
+      "priority": 0.3
+    },
+    "/terms": {
+      "title": "Terms of service - Routini",
+      "description": "The terms for using hosted Routini at routini.tynhub.com during the alpha, including acceptable use and your responsibility for connected servers.",
+      "index": true,
+      "changefreq": "yearly",
+      "priority": 0.3
+    },
+    "/login": {
+      "title": "Sign in - Routini",
+      "description": "Sign in to Routini to manage your jobs, fleet of servers, and coding and SRE agents from your console.",
+      "index": false,
+      "changefreq": "monthly",
+      "priority": 0.1
+    },
+    "/signup": {
+      "title": "Create your account - Routini",
+      "description": "Create a free Routini account to connect servers, add a model key, and start running jobs and coding agents.",
+      "index": false,
+      "changefreq": "monthly",
+      "priority": 0.1
+    },
+    "/forgot-password": {
+      "title": "Reset your password - Routini",
+      "description": "Request a password reset link for your Routini account if you have forgotten your password.",
+      "index": false,
+      "changefreq": "yearly",
+      "priority": 0.1
+    },
+    "/reset-password": {
+      "title": "Choose a new password - Routini",
+      "description": "Choose a new password for your Routini account using the reset link sent to your email.",
+      "index": false,
+      "changefreq": "yearly",
+      "priority": 0.1
+    },
+    "/verify-email": {
+      "title": "Verify your email - Routini",
+      "description": "Verify your email address to unlock coding agents and persistent environments on your Routini account.",
+      "index": false,
+      "changefreq": "yearly",
+      "priority": 0.1
+    }
+  }
+}

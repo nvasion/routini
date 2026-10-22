@@ -7,6 +7,7 @@ import { ErrorBanner, Field } from '../components/ui'
 import { Mark } from '../components/Brand'
 import { api } from '../lib/api'
 import { pickDefaultOrg, useAuth } from '../lib/auth'
+import { usePageMeta } from '../seo/usePageMeta'
 
 function AuthCard({ title, children }: { title: string; children: ReactNode }) {
   return (
@@ -30,6 +31,7 @@ function AuthCard({ title, children }: { title: string; children: ReactNode }) {
 const useToken = () => new URLSearchParams(useLocation().search).get('token') ?? ''
 
 export function ForgotPasswordPage() {
+  usePageMeta()
   const [email, setEmail] = useState('')
   const [sent, setSent] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -71,6 +73,7 @@ export function ForgotPasswordPage() {
 }
 
 export function ResetPasswordPage() {
+  usePageMeta()
   const token = useToken()
   const navigate = useNavigate()
   const [password, setPassword] = useState('')
@@ -120,6 +123,7 @@ export function ResetPasswordPage() {
 }
 
 export function VerifyEmailPage() {
+  usePageMeta()
   const token = useToken()
   const { session, refresh } = useAuth()
   const [state, setState] = useState<'working' | 'done' | 'failed'>(token ? 'working' : 'failed')

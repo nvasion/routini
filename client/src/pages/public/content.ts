@@ -234,6 +234,27 @@ export const NEXT = [
   'Paid plans with more managed compute',
 ]
 
+// The questions /pricing answers below its plan cards. Facts only — numbers
+// match the limits already named in STEPS and FAQ above, nothing new.
+export const PRICING_FAQ: Array<{ q: string; a: string }> = [
+  {
+    q: 'What counts against the alpha limits?',
+    a: 'Only work on Routini’s own compute: up to 2 runs at a time, 1 running environment, and 120 agent minutes a day. Agents and environments on your own servers are never counted, and you bring your own model keys.',
+  },
+  {
+    q: 'What happens when I hit a limit?',
+    a: 'A new run or environment start on Routini’s compute waits until an earlier one finishes and frees up capacity. Anything already running on your own servers keeps going as normal.',
+  },
+  {
+    q: 'Who pays for model usage?',
+    a: 'You do, directly: coding agents run on your own model account (Anthropic, OpenRouter, AWS Bedrock, OpenAI, Google, Azure or DigitalOcean), so spend goes to your own provider, never to Routini.',
+  },
+  {
+    q: 'Can I move from hosted to self-hosted?',
+    a: 'Yes. Routini is open source (AGPL-3.0), so you can run the same stack yourself with Docker Compose at any time, on your own Postgres and with no compute limits.',
+  },
+]
+
 export const FAQ: Array<{ q: string; a: string }> = [
   {
     q: 'What does it cost?',

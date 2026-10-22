@@ -573,3 +573,31 @@
   align-items: center;
   gap: 8px;
 }
+
+/* Pricing */
+.plan-grid {
+  margin-top: 8px;
+  align-items: stretch;
+}
+.plan-card {
+  gap: 8px;
+}
+.plan-price {
+  margin: 0;
+  font-family: var(--font-sign);
+  font-weight: 700;
+  font-size: 22px;
+}
+.plan-points {
+  margin: 4px 0 8px;
+  padding-left: 20px;
+  color: var(--ink-2);
+  line-height: 1.5;
+  flex: 1;
+}
+.plan-points li {
+  margin: 4px 0;
+}
+.plan-card .btn {
+  align-self: flex-start;
+}

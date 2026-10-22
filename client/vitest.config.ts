@@ -14,7 +14,7 @@ import react from '@vitejs/plugin-react'
 export default defineConfig({
   plugins: [react()],
   test: {
-    include: ['src/**/*.test.{ts,tsx}'],
+    include: ['src/**/*.test.{ts,tsx}', 'scripts/**/*.test.{ts,mjs}'],
     environment: 'jsdom',
     // A page test renders the whole shell (router, org context, fake fetch) in
     // jsdom; alone each stays near a second, but the full suite runs these files
