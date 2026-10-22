@@ -8,6 +8,7 @@ import emblemLg from '../../brand/emblem-lg.webp'
 import wordmark from '../../brand/wordmark.webp'
 import character from '../../brand/character.webp'
 import { IntegrationIcon } from '../../components/IntegrationIcon'
+import { usePageMeta } from '../../seo/usePageMeta'
 import { FAQ, FEATURES, INTEGRATIONS, NEXT, PREVIEW, SHIPPED, STEPS } from './content'
 import { PublicLayout, REPO_URL, RUNNER_REPO_URL, useSignupOpen } from './PublicLayout'
 import { Shot } from './Shot'
@@ -43,6 +44,7 @@ function CopyBlock({ code, label }: { code: string; label: string }) {
 type InstallTab = 'hosted' | 'self' | 'server'
 
 export function LandingPage() {
+  usePageMeta()
   const signupOpen = useSignupOpen()
   const [more, setMore] = useState(false)
   const [tab, setTab] = useState<InstallTab>('self')

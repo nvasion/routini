@@ -1,0 +1,12 @@
+User-agent: *
+Allow: /
+Disallow: /app
+Disallow: /o/
+Disallow: /api/
+Disallow: /mcp
+Disallow: /login
+Disallow: /signup
+Disallow: /forgot-password
+Disallow: /reset-password
+Disallow: /verify-email
+Sitemap: https://routini.tynhub.com/sitemap.xml
