@@ -31,6 +31,7 @@ export function PublicLayout({ children }: { children: ReactNode }) {
         </Link>
         <nav className="public-links" aria-label="Site">
           <NavLink to="/how-it-works">How it works</NavLink>
+          <NavLink to="/pricing">Pricing</NavLink>
           <a href={REPO_URL} target="_blank" rel="noreferrer">
             GitHub
           </a>
@@ -63,6 +64,9 @@ export function PublicLayout({ children }: { children: ReactNode }) {
           </span>
           <span className="public-footer-links">
             <Link to="/how-it-works">How it works</Link>
+            <Link to="/pricing">Pricing</Link>
+            <Link to="/privacy">Privacy</Link>
+            <Link to="/terms">Terms</Link>
             <a href={REPO_URL} target="_blank" rel="noreferrer">
               Source (AGPL-3.0)
             </a>

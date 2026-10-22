@@ -106,7 +106,10 @@ describe('landing page', () => {
   it('sends signed-in people straight to their console', async () => {
     mockFetch(baseRoutes({ 'GET /api/auth/providers': () => ({ oidc: null, signupOpen: true }) }))
     renderAt('/')
-    expect(await screen.findByRole('heading', { name: 'Inbox' })).toBeTruthy()
+    // The landing page now renders first (visitors never see a loading gate), so the
+    // console mounts only once the session resolves — give that transition more than
+    // findByRole's 1000ms default.
+    expect(await screen.findByRole('heading', { name: 'Inbox' }, { timeout: 5000 })).toBeTruthy()
   })
 })
 
@@ -149,12 +152,66 @@ describe('how it works', () => {
     const create = (await screen.findAllByRole('link', { name: 'Create your account' })).find((a) => a.getAttribute('href') === '/signup')
     expect(create).toBeTruthy()
   })
+})
 
-  it('takes over the old getting-started URL', async () => {
+describe('pricing', () => {
+  it('shows the three plans and their real limits', async () => {
+    mockFetch(signedOut())
+    renderAt('/pricing')
+    expect(await screen.findByRole('heading', { level: 1, name: 'Pricing' })).toBeTruthy()
+    const main = screen.getByRole('main')
+    expect(within(main).getByRole('heading', { name: 'Self-hosted' })).toBeTruthy()
+    expect(within(main).getByRole('heading', { name: 'Hosted alpha' })).toBeTruthy()
+    expect(within(main).getByRole('heading', { name: 'Hosted paid' })).toBeTruthy()
+    expect(within(main).getAllByText(/120 agent minutes a day/).length).toBeGreaterThan(0)
+    expect(within(main).getByRole('link', { name: 'Run it yourself' }).getAttribute('href')).toBe('/how-it-works#self-host')
+    expect(within(main).getByRole('link', { name: 'Get started, free' }).getAttribute('href')).toBe('/signup')
+    expect(within(main).getByText('Can I move from hosted to self-hosted?')).toBeTruthy()
+  })
+
+  it('offers sign in instead of sign up when the server has signup closed', async () => {
+    mockFetch(signedOut(false))
+    renderAt('/pricing')
+    const main = await screen.findByRole('main')
+    expect((await within(main).findAllByRole('link', { name: 'Sign in' })).length).toBeGreaterThan(0)
+    expect(within(main).queryByRole('link', { name: /Get started/ })).toBeNull()
+  })
+})
+
+describe('privacy and terms', () => {
+  it('renders the privacy policy with one h1 and a last-updated line', async () => {
+    mockFetch(signedOut())
+    renderAt('/privacy')
+    expect(await screen.findByRole('heading', { level: 1, name: 'Privacy policy' })).toBeTruthy()
+    expect(screen.getByText(/Last updated: October 2026/)).toBeTruthy()
+    expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1)
+    expect(screen.getByRole('heading', { level: 2, name: 'What we store' })).toBeTruthy()
+  })
+
+  it('renders the terms of service with one h1', async () => {
+    mockFetch(signedOut())
+    renderAt('/terms')
+    expect(await screen.findByRole('heading', { level: 1, name: 'Terms of service' })).toBeTruthy()
+    expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1)
+    expect(screen.getByRole('heading', { level: 2, name: 'Acceptable use' })).toBeTruthy()
+  })
+})
+
+describe('not found', () => {
+  it('shows a 404 page with links back into the site for an unknown path', async () => {
+    mockFetch(signedOut())
+    renderAt('/this-page-does-not-exist')
+    expect(await screen.findByRole('heading', { level: 1, name: 'Page not found' })).toBeTruthy()
+    const main = screen.getByRole('main')
+    expect(within(main).getByRole('link', { name: 'Home' }).getAttribute('href')).toBe('/')
+    expect(within(main).getByRole('link', { name: 'How it works' }).getAttribute('href')).toBe('/how-it-works')
+    expect(within(main).getByRole('link', { name: 'Pricing' }).getAttribute('href')).toBe('/pricing')
+  })
+
+  it('no longer has a client route for the old getting-started URL — nginx 301s it instead', async () => {
     mockFetch(signedOut())
     renderAt('/docs/getting-started')
-    expect(await screen.findByRole('heading', { level: 1, name: 'How Routini works' })).toBeTruthy()
-    expect(within(screen.getByRole('navigation', { name: 'Site' })).queryByRole('link', { name: 'Getting started' })).toBeNull()
+    expect(await screen.findByRole('heading', { level: 1, name: 'Page not found' })).toBeTruthy()
   })
 })
 

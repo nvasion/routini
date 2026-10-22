@@ -285,6 +285,32 @@ make test-pg        # needs ROUTINI_TEST_PG_URL: real Postgres, non-superuser ow
 make test-docker    # needs Docker: agents, environments, the credential broker and routini-runner, for real
 ```
 
+### Client build and public pages
+
+`client/src/pages/public/` holds the marketing site: the landing page, how it
+works, pricing, privacy and terms, all built from `content.ts` (and
+`legal.ts` for the two legal pages — draft copy pending owner review).
+`client/src/seo/pageMeta.json` is the single source of truth for every
+route's title, description, indexability and sitemap priority; edit copy
+there, not in the page components. `usePageMeta` applies it to `document`
+on client-side navigation, and `jsonLd.ts` builds each route's structured
+data (including the FAQ JSON-LD, generated from the same arrays the pages
+render, so they can't drift).
+
+`npm run build` in `client/` does four things: `tsc` (typecheck), `vite
+build` (the SPA into `dist/`), `vite build --ssr` (an SSR bundle of
+`entry-server.tsx` — the public pages only, never the console — into
+`dist-ssr/`), then `node scripts/prerender.mjs`, which renders every
+`index: true` route to its own `dist/<route>/index.html` with real
+metadata, Open Graph/Twitter tags and JSON-LD baked in, writes `dist/
+404.html` (noindex, no app scripts, so a crawler gets a real 404 instead of
+the SPA redirecting it), `dist/spa.html` (the noindex fallback shell for
+`/app`, `/o/*`, `/login` and the other routes that never prerender), and
+`dist/sitemap.xml`. `client/Dockerfile` runs this build and copies only
+`dist/` into nginx; `client/nginx.conf` and `client/nginx.platform.conf`
+route app paths to `spa.html`, everything else to its prerendered file, and
+404s to `404.html`.
+
 ## License
 
 [AGPL-3.0-only](LICENSE). If you run a modified Routini as a network service,

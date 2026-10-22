@@ -4,8 +4,10 @@ import { ErrorBanner, Field } from '../components/ui'
 import { pickDefaultOrg, useAuth } from '../lib/auth'
 import { Mark } from '../components/Brand'
 import { useApi } from '../lib/hooks'
+import { usePageMeta } from '../seo/usePageMeta'
 
 export function LoginPage({ initialMode = 'login' }: { initialMode?: 'login' | 'signup' } = {}) {
+  usePageMeta()
   const { session, login, signup } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()

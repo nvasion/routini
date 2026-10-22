@@ -16,6 +16,9 @@ import { FleetPage } from './pages/FleetPage'
 import { IncidentPage, IncidentsPage } from './pages/IncidentsPage'
 import { LandingPage } from './pages/public/LandingPage'
 import { HowItWorksPage } from './pages/public/HowItWorksPage'
+import { PricingPage } from './pages/public/PricingPage'
+import { PrivacyPage, TermsPage } from './pages/public/LegalPage'
+import { NotFoundPage } from './pages/public/NotFoundPage'
 import { ForgotPasswordPage, ResetPasswordPage, VerifyEmailPage } from './pages/AccountPages'
 
 function RequireAuth({ children }: { children: ReactNode }) {
@@ -26,11 +29,16 @@ function RequireAuth({ children }: { children: ReactNode }) {
   return <>{children}</>
 }
 
-/** `/`: the front page for visitors; signed-in people go straight to their console. */
+/**
+ * `/`: the front page for visitors. The landing page renders immediately,
+ * even while auth is still loading, so a crawler or a first-time visitor
+ * never sees a loading gate; signed-in people are bounced to their console
+ * as soon as the session resolves.
+ */
 function Front() {
   const { session, loading } = useAuth()
-  if (loading) return <p className="muted" style={{ padding: 24 }}>Loading…</p>
-  return session ? <Home /> : <LandingPage />
+  if (!loading && session) return <Home />
+  return <LandingPage />
 }
 
 function Home() {
@@ -46,12 +54,6 @@ function Home() {
   return <Navigate to={`/o/${org.slug}/inbox`} replace />
 }
 
-/** The old getting-started guide is part of How it works now; its section anchors carry over. */
-function ToHowItWorks() {
-  const { hash } = useLocation()
-  return <Navigate to={`/how-it-works${hash}`} replace />
-}
-
 export function AppRoutes() {
   return (
     <Routes>
@@ -60,8 +62,10 @@ export function AppRoutes() {
       <Route path="/forgot-password" element={<ForgotPasswordPage />} />
       <Route path="/reset-password" element={<ResetPasswordPage />} />
       <Route path="/verify-email" element={<VerifyEmailPage />} />
-      <Route path="/docs/getting-started" element={<ToHowItWorks />} />
       <Route path="/how-it-works" element={<HowItWorksPage />} />
+      <Route path="/pricing" element={<PricingPage />} />
+      <Route path="/privacy" element={<PrivacyPage />} />
+      <Route path="/terms" element={<TermsPage />} />
       <Route path="/" element={<Front />} />
       <Route
         path="/app"
@@ -102,7 +106,7 @@ export function AppRoutes() {
         <Route path="settings" element={<SettingsPage />} />
         <Route path="settings/:tab" element={<SettingsPage />} />
       </Route>
-      <Route path="*" element={<Navigate to="/" replace />} />
+      <Route path="*" element={<NotFoundPage />} />
     </Routes>
   )
 }

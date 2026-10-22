@@ -4,11 +4,13 @@
 // /docs/getting-started redirects here (keeping its #anchors).
 
 import { Link } from 'react-router-dom'
+import { usePageMeta } from '../../seo/usePageMeta'
 import { STEPS } from './content'
 import { PublicLayout, REPO_URL, useSignupOpen } from './PublicLayout'
 import { Shot } from './Shot'
 
 export function HowItWorksPage() {
+  usePageMeta()
   const signupOpen = useSignupOpen()
   return (
     <PublicLayout>
