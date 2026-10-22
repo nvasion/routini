@@ -350,17 +350,33 @@
   margin: 0 auto;
   padding: 20px clamp(16px, 4vw, 32px);
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
+  flex-direction: column;
   gap: 14px;
   color: var(--muted);
   font-size: 13px;
 }
+/* Two rows: identity + theme switch, then the links under a hairline. One
+   wrapping row pushed the theme switch under the brand once the site links
+   grew to four. */
+.public-footer-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
 .public-footer-links {
   display: flex;
   flex-wrap: wrap;
-  gap: 16px;
+  justify-content: space-between;
+  gap: 10px 24px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line-soft);
+}
+.public-footer-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 16px;
 }
 .public-footer a {
   color: var(--ink-2);

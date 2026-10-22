@@ -58,29 +58,35 @@ export function PublicLayout({ children }: { children: ReactNode }) {
       <main id="main">{children}</main>
       <footer className="public-footer">
         <div className="public-footer-inner">
-          <span className="inline" style={{ gap: 8 }}>
-            <Mark size={22} />
-            <span>Routini · part of the TynHub network</span>
-          </span>
-          <span className="public-footer-links">
-            <Link to="/how-it-works">How it works</Link>
-            <Link to="/pricing">Pricing</Link>
-            <Link to="/privacy">Privacy</Link>
-            <Link to="/terms">Terms</Link>
-            <a href={REPO_URL} target="_blank" rel="noreferrer">
-              Source (AGPL-3.0)
-            </a>
-            <a href={RUNNER_REPO_URL} target="_blank" rel="noreferrer">
-              routini-runner (Apache-2.0)
-            </a>
-          </span>
-          <div className="segmented" role="group" aria-label="Theme">
-            {THEMES.map((t) => (
-              <button key={t.id} type="button" aria-pressed={theme === t.id} onClick={() => setTheme(t.id)}>
-                {t.label}
-              </button>
-            ))}
+          <div className="public-footer-top">
+            <span className="inline" style={{ gap: 8 }}>
+              <Mark size={22} />
+              <span>Routini · part of the TynHub network</span>
+            </span>
+            <div className="segmented" role="group" aria-label="Theme">
+              {THEMES.map((t) => (
+                <button key={t.id} type="button" aria-pressed={theme === t.id} onClick={() => setTheme(t.id)}>
+                  {t.label}
+                </button>
+              ))}
+            </div>
           </div>
+          <nav className="public-footer-links" aria-label="Footer">
+            <span className="public-footer-group">
+              <Link to="/how-it-works">How it works</Link>
+              <Link to="/pricing">Pricing</Link>
+              <Link to="/privacy">Privacy</Link>
+              <Link to="/terms">Terms</Link>
+            </span>
+            <span className="public-footer-group">
+              <a href={REPO_URL} target="_blank" rel="noreferrer">
+                Source (AGPL-3.0)
+              </a>
+              <a href={RUNNER_REPO_URL} target="_blank" rel="noreferrer">
+                routini-runner (Apache-2.0)
+              </a>
+            </span>
+          </nav>
         </div>
       </footer>
     </div>
