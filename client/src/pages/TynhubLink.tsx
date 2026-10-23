@@ -9,13 +9,15 @@ import { useOrg } from '../shell/OrgContext'
 
 export function TynhubLink() {
   const org = useOrg()
-  const providers = useApi<{ oidc: { name: string } | null }>('/api/auth/providers')
+  const providers = useApi<{ oidc: { name: string; tynhub?: boolean } | null; hosted?: boolean }>('/api/auth/providers')
   const [slug, setSlug] = useState(org.org?.tynhubOrg ?? '')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [note, setNote] = useState<string | null>(null)
   useEffect(() => setSlug(org.org?.tynhubOrg ?? ''), [org.org?.tynhubOrg])
-  const name = providers.data?.oidc?.name ?? 'TynHub'
+  // TynHub sign-in (and so org links) exists only on TynHub-hosted Routini.
+  if (!providers.data?.hosted) return null
+  const name = providers.data.oidc?.tynhub ? providers.data.oidc.name : 'TynHub'
 
   async function save(e: FormEvent) {
     e.preventDefault()

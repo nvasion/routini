@@ -5,6 +5,7 @@ import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest'
 import { makeTestApp, type TestApp } from './helpers/testApp'
 import { FakeIssuer, type FakeIdentity } from './helpers/fakeIssuer'
 import type { Config } from '../server/src/config'
+import { loadConfig } from '../server/src/config'
 import { requestedScopes, safeNext } from '../server/src/http/oidc'
 
 let issuer: FakeIssuer
@@ -29,7 +30,8 @@ async function app(extra: Partial<Config> = {}): Promise<TestApp> {
     config: {
       publicUrl: 'http://routini.test',
       clientUrl: 'http://console.test',
-      oidc: { issuer: issuer.url, clientId: issuer.clientId, clientSecret: issuer.clientSecret, name: 'TynHub', scopes: 'openid profile email orgs' },
+      mode: 'hosted',
+      oidc: { issuer: issuer.url, clientId: issuer.clientId, clientSecret: issuer.clientSecret, name: 'TynHub', scopes: 'openid profile email orgs', tynhub: true },
       ...extra,
     },
   })
@@ -62,7 +64,7 @@ const me = (session: string) => t.request.get('/api/auth/me').set('Cookie', sess
 describe('sign in with TynHub', () => {
   it('advertises the provider and creates a new account from verified claims', async () => {
     await app({ signup: 'open' })
-    expect((await t.request.get('/api/auth/providers')).body).toEqual({ oidc: { name: 'TynHub' }, signupOpen: true, mail: false, emailVerification: false })
+    expect((await t.request.get('/api/auth/providers')).body).toEqual({ oidc: { name: 'TynHub', tynhub: true }, hosted: true, signupOpen: true, mail: false, emailVerification: false })
     const { cb, location, session } = await signIn({ sub: 'u-1', email: 'Ada@Example.com', email_verified: true, name: 'Ada' }, { next: '/o/x/inbox' })
     expect(cb.status).toBe(302)
     expect(location).toBe('http://console.test/o/x/inbox')
@@ -79,7 +81,7 @@ describe('sign in with TynHub', () => {
     expect((await me(again.session!)).body.user.id).toBe(who.user.id)
   })
 
-  it('never attaches a new identity to an existing account by email; linking is explicit', async () => {
+  it('never attaches a new identity to an existing account whose email is unverified; linking is explicit', async () => {
     await app({ signup: 'open' })
     const local = await t.signup('grace@example.com')
     const { location, session } = await signIn({ sub: 'u-2', email: 'grace@example.com', email_verified: true })
@@ -95,6 +97,22 @@ describe('sign in with TynHub', () => {
     expect((await t.request.get('/api/auth/identities').set('Cookie', pw)).body.provider.linked).toBe(true)
     const viaTynhub = await signIn({ sub: 'u-2' })
     expect((await me(viaTynhub.session!)).body.user.id).toBe(local.userId)
+  })
+
+  it('links an existing account by email only when both sides verified it', async () => {
+    await app({ signup: 'open' })
+    const local = await t.signup('hopper@example.com')
+    await t.ctx.db.system((q) => q.query('UPDATE users SET email_verified_at = now() WHERE id = $1', [local.userId]))
+
+    // TynHub has not verified the address: refused, nothing linked.
+    const unverified = await signIn({ sub: 'u-7', email: 'hopper@example.com', email_verified: false })
+    expect(unverified.session).toBeNull()
+
+    // Both verified: the TynHub identity joins the existing account.
+    const { session } = await signIn({ sub: 'u-7', email: 'Hopper@Example.com', email_verified: true })
+    expect((await me(session!)).body.user.id).toBe(local.userId)
+    const login = await t.request.post('/api/auth/login').send({ email: 'hopper@example.com', password: 'password123' })
+    expect((await t.request.get('/api/auth/identities').set('Cookie', cookieFrom(login, 'routini_token')!)).body.provider.linked).toBe(true)
   })
 
   it('requires a verified email for new accounts', async () => {
@@ -157,6 +175,31 @@ describe('sign in with TynHub', () => {
     expect((await t.request.get('/api/auth/providers')).body).toMatchObject({ oidc: null })
     const start = await t.request.get('/api/auth/oidc/start')
     expect(decodeURIComponent(start.headers['location'] as string)).toContain('not configured')
+  })
+
+  it('self-hosted: generic OIDC works, but TynHub orgs and org links do not apply', async () => {
+    await app({ signup: 'open', mode: 'selfhost', oidc: { issuer: issuer.url, clientId: issuer.clientId, clientSecret: issuer.clientSecret, name: 'Single sign-on', scopes: 'openid profile email orgs', tynhub: false } })
+    expect((await t.request.get('/api/auth/providers')).body).toMatchObject({ oidc: { name: 'Single sign-on', tynhub: false }, hosted: false })
+    const owner = await t.signup('selfowner@example.com')
+    expect((await owner.put(`/api/orgs/${owner.orgSlug}/tynhub`, { tynhubOrg: 'acme' })).status).toBe(404)
+    // Pretend the org was linked before: an orgs claim still joins nothing.
+    await t.ctx.db.system((q) => q.query('UPDATE orgs SET tynhub_org = $1 WHERE id = $2', ['acme', owner.orgId]))
+    const res = await signIn({ sub: 'u-8', email: 'dex@corp.example', email_verified: true, orgs: [{ slug: 'acme', role: 'owner' }] })
+    const who = (await me(res.session!)).body
+    expect(who.orgs).toEqual([expect.objectContaining({ role: 'owner' })])
+    expect(who.orgs[0].slug).not.toBe(owner.orgSlug)
+  })
+
+  it('config: TynHub sign-in is hosted only; self-hosted keeps generic OIDC', () => {
+    const base = { NODE_ENV: 'test', ROUTINI_OIDC_CLIENT_ID: 'routini', ROUTINI_OIDC_CLIENT_SECRET: 's' }
+    expect(() => loadConfig({ ...base, ROUTINI_OIDC_ISSUER: 'https://tynhub.com' })).toThrow(/only available on TynHub-hosted Routini/)
+    expect(() => loadConfig({ ...base, ROUTINI_OIDC_ISSUER: 'https://auth.tynhub.com/' })).toThrow(/only available on TynHub-hosted Routini/)
+    expect(loadConfig({ ...base, ROUTINI_MODE: 'hosted', ROUTINI_OIDC_ISSUER: 'https://tynhub.com/' }).oidc).toEqual({
+      issuer: 'https://tynhub.com', clientId: 'routini', clientSecret: 's', name: 'TynHub', scopes: 'openid profile email orgs', tynhub: true,
+    })
+    // A look-alike host is not TynHub.
+    expect(loadConfig({ ...base, ROUTINI_OIDC_ISSUER: 'https://nottynhub.com' }).oidc).toMatchObject({ name: 'Single sign-on', scopes: 'openid profile email', tynhub: false })
+    expect(loadConfig({ ...base, ROUTINI_OIDC_ISSUER: 'https://dex.corp.example', ROUTINI_OIDC_NAME: 'Corp SSO' }).oidc).toMatchObject({ name: 'Corp SSO', tynhub: false })
   })
 
   it('requests only the scopes the provider supports (strict providers reject TynHub orgs)', () => {

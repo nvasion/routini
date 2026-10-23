@@ -81,7 +81,8 @@ export async function signInWithClaims(
   claims: OidcClaims,
   linkUserId: string | null,
 ): Promise<{ userId: string; created: boolean; joined: string[] }> {
-  const tynhubOrgs = parseOrgsClaim(claims.orgs)
+  // TynHub org memberships only mean something when the provider is TynHub.
+  const tynhubOrgs = ctx.config.oidc?.tynhub ? parseOrgsClaim(claims.orgs) : []
   return ctx.db.tx(async (q) => {
     const existing = await findUserByIdentity(q, provider, claims.sub)
     let userId: string
@@ -96,20 +97,27 @@ export async function signInWithClaims(
     } else {
       const email = (claims.email ?? '').trim().toLowerCase()
       if (!email || claims.email_verified !== true) throw new OidcError('Your account needs a verified email address to sign in to Routini')
-      const [taken] = await q.query<{ id: string }>('SELECT id FROM users WHERE lower(email) = $1', [email])
-      if (taken) throw new OidcError('An account with this email already exists: sign in with your password, then link it from your account menu')
-      const linkedOrgs = await orgsLinkedToTynhub(q, tynhubOrgs.map((o) => o.slug))
-      const signupOpen = ctx.config.signup === 'open' || (ctx.config.signup === 'first-user-only' && (await countUsers(q)) === 0)
-      if (!signupOpen && linkedOrgs.length === 0) throw new OidcError('Signup is closed on this server; ask an admin to link your TynHub org')
-      const displayName = (claims.name ?? claims.preferred_username ?? '').slice(0, 100)
-      const user = await createUser(q, { email, passwordHash: null, displayName, emailVerified: true })
-      await addIdentity(q, user.id, provider, claims.sub)
-      userId = user.id
-      created = true
-      // A personal org only when they are not joining a linked one.
-      if (linkedOrgs.length === 0) {
-        const org = await createOrg(q, { name: displayName || email.split('@')[0]!, slugBase: email.split('@')[0]!, plan: ctx.config.mode === 'hosted' ? 'free' : 'selfhost' })
-        await q.query(`INSERT INTO memberships (org_id, user_id, role) VALUES ($1, $2, 'owner')`, [org.id, user.id])
+      const [taken] = await q.query<{ id: string; verified: boolean }>('SELECT id, email_verified_at IS NOT NULL AS verified FROM users WHERE lower(email) = $1', [email])
+      // Link only when both sides verified the address; otherwise a provider
+      // account with someone else's unverified email could take this one over.
+      if (taken && !taken.verified) throw new OidcError('An account with this email already exists: sign in with your password, then link it from your account menu')
+      if (taken) {
+        await addIdentity(q, taken.id, provider, claims.sub)
+        userId = taken.id
+      } else {
+        const linkedOrgs = await orgsLinkedToTynhub(q, tynhubOrgs.map((o) => o.slug))
+        const signupOpen = ctx.config.signup === 'open' || (ctx.config.signup === 'first-user-only' && (await countUsers(q)) === 0)
+        if (!signupOpen && linkedOrgs.length === 0) throw new OidcError('Signup is closed on this server; ask an admin to link your TynHub org')
+        const displayName = (claims.name ?? claims.preferred_username ?? '').slice(0, 100)
+        const user = await createUser(q, { email, passwordHash: null, displayName, emailVerified: true })
+        await addIdentity(q, user.id, provider, claims.sub)
+        userId = user.id
+        created = true
+        // A personal org only when they are not joining a linked one.
+        if (linkedOrgs.length === 0) {
+          const org = await createOrg(q, { name: displayName || email.split('@')[0]!, slugBase: email.split('@')[0]!, plan: ctx.config.mode === 'hosted' ? 'free' : 'selfhost' })
+          await q.query(`INSERT INTO memberships (org_id, user_id, role) VALUES ($1, $2, 'owner')`, [org.id, user.id])
+        }
       }
     }
 
@@ -161,8 +169,8 @@ export function oidcRouter(ctx: AppContext, auth: Auth): Router {
     void (async () => {
       const signup = ctx.config.signup
       const signupOpen = signup === 'open' || (signup === 'first-user-only' && (await countUsers(ctx.db)) === 0)
-      res.json({ oidc: cfg ? { name: cfg.name } : null, signupOpen, mail, emailVerification: ctx.config.requireVerifiedEmail })
-    })().catch(() => res.json({ oidc: cfg ? { name: cfg.name } : null, signupOpen: false, mail, emailVerification: ctx.config.requireVerifiedEmail }))
+      res.json({ oidc: cfg ? { name: cfg.name, tynhub: cfg.tynhub } : null, hosted: ctx.config.mode === 'hosted', signupOpen, mail, emailVerification: ctx.config.requireVerifiedEmail })
+    })().catch(() => res.json({ oidc: cfg ? { name: cfg.name, tynhub: cfg.tynhub } : null, hosted: ctx.config.mode === 'hosted', signupOpen: false, mail, emailVerification: ctx.config.requireVerifiedEmail }))
   })
 
   r.get('/oidc/start', (req: Request, res: Response) => {
