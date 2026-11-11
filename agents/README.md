@@ -16,9 +16,8 @@ docker build -f claude-code/Dockerfile -t routini/agent-claude:latest .
 docker build -f fake/Dockerfile -t routini/agent-fake:test .
 ```
 
-Omnimancer and OpenCode use the same contract. Point `ROUTINI_AGENT_IMAGE_OMNIMANCER`
-or `ROUTINI_AGENT_IMAGE_OPENCODE` at an image that follows it; without one,
-those agents' steps fail with a clear message.
+Omnimancer uses the same contract. Point `ROUTINI_AGENT_IMAGE_OMNIMANCER`
+at an image that follows it; without one, its steps fail with a clear message.
 
 Images for other agents reuse `entrypoint.sh` (clone, broker CA, check, commit,
 push) and add an executable `/usr/local/bin/routini-agent`. When it exists, the
@@ -66,7 +65,7 @@ Omnimancer's stream-json variant directly.
 | `ROUTINI_COMMIT_MESSAGE` | Commit message for the agent's changes. |
 | `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` | Model endpoint, from the org's AI settings. |
 | `CLAUDE_CODE_USE_BEDROCK` / `AWS_REGION` / `AWS_BEARER_TOKEN_BEDROCK` | Model endpoint when the org routes Claude Code through AWS Bedrock (Bedrock API key). |
-| `ROUTINI_ENDPOINT` / `ROUTINI_ENDPOINT_KEY` | Other agents (Omnimancer, OpenCode) instead of the vars above: the endpoint name from the AI settings (`anthropic`, `openrouter`, `aws-bedrock`, `gateway`, …) and its key. The image maps these onto the agent's own config. |
+| `ROUTINI_ENDPOINT` / `ROUTINI_ENDPOINT_KEY` | Other agents (Omnimancer) instead of the vars above: the endpoint name from the AI settings (`anthropic`, `openrouter`, `aws-bedrock`, `gateway`, …) and its key. The image maps these onto the agent's own config. |
 | `ROUTINI_ENDPOINT_REGION` / `ROUTINI_GATEWAY_URL` | AWS region for `aws-bedrock` (the key is a Bedrock API key, sent as `authorization: Bearer`); URL for `gateway`. |
 | `GITHUB_TOKEN`, `SLACK_BOT_TOKEN`, … | Connected integrations whose scope includes this agent. |
 
@@ -133,7 +132,6 @@ and the agent can reach what that server reaches.
 |---|---|---|
 | `ROUTINI_FLEET_AGENT_IMAGE_CLAUDE` | `ghcr.io/nvasion/routini-agent-claude:latest` | Claude Code on fleet hosts. |
 | `ROUTINI_FLEET_AGENT_IMAGE_OMNIMANCER` | `ghcr.io/nvasion/routini-agent-omnimancer:latest` | Omnimancer on fleet hosts. |
-| `ROUTINI_FLEET_AGENT_IMAGE_OPENCODE` | — | OpenCode; no image is published, so without one its fleet steps fail with a clear message. |
 | `ROUTINI_FLEET_EGRESS_IMAGE` | `ghcr.io/nvasion/routini-egress:latest` | The egress proxy started next to the agent container. |
 
 These are separate from the `ROUTINI_AGENT_IMAGE_*` vars, which stay with the

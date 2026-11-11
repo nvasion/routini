@@ -57,7 +57,7 @@ const sockets = new Set<Socket>()
 
 beforeEach(async () => {
   t = await makeTestApp({
-    engine: { executors: { agent: agentExecutor({ docker: noDocker, runnerPollMs: 25, runnerOfflineGraceMs: 300 }) } },
+    engine: { executors: { agent: agentExecutor({ docker: noDocker, runnerPollMs: 25, runnerOfflineGraceMs: 300, fleetImages: { omnimancer: undefined } }) } },
   })
   u = await t.signup('fleet-agent@example.com')
   base = `/api/orgs/${u.orgSlug}`
@@ -264,9 +264,9 @@ describe('agent steps on a fleet host', () => {
     const { credential, hostId } = await enroll()
     const r = await connect(credential)
 
-    // No image configured for this agent on fleet hosts (OpenCode has no published one).
-    const open = await runNow(await agentJob({ agent: 'opencode', runOn: { hostId } }))
-    expect(open.detail.steps[0]!.error).toBe('No fleet image is configured for the opencode agent; set ROUTINI_FLEET_AGENT_IMAGE_OPENCODE on this server')
+    // No image configured for this agent on fleet hosts (this server unsets Omnimancer's).
+    const missing = await runNow(await agentJob({ agent: 'omnimancer', runOn: { hostId } }))
+    expect(missing.detail.steps[0]!.error).toBe('No fleet image is configured for the omnimancer agent; set ROUTINI_FLEET_AGENT_IMAGE_OMNIMANCER on this server')
 
     // The runner was revoked.
     const jobId = await agentJob({ runOn: { hostId } })

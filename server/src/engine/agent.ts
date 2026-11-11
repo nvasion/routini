@@ -98,7 +98,6 @@ export function defaultAgentImages(env: NodeJS.ProcessEnv = process.env): Partia
   return {
     claude: env['ROUTINI_AGENT_IMAGE_CLAUDE'] || 'routini/agent-claude:latest',
     omnimancer: env['ROUTINI_AGENT_IMAGE_OMNIMANCER'] || undefined,
-    opencode: env['ROUTINI_AGENT_IMAGE_OPENCODE'] || undefined,
   }
 }
 
