@@ -178,10 +178,9 @@ stored secrets cannot be decrypted.
 | `CREDENTIALS_MASTER_KEY` | required in production | 32 bytes (hex/base64). Encrypts every stored secret. |
 | `CLIENT_URL` | `http://localhost:5173` | Console origin (CORS). |
 | `DOCKER_HOST` | local socket | Where agent containers run. |
-| `ROUTINI_AGENT_IMAGE_CLAUDE` | `routini/agent-claude:latest` | Agent image (also `_OMNIMANCER`, `_OPENCODE`). |
+| `ROUTINI_AGENT_IMAGE_CLAUDE` | `routini/agent-claude:latest` | Agent image (also `_OMNIMANCER`). |
 | `ROUTINI_FLEET_AGENT_IMAGE_CLAUDE` | `ghcr.io/nvasion/routini-agent-claude:latest` | Agent image a fleet host pulls for `runOn` steps. |
 | `ROUTINI_FLEET_AGENT_IMAGE_OMNIMANCER` | `ghcr.io/nvasion/routini-agent-omnimancer:latest` | The same for Omnimancer. |
-| `ROUTINI_FLEET_AGENT_IMAGE_OPENCODE` | — | The same for OpenCode; no image is published, so without one its fleet steps fail with a clear message. |
 | `ROUTINI_FLEET_EGRESS_IMAGE` | `ghcr.io/nvasion/routini-egress:latest` | Egress proxy a fleet host runs beside the agent container. |
 | `ROUTINI_RUNNER_LATEST_VERSION` | — (ask GitHub) | Pin the routini-runner release the Fleet page offers as an update, e.g. `v0.3.0` (air-gapped installs). |
 | `ROUTINI_RUNNER_RELEASES` | — | `off`: never ask GitHub for the latest runner release (no update offers). |

@@ -4,7 +4,7 @@ export type Role = 'owner' | 'admin' | 'member' | 'viewer'
 export type RunStatus = 'queued' | 'running' | 'waiting' | 'succeeded' | 'failed' | 'canceled'
 export type StepStatus = 'pending' | 'running' | 'waiting' | 'succeeded' | 'failed' | 'skipped' | 'canceled'
 export type StepKind = 'action' | 'agent' | 'approval'
-export type AgentId = 'claude' | 'omnimancer' | 'opencode'
+export type AgentId = 'claude' | 'omnimancer'
 
 export interface User {
   id: string

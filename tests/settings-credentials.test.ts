@@ -37,7 +37,7 @@ describe('settings', () => {
 
   it('rejects an invalid patch without applying any part of it', async () => {
     const res = await u.put(`${base()}/settings`, {
-      ai: { defaultAgent: 'opencode' },
+      ai: { defaultAgent: 'opencode' }, // no longer an agent
       endpointApiKeys: { anthropic: 'sk-ant-real-key-123', notAnEndpoint: 'x' },
     })
     expect(res.status).toBe(400)
@@ -47,7 +47,8 @@ describe('settings', () => {
   })
 
   it('enforces per-agent endpoint allow-lists and gateway URLs', async () => {
-    expect((await u.put(`${base()}/settings`, { ai: { agents: { opencode: { endpoint: 'aws-bedrock' } } } })).status).toBe(400)
+    expect((await u.put(`${base()}/settings`, { ai: { agents: { claude: { endpoint: 'openai' } } } })).status).toBe(400)
+    expect((await u.put(`${base()}/settings`, { ai: { agents: { opencode: { endpoint: 'openrouter' } } } })).status).toBe(400)
     expect((await u.put(`${base()}/settings`, { ai: { agents: { claude: { endpoint: 'gateway' } } } })).status).toBe(400)
     expect((await u.put(`${base()}/settings`, { ai: { agents: { nope: { endpoint: 'anthropic' } } } })).status).toBe(400)
   })
@@ -88,7 +89,7 @@ describe('settings', () => {
   })
 
   it('settings are per org', async () => {
-    await u.put(`${base()}/settings`, { ai: { defaultAgent: 'opencode' } })
+    expect((await u.put(`${base()}/settings`, { ai: { defaultAgent: 'omnimancer' } })).status).toBe(200)
     const v = await t.signup('else@example.com')
     expect((await v.get(`/api/orgs/${v.orgSlug}/settings`)).body.ai.defaultAgent).toBe('claude')
   })

@@ -7,7 +7,7 @@
 // Live connection checks live in ./providers.ts.
 // ─────────────────────────────────────────────────────────────────────────────
 
-export const AGENT_IDS = ['claude', 'omnimancer', 'opencode'] as const
+export const AGENT_IDS = ['claude', 'omnimancer'] as const
 export type AgentId = (typeof AGENT_IDS)[number]
 
 export interface IntegrationField {

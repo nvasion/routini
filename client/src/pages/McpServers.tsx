@@ -13,7 +13,6 @@ import { useOrg } from '../shell/OrgContext'
 const AGENTS: Array<[AgentId, string]> = [
   ['claude', 'Claude Code'],
   ['omnimancer', 'Omnimancer'],
-  ['opencode', 'OpenCode'],
 ]
 
 export function McpServers() {

@@ -485,7 +485,6 @@ function StepEditor(props: {
                 <select id={id} className="select" value={s.agent} onChange={(e) => set({ agent: e.target.value as StepForm['agent'] })}>
                   <option value="claude">Claude Code</option>
                   <option value="omnimancer">Omnimancer</option>
-                  <option value="opencode">OpenCode</option>
                 </select>
               )}
             </Field>
