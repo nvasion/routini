@@ -10,7 +10,7 @@ import type { AgentId } from '../integrations/catalog.js'
 export function fleetAgentImages(env: NodeJS.ProcessEnv = process.env): Partial<Record<AgentId, string>> {
   return {
     claude: env['ROUTINI_FLEET_AGENT_IMAGE_CLAUDE'] || 'ghcr.io/nvasion/routini-agent-claude:latest',
-    omnimancer: env['ROUTINI_FLEET_AGENT_IMAGE_OMNIMANCER'] || undefined,
+    omnimancer: env['ROUTINI_FLEET_AGENT_IMAGE_OMNIMANCER'] || 'ghcr.io/nvasion/routini-agent-omnimancer:latest',
     opencode: env['ROUTINI_FLEET_AGENT_IMAGE_OPENCODE'] || undefined,
   }
 }

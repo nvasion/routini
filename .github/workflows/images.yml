@@ -1,10 +1,11 @@
 # Publishes the images a fleet host pulls (see agents/README.md):
 #
-#   ghcr.io/nvasion/routini-agent-claude   the Claude Code agent image
-#   ghcr.io/nvasion/routini-egress         the credential broker / egress proxy
+#   ghcr.io/nvasion/routini-agent-claude       the Claude Code agent image
+#   ghcr.io/nvasion/routini-agent-omnimancer   the Omnimancer agent image
+#   ghcr.io/nvasion/routini-egress             the credential broker / egress proxy
 #
-# Both are multi-arch (linux/amd64, linux/arm64) and tagged {X.Y.Z, X.Y, latest}
-# from a v* tag. Runners pull them without registry auth, so both packages must
+# All are multi-arch (linux/amd64, linux/arm64) and tagged {X.Y.Z, X.Y, latest}
+# from a v* tag. Runners pull them without registry auth, so every package must
 # be public — GHCR creates a package private on its first push, so set each
 # one's visibility to Public once after that.
 
@@ -69,6 +70,11 @@ jobs:
             image: ghcr.io/nvasion/routini-agent-claude
             context: agents
             dockerfile: agents/claude-code/Dockerfile
+            target: ''
+          - name: agent-omnimancer
+            image: ghcr.io/nvasion/routini-agent-omnimancer
+            context: agents
+            dockerfile: agents/omnimancer/Dockerfile
             target: ''
           - name: egress
             image: ghcr.io/nvasion/routini-egress

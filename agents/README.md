@@ -33,6 +33,12 @@ docker build -f omnimancer/Dockerfile -t routini/agent-omnimancer:latest .   # -
 # then on the server: ROUTINI_AGENT_IMAGE_OMNIMANCER=routini/agent-omnimancer:latest
 ```
 
+It shares the Claude Code image's `node:22-bookworm` base, so a step's checks
+have the same tools (node, python3, make, g++) whichever agent runs.
+`OMNIMANCER_REF` defaults to a pinned commit; bump it in the Dockerfile to
+take a newer Omnimancer. Fleet hosts pull the published
+`ghcr.io/nvasion/routini-agent-omnimancer` (see below).
+
 The launcher runs `omn -p … --output-format stream-json --dangerously-skip-permissions`.
 It writes `~/.omnimancer/config.json` (provider, model, Bedrock `aws_region`),
 passes the key as `OMNIMANCER_<PROVIDER>_API_KEY` (never on disk), and puts
@@ -126,8 +132,8 @@ and the agent can reach what that server reaches.
 | Variable | Default | Meaning |
 |---|---|---|
 | `ROUTINI_FLEET_AGENT_IMAGE_CLAUDE` | `ghcr.io/nvasion/routini-agent-claude:latest` | Claude Code on fleet hosts. |
-| `ROUTINI_FLEET_AGENT_IMAGE_OMNIMANCER` | — | Omnimancer; without it those steps fail with a clear message. |
-| `ROUTINI_FLEET_AGENT_IMAGE_OPENCODE` | — | OpenCode; same. |
+| `ROUTINI_FLEET_AGENT_IMAGE_OMNIMANCER` | `ghcr.io/nvasion/routini-agent-omnimancer:latest` | Omnimancer on fleet hosts. |
+| `ROUTINI_FLEET_AGENT_IMAGE_OPENCODE` | — | OpenCode; no image is published, so without one its fleet steps fail with a clear message. |
 | `ROUTINI_FLEET_EGRESS_IMAGE` | `ghcr.io/nvasion/routini-egress:latest` | The egress proxy started next to the agent container. |
 
 These are separate from the `ROUTINI_AGENT_IMAGE_*` vars, which stay with the
@@ -136,7 +142,7 @@ sandbox may use one you built locally.
 
 The images must be **public**. v1 sends no registry credentials, so a runner
 pulls anonymously; a private image fails at pull time. [images.yml](../.github/workflows/images.yml)
-publishes both to GHCR on every `v*` tag, multi-arch (amd64 and arm64) and
+publishes all three (Claude Code, Omnimancer, egress) to GHCR on every `v*` tag, multi-arch (amd64 and arm64) and
 tagged `X.Y.Z`, `X.Y` and `latest`.
 
 Policy still applies — rules can match agent steps by where they run (sandbox or
