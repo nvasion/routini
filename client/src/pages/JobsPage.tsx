@@ -6,6 +6,7 @@ import { describeTrigger, relativeTime } from '../lib/format'
 import { useApi } from '../lib/hooks'
 import type { Job } from '../lib/types'
 import { useOrg } from '../shell/OrgContext'
+import { PLAN_BUILD_SHIP_TEMPLATE } from './jobForm'
 
 export function JobsPage() {
   const org = useOrg()
@@ -28,9 +29,20 @@ export function JobsPage() {
       <div className="page-head">
         <h1 className="page-title">Jobs</h1>
         {org.can('member') && (
-          <Link className="btn primary" to={org.path('/jobs/new')}>
-            New job
-          </Link>
+          <div className="inline">
+            <Link className="btn primary" to={org.path('/jobs/new')}>
+              New job
+            </Link>
+            <details style={{ position: 'relative' }}>
+              <summary className="btn">New from template</summary>
+              <div className="card" role="menu" style={{ position: 'absolute', right: 0, marginTop: 4, zIndex: 10, width: 'min(300px, calc(100vw - 32px))', padding: 6 }}>
+                <Link role="menuitem" className="btn" style={{ width: '100%', justifyContent: 'flex-start', flexDirection: 'column', alignItems: 'flex-start', height: 'auto', padding: '8px 10px', border: 0, whiteSpace: 'normal', textAlign: 'left' }} to={org.path(`/jobs/new?template=${PLAN_BUILD_SHIP_TEMPLATE}`)}>
+                  <span>Plan, build, ship</span>
+                  <span className="hint">A read-only plan step picks who builds, then an agent builds and opens a PR.</span>
+                </Link>
+              </div>
+            </details>
+          </div>
         )}
       </div>
       <p className="lead">A job is a trigger plus steps. Steps run in order: actions (HTTP, SSH, IMAP), coding agents, and approvals that wait for a person.</p>

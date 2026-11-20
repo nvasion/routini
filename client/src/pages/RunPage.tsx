@@ -229,7 +229,12 @@ function StepItem(props: {
   const [comment, setComment] = useState('')
   const output = step.output ?? {}
   const pr = output['pullRequest'] as { url: string; number: number } | undefined
+  const out = output['out']
   const placement = placementLabel(events)
+  // The engine logs the skip reason on the step itself; show it up front rather
+  // than buried in the generic entry list below.
+  const skipLog = step.status === 'skipped' ? events.find((e) => e.type === 'log' && String(e.data['message'] ?? '').startsWith('Skipped:')) : undefined
+  const shownEvents = skipLog ? events.filter((e) => e.id !== skipLog.id) : events
   return (
     <li className="tl-item">
       <div className="tl-rail">
@@ -251,13 +256,17 @@ function StepItem(props: {
         </div>
         {spec?.kind === 'agent' && <details><summary className="muted">Prompt</summary><pre className="code">{spec.config.prompt}</pre></details>}
 
-        {events.length > 0 && (
+        {skipLog && <div className="meta">{String(skipLog.data['message'] ?? '')}</div>}
+
+        {shownEvents.length > 0 && (
           <div className="tl-entries">
-            {events.map((e) => (
+            {shownEvents.map((e) => (
               <EventLine key={e.id} e={e} />
             ))}
           </div>
         )}
+
+        {Boolean(out && typeof out === 'object' && !Array.isArray(out)) && <OutTable out={out as Record<string, unknown>} />}
 
         {approval && (
           <div className="approval-box">
@@ -304,6 +313,45 @@ function StepItem(props: {
         )}
       </div>
     </li>
+  )
+}
+
+const OUT_VALUE_TRUNCATE = 200
+
+/** An agent step's validated `out` fields: a key/value list (like Fleet's host facts), long values truncated with a toggle. */
+function OutTable({ out }: { out: Record<string, unknown> }) {
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const toggle = (key: string) =>
+    setExpanded((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  return (
+    <div className="stack" style={{ gap: 6, marginTop: 10 }}>
+      <span className="meta">Returned</span>
+      <dl className="kv" aria-label="Returned" style={{ fontSize: 13 }}>
+        {Object.entries(out).map(([key, value]) => {
+          const text = typeof value === 'string' ? value : JSON.stringify(value)
+          const long = text.length > OUT_VALUE_TRUNCATE
+          const shown = expanded.has(key)
+          return (
+            <div key={key} style={{ display: 'contents' }}>
+              <dt className="mono">{key}</dt>
+              <dd>
+                <span style={{ whiteSpace: 'pre-wrap' }}>{long && !shown ? `${text.slice(0, OUT_VALUE_TRUNCATE)}…` : text}</span>
+                {long && (
+                  <button type="button" className="btn small" style={{ marginLeft: 8 }} onClick={() => toggle(key)}>
+                    {shown ? 'Show less' : 'Show more'}
+                  </button>
+                )}
+              </dd>
+            </div>
+          )
+        })}
+      </dl>
+    </div>
   )
 }
 

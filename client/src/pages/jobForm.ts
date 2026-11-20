@@ -1,7 +1,20 @@
 // Job editor form model ⇄ API payload. Pure; see jobForm.test.ts.
 // The server validates everything again; this catches the obvious early.
 
-import type { AgentConfig, AgentId, Host, Job, Step, StepKind, When } from '../lib/types'
+import type { AgentConfig, AgentId, AgentReturnField, Host, Job, Step, StepCondition, StepKind, When } from '../lib/types'
+
+/** One row of an agent step's "Returns" list editor. `choicesText` is comma separated; a choice that needs an integration is written `value:integrationId` (e.g. `factory-task:factory`). */
+export interface ReturnFieldForm {
+  key: string
+  name: string
+  type: AgentReturnField['type']
+  choicesText: string
+  required: boolean
+  description: string
+}
+
+/** "" means the step has no condition. */
+export type IfOp = '' | StepCondition['op']
 
 export interface StepForm {
   key: string
@@ -11,6 +24,11 @@ export interface StepForm {
   when: When
   retries: string
   timeoutSec: string
+  // condition ("Run this step only if"), on every kind
+  ifPath: string
+  ifOp: IfOp
+  /** eq/ne: the raw value. in/not_in: comma separated. exists/missing: unused. */
+  ifValue: string
   // action
   actionType: 'http' | 'ssh' | 'imap' | 'factory' | 'azure-boards' | 'teams'
   url: string
@@ -48,8 +66,12 @@ export interface StepForm {
   repoUrl: string
   baseBranch: string
   output: 'pr' | 'branch' | 'none'
+  /** A shallow, read-only checkout next to `repoUrl`; forces `output` to 'none'. */
+  repoReadOnly: boolean
   checkCommand: string
   model: string
+  /** Typed fields this step returns; later steps read them as {{steps.<id>.out.<name>}}. */
+  returns: ReturnFieldForm[]
   /** Run in this environment (its repository) instead of a fresh container. */
   environmentId: string
   /** Run on a fleet host: a host id, ALERT_HOST, or POOL_HOST. Blank is the Routini sandbox. */
@@ -171,6 +193,11 @@ export function runOnOptions(opts: { hosts: Host[]; alertTrigger: boolean; selec
 let counter = 0
 const nextKey = () => `s${++counter}`
 
+/** A blank row for the "Returns" list editor. */
+export function emptyReturnField(): ReturnFieldForm {
+  return { key: nextKey(), name: '', type: 'text', choicesText: '', required: true, description: '' }
+}
+
 export function emptyStep(kind: StepKind, index: number): StepForm {
   return {
     key: nextKey(),
@@ -180,6 +207,9 @@ export function emptyStep(kind: StepKind, index: number): StepForm {
     when: 'on_success',
     retries: '0',
     timeoutSec: '',
+    ifPath: '',
+    ifOp: '',
+    ifValue: '',
     actionType: 'http',
     url: '',
     method: 'GET',
@@ -212,8 +242,10 @@ export function emptyStep(kind: StepKind, index: number): StepForm {
     repoUrl: '',
     baseBranch: 'main',
     output: 'pr',
+    repoReadOnly: false,
     checkCommand: '',
     model: '',
+    returns: [],
     environmentId: '',
     runOnHostId: '',
     runOnPoolGroup: '',
@@ -226,6 +258,31 @@ export function emptyStep(kind: StepKind, index: number): StepForm {
 
 export function emptyJob(): JobForm {
   return { name: '', description: '', enabled: true, triggerKind: 'manual', cronExpr: '0 9 * * 1-5', cronTz: guessTz(), alertNames: '', alertSeverities: [], alertLabels: '', steps: [emptyStep('action', 0)] }
+}
+
+/** The query value for the "Plan, build, ship" starter: /jobs/new?template=plan-build-ship. */
+export const PLAN_BUILD_SHIP_TEMPLATE = 'plan-build-ship'
+
+/**
+ * The "Plan, build, ship" starter: a read-only planning step whose typed
+ * output (what to build, and why) feeds a build step that opens a PR.
+ */
+export function planBuildShipTemplate(): JobForm {
+  const plan: StepForm = {
+    ...emptyStep('agent', 0),
+    id: 'plan',
+    name: 'Plan the work',
+    prompt: 'Read the task and the repository. Choose routini unless the work is large. Write a brief with acceptance criteria in request and say why in reason.',
+    repoReadOnly: true,
+    output: 'none',
+    returns: [
+      { key: nextKey(), name: 'builder', type: 'choice', choicesText: 'routini, factory-task:factory, factory-orchestration:factory', required: true, description: '' },
+      { key: nextKey(), name: 'request', type: 'text', choicesText: '', required: true, description: '' },
+      { key: nextKey(), name: 'reason', type: 'text', choicesText: '', required: true, description: '' },
+    ],
+  }
+  const build: StepForm = { ...emptyStep('agent', 1), id: 'build', name: 'Build and open PR', prompt: 'Build this: {{steps.plan.out.request}}', output: 'pr' }
+  return { ...emptyJob(), steps: [plan, build] }
 }
 
 function guessTz(): string {
@@ -256,8 +313,27 @@ export function fromJob(job: Job): JobForm {
   }
 }
 
+/** A step's `if` as the three form fields; no condition round-trips to blanks. */
+function fromCondition(c: StepCondition | undefined): Pick<StepForm, 'ifPath' | 'ifOp' | 'ifValue'> {
+  if (!c) return { ifPath: '', ifOp: '', ifValue: '' }
+  const value = c.op === 'in' || c.op === 'not_in' ? (Array.isArray(c.value) ? c.value.join(', ') : '') : typeof c.value === 'string' ? c.value : ''
+  return { ifPath: c.path, ifOp: c.op, ifValue: value }
+}
+
+/** An agent's `returns` as the list editor's rows; a choice's `requires` round-trips as `value:integrationId`. */
+function fromReturns(returns: AgentReturnField[] | undefined): ReturnFieldForm[] {
+  return (returns ?? []).map((r) => ({
+    key: nextKey(),
+    name: r.name,
+    type: r.type,
+    choicesText: (r.choices ?? []).map((c) => (c.requires ? `${c.value}:${c.requires}` : c.value)).join(', '),
+    required: r.required ?? true,
+    description: r.description ?? '',
+  }))
+}
+
 function fromStep(s: Step, i: number): StepForm {
-  const f = { ...emptyStep(s.kind, i), id: s.id, name: s.name, when: s.when, retries: String(s.retries ?? 0), timeoutSec: s.timeoutSec ? String(s.timeoutSec) : '' }
+  const f = { ...emptyStep(s.kind, i), id: s.id, name: s.name, when: s.when, retries: String(s.retries ?? 0), timeoutSec: s.timeoutSec ? String(s.timeoutSec) : '', ...fromCondition(s.if) }
   if (s.kind === 'action') {
     const c = s.config
     f.actionType = c.type
@@ -291,8 +367,10 @@ function fromStep(s: Step, i: number): StepForm {
       repoUrl: c.repo?.url ?? '',
       baseBranch: c.repo?.baseBranch ?? 'main',
       output: c.output ?? (c.repo || c.environmentId ? 'pr' : 'none'),
+      repoReadOnly: c.repo?.readOnly === true,
       checkCommand: c.check?.command ?? '',
       model: c.model ?? '',
+      returns: fromReturns(c.returns),
       environmentId: c.environmentId ?? '',
       runOnHostId: agentRunOnValue(c.runOn),
       runOnPoolGroup: c.runOn && 'pool' in c.runOn ? (c.runOn.pool.group ?? '') : '',
@@ -305,6 +383,79 @@ function fromStep(s: Step, i: number): StepForm {
   return f
 }
 
+const IF_PATH_RE = /^[A-Za-z0-9_.-]{1,200}$/
+
+/**
+ * A step's `if` from its three form fields, or undefined when no condition is
+ * set (ifOp === ''). Mirrors the server contract (engine/spec.ts): path shape
+ * and root, value shape per operator, and the "earlier step" rule.
+ */
+function buildCondition(s: StepForm, i: number, earlierIds: string[], label: string, errors: string[]): StepCondition | undefined {
+  if (!s.ifOp) return undefined
+  const path = s.ifPath.trim()
+  if (!path || !IF_PATH_RE.test(path)) {
+    errors.push(`${label}: condition path must use only letters, numbers and "_.-" (max 200 characters).`)
+    return undefined
+  }
+  const [root, refId] = path.split('.')
+  if (root !== 'steps' && root !== 'trigger') {
+    errors.push(`${label}: condition path must start with steps. or trigger.`)
+    return undefined
+  }
+  if (root === 'steps' && !earlierIds.includes(refId ?? '')) {
+    errors.push(`Step ${i + 1} condition refers to step '${refId ?? ''}', which does not run before it`)
+    return undefined
+  }
+  if (s.ifOp === 'exists' || s.ifOp === 'missing') return { path, op: s.ifOp }
+  if (s.ifOp === 'in' || s.ifOp === 'not_in') {
+    const values = list(s.ifValue)
+    if (values.length < 1 || values.length > 20) errors.push(`${label}: condition needs 1 to 20 values.`)
+    for (const v of values) if (v.length > 200) errors.push(`${label}: each condition value must be at most 200 characters.`)
+    return { path, op: s.ifOp, value: values }
+  }
+  const value = s.ifValue.trim()
+  if (!value) errors.push(`${label}: condition needs a value.`)
+  else if (value.length > 200) errors.push(`${label}: condition value must be at most 200 characters.`)
+  return { path, op: s.ifOp, value }
+}
+
+const RETURN_NAME_RE = /^[a-z][a-zA-Z0-9_]{0,39}$/
+const RETURN_CHOICE_RE = /^[a-z0-9][a-z0-9_-]{0,59}$/
+
+/**
+ * An agent step's `returns` from the "Returns" list editor, or undefined when
+ * the list is empty. Mirrors engine/returns.ts's validateReturns limits: at
+ * most 20 fields with unique names, 1-20 choices, description <= 300 chars.
+ * A choice's `requires` is written in choicesText as `value:integrationId`.
+ */
+function buildReturns(s: StepForm, label: string, errors: string[]): AgentReturnField[] | undefined {
+  if (s.returns.length === 0) return undefined
+  if (s.returns.length > 20) errors.push(`${label}: at most 20 return fields.`)
+  const seen = new Set<string>()
+  return s.returns.map((r, ri) => {
+    const rLabel = `${label}: return field ${ri + 1}`
+    const name = r.name.trim()
+    if (!RETURN_NAME_RE.test(name)) errors.push(`${rLabel}: name must start with a lowercase letter and contain only letters, numbers and _ (max 40 characters).`)
+    else if (seen.has(name)) errors.push(`${rLabel}: name "${name}" is already used.`)
+    seen.add(name)
+    const field: AgentReturnField = { name, type: r.type }
+    if (r.type === 'choice') {
+      const choices = list(r.choicesText).map((c) => {
+        const [value = '', requires] = c.split(':').map((x) => x.trim())
+        return requires ? { value, requires } : { value }
+      })
+      if (choices.length < 1 || choices.length > 20) errors.push(`${rLabel}: needs 1 to 20 choices.`)
+      for (const c of choices) if (!RETURN_CHOICE_RE.test(c.value)) errors.push(`${rLabel}: choice "${c.value}" must be lowercase letters, numbers, "_-" (max 60 characters).`)
+      field.choices = choices
+    }
+    if (!r.required) field.required = false
+    const description = r.description.trim()
+    if (description.length > 300) errors.push(`${rLabel}: description must be at most 300 characters.`)
+    else if (description) field.description = description
+    return field
+  })
+}
+
 export type PayloadResult = { ok: true; payload: Record<string, unknown> } | { ok: false; errors: string[] }
 
 export function toPayload(form: JobForm): PayloadResult {
@@ -313,9 +464,10 @@ export function toPayload(form: JobForm): PayloadResult {
   if (form.triggerKind === 'cron' && form.cronExpr.trim().split(/\s+/).length !== 5) errors.push('The schedule needs 5 cron fields: minute hour day month weekday.')
   if (form.steps.length === 0) errors.push('Add at least one step.')
 
+  const stepIds = form.steps.map((s, i) => s.id.trim() || `step-${i + 1}`)
   const steps = form.steps.map((s, i) => {
     const label = `Step ${i + 1} (${s.name || s.kind})`
-    const base: Record<string, unknown> = { id: s.id.trim() || `step-${i + 1}`, name: s.name.trim() || `Step ${i + 1}`, kind: s.kind, when: s.when }
+    const base: Record<string, unknown> = { id: stepIds[i], name: s.name.trim() || `Step ${i + 1}`, kind: s.kind, when: s.when }
     const retries = Number(s.retries || 0)
     if (retries) base['retries'] = retries
     if (s.timeoutSec.trim()) {
@@ -323,6 +475,8 @@ export function toPayload(form: JobForm): PayloadResult {
       if (!Number.isInteger(t) || t < 1) errors.push(`${label}: timeout must be a whole number of seconds.`)
       else base['timeoutSec'] = t
     }
+    const condition = buildCondition(s, i, stepIds.slice(0, i), label, errors)
+    if (condition) base['if'] = condition
     if (s.kind === 'action') {
       if (s.actionType === 'http') {
         if (!s.url.trim()) errors.push(`${label}: enter a URL.`)
@@ -392,8 +546,12 @@ export function toPayload(form: JobForm): PayloadResult {
         cfg['environmentId'] = s.environmentId
         cfg['output'] = s.output
       } else if (s.repoUrl.trim()) {
-        cfg['repo'] = { url: s.repoUrl.trim(), baseBranch: s.baseBranch.trim() || 'main' }
-        cfg['output'] = s.output
+        const repo: Record<string, unknown> = { url: s.repoUrl.trim(), baseBranch: s.baseBranch.trim() || 'main' }
+        // A read-only checkout can't produce a pull request or branch; the editor
+        // forces this too, but it is enforced here so a stale form can't slip through.
+        if (s.repoReadOnly) repo['readOnly'] = true
+        cfg['repo'] = repo
+        cfg['output'] = s.repoReadOnly ? 'none' : s.output
       }
       if (s.runOnHostId) {
         // The server rejects both too; catching it here keeps the message next
@@ -412,6 +570,8 @@ export function toPayload(form: JobForm): PayloadResult {
       if (s.checkCommand.trim()) cfg['check'] = { command: s.checkCommand.trim() }
       if (s.model.trim()) cfg['model'] = s.model.trim()
       if (s.routini) cfg['routini'] = true
+      const returns = buildReturns(s, label, errors)
+      if (returns) cfg['returns'] = returns
       base['config'] = cfg
     } else {
       if (!s.message.trim()) errors.push(`${label}: say what is being approved.`)

@@ -31,6 +31,35 @@ export interface AlertMatch {
 
 export type When = 'on_success' | 'on_failure' | 'always'
 
+/**
+ * Skips the step when the condition is false. `path` is a template path
+ * (without braces) rooted at `steps` or `trigger`, compared as a string via
+ * engine/template.ts `lookup()`; `exists`/`missing` test for a non-empty value.
+ */
+export interface IfCondition {
+  path: string
+  op: 'eq' | 'ne' | 'in' | 'not_in' | 'exists' | 'missing'
+  value?: string | string[]
+}
+
+/** `actual` is the string `lookup()` (engine/template.ts) returned for `cond.path`. */
+export function evaluateIf(cond: IfCondition, actual: string): boolean {
+  switch (cond.op) {
+    case 'eq':
+      return actual === cond.value
+    case 'ne':
+      return actual !== cond.value
+    case 'in':
+      return (cond.value as string[]).includes(actual)
+    case 'not_in':
+      return !(cond.value as string[]).includes(actual)
+    case 'exists':
+      return actual !== ''
+    case 'missing':
+      return actual === ''
+  }
+}
+
 export type ActionConfig =
   | { type: 'http'; url: string; method?: string; headers?: Record<string, string>; body?: string; expectStatus?: number; timeoutMs?: number }
   /** A command on a host, over SSH or routini-runner. `host: 'alert'` targets the incident's host. */
@@ -50,13 +79,27 @@ export type ActionConfig =
   | { type: 'azure-boards'; project: string; query?: string; limit?: number }
   | { type: 'teams'; message: string; title?: string }
 
+/** A field an agent returns, written to `$ROUTINI_OUT_FILE` as one JSON object. */
+export interface ReturnField {
+  name: string
+  type: 'text' | 'number' | 'boolean' | 'choice'
+  /** For type "choice". Each choice may need an integration (`requires`); unavailable ones are dropped. */
+  choices?: { value: string; requires?: string }[]
+  /** Default true. */
+  required?: boolean
+  description?: string
+}
+
 export interface AgentConfig {
   agent: AgentId
   prompt: string
-  repo?: { url: string; baseBranch: string }
+  /** `readOnly` forbids `output: 'pr' | 'branch'`; the agent image never commits or pushes. */
+  repo?: { url: string; baseBranch: string; readOnly?: boolean }
   output?: 'pr' | 'branch' | 'none'
   check?: { command: string }
   model?: string
+  /** Typed fields the agent must write before it finishes; later steps read them as `{{steps.<id>.out.<name>}}`. */
+  returns?: ReturnField[]
   /** Run inside this persistent environment (and its repository) instead of a fresh container. */
   environmentId?: string
   /**
@@ -81,6 +124,7 @@ interface StepBase {
   when: When
   timeoutSec?: number
   retries: number
+  if?: IfCondition
 }
 export type Step =
   | (StepBase & { kind: 'action'; config: ActionConfig })
@@ -278,6 +322,78 @@ function parseAction(c: Record<string, unknown>, p: string): ActionConfig {
   }
 }
 
+const IF_PATH_RE = /^[A-Za-z0-9_.-]{1,200}$/
+const IF_OPS = ['eq', 'ne', 'in', 'not_in', 'exists', 'missing'] as const
+
+/**
+ * `if.path` must be rooted at `steps` or `trigger`; a `steps.<id>` path must
+ * name a step that runs earlier in the job (`priorIds`, in order).
+ */
+function parseIf(raw: unknown, p: string, stepNumber: number, priorIds: readonly string[]): IfCondition {
+  if (!isObj(raw)) return fail(`${p}.if must be an object`)
+  const path = str(raw['path'], `${p}.if.path`, 200)!
+  if (!IF_PATH_RE.test(path)) fail(`${p}.if.path must match ^[A-Za-z0-9_.-]{1,200}$`)
+  const [root, stepId] = path.split('.')
+  if (root !== 'steps' && root !== 'trigger') fail(`${p}.if.path must start with "steps." or "trigger."`)
+  if (root === 'steps' && (!stepId || !priorIds.includes(stepId))) {
+    fail(`Step ${stepNumber} condition refers to step '${stepId ?? ''}', which does not run before it`)
+  }
+  const op = raw['op']
+  if (!IF_OPS.includes(op as (typeof IF_OPS)[number])) fail(`${p}.if.op must be one of: ${IF_OPS.join(', ')}`)
+  if (op === 'eq' || op === 'ne') return { path, op, value: str(raw['value'], `${p}.if.value`, 200)! }
+  if (op === 'in' || op === 'not_in') {
+    const v = raw['value']
+    if (!Array.isArray(v) || v.length < 1 || v.length > 20 || !v.every((x) => typeof x === 'string' && x.length <= 200)) {
+      fail(`${p}.if.value must be a list of 1 to 20 strings`)
+    }
+    return { path, op, value: v as string[] }
+  }
+  // exists / missing
+  if (raw['value'] !== undefined) fail(`${p}.if.value must not be set for op "${op}"`)
+  return { path, op: op as 'exists' | 'missing' }
+}
+
+const RETURN_NAME_RE = /^[a-z][a-zA-Z0-9_]{0,39}$/
+const CHOICE_VALUE_RE = /^[a-z0-9][a-z0-9_-]{0,59}$/
+const MAX_RETURN_FIELDS = 20
+
+function parseReturns(raw: unknown, p: string): ReturnField[] {
+  if (!Array.isArray(raw)) return fail(`${p}.returns must be an array`)
+  if (raw.length > MAX_RETURN_FIELDS) fail(`${p}.returns: at most ${MAX_RETURN_FIELDS} fields`)
+  const names = new Set<string>()
+  return raw.map((r, i): ReturnField => {
+    const rp = `${p}.returns[${i}]`
+    if (!isObj(r)) return fail(`${rp} must be an object`)
+    const name = str(r['name'], `${rp}.name`, 40)!
+    if (!RETURN_NAME_RE.test(name)) fail(`${rp}.name must match ^[a-z][a-zA-Z0-9_]{0,39}$`)
+    if (names.has(name)) fail(`${rp}.name "${name}" is used by another return field`)
+    names.add(name)
+    const type = r['type']
+    if (!['text', 'number', 'boolean', 'choice'].includes(type as string)) fail(`${rp}.type must be one of: text, number, boolean, choice`)
+    const field: ReturnField = { name, type: type as ReturnField['type'] }
+    if (type === 'choice') {
+      const raw2 = r['choices']
+      if (!Array.isArray(raw2) || raw2.length < 1 || raw2.length > 20) fail(`${rp}.choices must be a list of 1 to 20 choices`)
+      field.choices = (raw2 as unknown[]).map((c, j) => {
+        const cp = `${rp}.choices[${j}]`
+        if (!isObj(c)) return fail(`${cp} must be an object`)
+        const value = str(c['value'], `${cp}.value`, 60)!
+        if (!CHOICE_VALUE_RE.test(value)) fail(`${cp}.value must match ^[a-z0-9][a-z0-9_-]{0,59}$`)
+        const requires = str(c['requires'], `${cp}.requires`, 40, { optional: true })
+        return requires ? { value, requires } : { value }
+      })
+    } else if (r['choices'] !== undefined) {
+      fail(`${rp}.choices is only valid when type is "choice"`)
+    }
+    if (r['required'] !== undefined) {
+      if (typeof r['required'] !== 'boolean') fail(`${rp}.required must be true or false`)
+      field.required = r['required'] as boolean
+    }
+    if (r['description'] !== undefined) field.description = str(r['description'], `${rp}.description`, 300)
+    return field
+  })
+}
+
 const GROUP_RE = /^[A-Za-z0-9 ._-]{1,60}$/
 const TAG_RE = /^[A-Za-z0-9._:-]{1,40}$/
 
@@ -323,7 +439,8 @@ function parseAgent(c: Record<string, unknown>, p: string): AgentConfig {
     const url = str(r['url'], `${p}.repo.url`, 500)!
     const check = validateRepoUrl(url)
     if (!check.valid) fail(`${p}.repo.url: ${check.error}`)
-    cfg.repo = { url, baseBranch: branch }
+    if (r['readOnly'] !== undefined && typeof r['readOnly'] !== 'boolean') fail(`${p}.repo.readOnly must be true or false`)
+    cfg.repo = { url, baseBranch: branch, ...(r['readOnly'] === true ? { readOnly: true } : {}) }
   }
   if (c['environmentId'] !== undefined) {
     const envId = str(c['environmentId'], `${p}.environmentId`, 36)!
@@ -339,15 +456,17 @@ function parseAgent(c: Record<string, unknown>, p: string): AgentConfig {
   if (c['output'] !== undefined) {
     if (!['pr', 'branch', 'none'].includes(c['output'] as string)) fail(`${p}.output must be one of: pr, branch, none`)
     if (c['output'] !== 'none' && !cfg.repo && !cfg.environmentId) fail(`${p}.output "${String(c['output'])}" needs ${p}.repo or ${p}.environmentId`)
+    if (c['output'] !== 'none' && cfg.repo?.readOnly) fail(`A read-only repository can't produce a pull request or branch`)
     cfg.output = c['output'] as AgentConfig['output']
   } else if (cfg.repo) {
-    cfg.output = 'pr'
+    cfg.output = cfg.repo.readOnly ? 'none' : 'pr'
   }
   if (c['check'] !== undefined) {
     if (!isObj(c['check'])) fail(`${p}.check must be an object`)
     cfg.check = { command: str((c['check'] as Record<string, unknown>)['command'], `${p}.check.command`, 4000)! }
   }
   if (c['model'] !== undefined) cfg.model = str(c['model'], `${p}.model`, 200)
+  if (c['returns'] !== undefined) cfg.returns = parseReturns(c['returns'], p)
   if (c['routini'] !== undefined) {
     if (typeof c['routini'] !== 'boolean') fail(`${p}.routini must be true or false`)
     if (c['routini']) cfg.routini = true
@@ -364,7 +483,9 @@ export function parseSteps(raw: unknown): Step[] {
   if (!Array.isArray(raw) || raw.length === 0) return fail('steps must be a non-empty array')
   if (raw.length > MAX_STEPS) fail(`a job can have at most ${MAX_STEPS} steps`)
   const ids = new Set<string>()
-  return raw.map((s, i): Step => {
+  // Ids of steps already parsed, in order: an `if` may only reference one of these.
+  const priorIds: string[] = []
+  const steps = raw.map((s, i): Step => {
     const p = `steps[${i}]`
     if (!isObj(s)) return fail(`${p} must be an object`)
     const id = s['id'] === undefined ? `step-${i + 1}` : str(s['id'], `${p}.id`, 40)!
@@ -379,24 +500,32 @@ export function parseSteps(raw: unknown): Step[] {
       when,
       timeoutSec: int(s['timeoutSec'], `${p}.timeoutSec`, 1, MAX_TIMEOUT_SEC),
       retries: int(s['retries'], `${p}.retries`, 0, MAX_RETRIES) ?? 0,
+      if: s['if'] !== undefined ? parseIf(s['if'], p, i + 1, priorIds) : undefined,
     }
     if (!isObj(s['config'])) return fail(`${p}.config must be an object`)
     const c = s['config'] as Record<string, unknown>
+    let step: Step
     switch (s['kind']) {
       case 'action':
-        return { ...base, kind: 'action', config: parseAction(c, `${p}.config`) }
+        step = { ...base, kind: 'action', config: parseAction(c, `${p}.config`) }
+        break
       case 'agent':
-        return { ...base, kind: 'agent', config: parseAgent(c, `${p}.config`) }
+        step = { ...base, kind: 'agent', config: parseAgent(c, `${p}.config`) }
+        break
       case 'approval': {
         const minRole = (c['minRole'] ?? 'member') as ApprovalConfig['minRole']
         if (!['member', 'admin', 'owner'].includes(minRole as string)) fail(`${p}.config.minRole must be one of: member, admin, owner`)
         if (base.retries) fail(`${p}: approval steps cannot be retried`)
-        return { ...base, kind: 'approval', config: { message: str(c['message'], `${p}.config.message`, 2000)!, minRole } }
+        step = { ...base, kind: 'approval', config: { message: str(c['message'], `${p}.config.message`, 2000)!, minRole } }
+        break
       }
       default:
         return fail(`${p}.kind must be one of: action, agent, approval`)
     }
+    priorIds.push(id)
+    return step
   })
+  return steps
 }
 
 /** Validates a full job body (create, or update with `partial` merging over `current`). */

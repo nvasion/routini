@@ -16,6 +16,8 @@ export interface CredentialBinding {
   secret: string
   /** For basic-pair. */
   user?: string
+  /** A read-only repo step: the proxy injects this binding only for GET/HEAD and the git-upload-pack POST. */
+  readOnly?: boolean
 }
 
 export interface EgressSession {

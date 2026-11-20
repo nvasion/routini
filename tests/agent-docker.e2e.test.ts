@@ -53,6 +53,26 @@ describe.skipIf(!enabled)('agent container (real Docker)', () => {
     expect(await docker.killByLabels({ 'routini.run': id })).toBe(0) // container was removed
   }, 120_000)
 
+  it('returns: the real entrypoint sends a ~9 KB out object in pieces and the step exposes it', async () => {
+    const returns = [
+      { name: 'builder', type: 'choice', choices: [{ value: 'routini' }, { value: 'factory-task', requires: 'factory' }] },
+      { name: 'request', type: 'text' },
+      { name: 'reason', type: 'text' },
+    ]
+    const { base, number } = await run('Plan it OUT', { returns })
+    await worker.drain()
+    const d = (await u.get(`${base}/runs/${number}`)).body
+    expect(d.run.status, d.steps[0].error).toBe('succeeded')
+    expect(d.steps[0].output.out.builder).toBe('routini')
+    expect(d.steps[0].output.out.request).toMatch(/^(Add the "gift card" balance page\. ){300}$/)
+  }, 120_000)
+
+  it('returns: an agent that writes no out file fails the step', async () => {
+    const { base, number } = await run('Plan it', { returns: [{ name: 'request', type: 'text' }] })
+    await worker.drain()
+    expect((await u.get(`${base}/runs/${number}`)).body.steps[0].error).toMatch(/did not write a JSON object to \$ROUTINI_OUT_FILE/)
+  }, 120_000)
+
   it('fails the step when the check fails', async () => {
     const { base, number } = await run('Look at the disk', { check: { command: 'echo nope; exit 4' } })
     await worker.drain()
