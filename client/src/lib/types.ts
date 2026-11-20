@@ -63,10 +63,26 @@ export type ActionConfig =
 /** Every member of the ActionConfig union's `type` field. */
 export type ActionType = ActionConfig['type']
 
+/** A choice available to a `choice` return field; `requires` names an integration id the choice needs (e.g. 'factory'). */
+export interface AgentReturnChoice {
+  value: string
+  requires?: string
+}
+
+/** A typed field an agent returns; later steps read it as {{steps.<id>.out.<name>}}. */
+export interface AgentReturnField {
+  name: string
+  type: 'text' | 'number' | 'boolean' | 'choice'
+  choices?: AgentReturnChoice[]
+  /** Defaults to true. */
+  required?: boolean
+  description?: string
+}
+
 export interface AgentConfig {
   agent: AgentId
   prompt: string
-  repo?: { url: string; baseBranch: string }
+  repo?: { url: string; baseBranch: string; /** A shallow, read-only checkout: the agent can't push, so output defaults to 'none'. */ readOnly?: boolean }
   output?: 'pr' | 'branch' | 'none'
   check?: { command: string }
   model?: string
@@ -75,11 +91,20 @@ export interface AgentConfig {
   runOn?: { hostId: string } | { host: 'alert' } | { pool: { group?: string; tags?: string[] } }
   /** Routini's own MCP tools for the agent. */
   routini?: boolean
+  /** Typed fields this step writes, for later steps to read. */
+  returns?: AgentReturnField[]
 }
 
 export interface ApprovalConfig {
   message: string
   minRole?: 'member' | 'admin' | 'owner'
+}
+
+/** A step condition: run only if the templated value at `path` compares as given. `path` has no {{ }}; its root must be `steps` or `trigger`. */
+export interface StepCondition {
+  path: string
+  op: 'eq' | 'ne' | 'in' | 'not_in' | 'exists' | 'missing'
+  value?: string | string[]
 }
 
 interface StepBase {
@@ -88,6 +113,7 @@ interface StepBase {
   when: When
   timeoutSec?: number
   retries: number
+  if?: StepCondition
 }
 export type Step =
   | (StepBase & { kind: 'action'; config: ActionConfig })

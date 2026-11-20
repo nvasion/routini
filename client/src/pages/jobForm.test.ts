@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import type { Host, Job } from '../lib/types'
-import { ALERT_HOST, POOL_HOST, emptyJob, emptyStep, fromJob, poolMatch, runOnBlocked, runOnOptions, toPayload } from './jobForm'
+import type { Host, Job, StepCondition } from '../lib/types'
+import { ALERT_HOST, POOL_HOST, emptyJob, emptyStep, fromJob, planBuildShipTemplate, poolMatch, runOnBlocked, runOnOptions, toPayload } from './jobForm'
 
 const job: Job = {
   id: 'j1',
@@ -371,6 +371,213 @@ describe('job form: Teams steps', () => {
     form.steps = [{ ...emptyStep('action', 0), actionType: 'teams', teamsMessage: 'Hi', teamsTitle: '   ' }]
     const r = toPayload(form)
     expect(r.ok && r.payload['steps']).toEqual([{ id: 'step-1', name: 'Action', kind: 'action', when: 'on_success', config: { type: 'teams', message: 'Hi' } }])
+  })
+})
+
+describe('job form: step condition (if)', () => {
+  const base = { ...job, trigger: { kind: 'manual' } as const }
+  const twoSteps = (ifCond: StepCondition): Job => ({
+    ...base,
+    steps: [
+      { id: 'probe', name: 'Probe', kind: 'action', when: 'on_success', retries: 0, config: { type: 'http', url: 'https://x.test' } },
+      { id: 'fix', name: 'Fix', kind: 'action', when: 'on_success', retries: 0, if: ifCond, config: { type: 'http', url: 'https://y.test' } },
+    ],
+  })
+
+  function roundTrips(ifCond: StepCondition) {
+    const form = fromJob(twoSteps(ifCond))
+    expect(form.steps[1]).toMatchObject({ ifPath: ifCond.path, ifOp: ifCond.op })
+    const r = toPayload(form)
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect((r.payload['steps'] as Array<Record<string, unknown>>)[1]!['if']).toEqual(ifCond)
+  }
+
+  it('round-trips eq', () => roundTrips({ path: 'steps.probe.out.builder', op: 'eq', value: 'routini' }))
+  it('round-trips ne', () => roundTrips({ path: 'steps.probe.out.builder', op: 'ne', value: 'routini' }))
+  it('round-trips in', () => roundTrips({ path: 'steps.probe.out.builder', op: 'in', value: ['routini', 'factory-task'] }))
+  it('round-trips not_in', () => roundTrips({ path: 'steps.probe.out.builder', op: 'not_in', value: ['routini', 'factory-task'] }))
+  it('round-trips exists', () => roundTrips({ path: 'trigger.kind', op: 'exists' }))
+  it('round-trips missing', () => roundTrips({ path: 'trigger.kind', op: 'missing' }))
+
+  it('omits `if` entirely when no operator is chosen', () => {
+    const form = { ...emptyJob(), name: 'x' }
+    form.steps = [{ ...emptyStep('action', 0), url: 'https://x.test' }]
+    const r = toPayload(form)
+    expect(r.ok && r.payload['steps']).toEqual([{ id: 'step-1', name: 'Action', kind: 'action', when: 'on_success', config: { type: 'http', url: 'https://x.test', method: 'GET' } }])
+  })
+
+  it("flags a condition on a step that doesn't run before it", () => {
+    const form = { ...emptyJob(), name: 'x' }
+    form.steps = [{ ...emptyStep('action', 0), url: 'https://x.test', ifPath: 'steps.later.out.x', ifOp: 'eq', ifValue: 'y' }]
+    const r = toPayload(form)
+    expect(!r.ok && r.errors).toEqual(["Step 1 condition refers to step 'later', which does not run before it"])
+  })
+
+  it('rejects a malformed path and a path with the wrong root', () => {
+    const form = { ...emptyJob(), name: 'x' }
+    form.steps = [{ ...emptyStep('action', 0), url: 'https://x.test', ifPath: 'bad path!', ifOp: 'eq', ifValue: 'y' }]
+    expect((toPayload(form) as { ok: false; errors: string[] }).errors).toEqual(['Step 1 (Action): condition path must use only letters, numbers and "_.-" (max 200 characters).'])
+
+    form.steps[0]!.ifPath = 'nope.x'
+    expect((toPayload(form) as { ok: false; errors: string[] }).errors).toEqual(['Step 1 (Action): condition path must start with steps. or trigger.'])
+  })
+
+  it('eq/ne need a value, at most 200 characters', () => {
+    const form = { ...emptyJob(), name: 'x' }
+    form.steps = [{ ...emptyStep('action', 0), url: 'https://x.test', ifPath: 'trigger.kind', ifOp: 'eq', ifValue: '' }]
+    expect((toPayload(form) as { ok: false; errors: string[] }).errors).toEqual(['Step 1 (Action): condition needs a value.'])
+
+    form.steps[0]!.ifValue = 'x'.repeat(201)
+    expect((toPayload(form) as { ok: false; errors: string[] }).errors).toEqual(['Step 1 (Action): condition value must be at most 200 characters.'])
+  })
+
+  it('in/not_in need 1 to 20 comma-separated values', () => {
+    const form = { ...emptyJob(), name: 'x' }
+    form.steps = [{ ...emptyStep('action', 0), url: 'https://x.test', ifPath: 'trigger.kind', ifOp: 'in', ifValue: '' }]
+    expect((toPayload(form) as { ok: false; errors: string[] }).errors).toEqual(['Step 1 (Action): condition needs 1 to 20 values.'])
+
+    form.steps[0]!.ifValue = Array.from({ length: 21 }, (_, i) => `v${i}`).join(', ')
+    expect((toPayload(form) as { ok: false; errors: string[] }).errors).toEqual(['Step 1 (Action): condition needs 1 to 20 values.'])
+  })
+})
+
+describe('job form: agent returns', () => {
+  const base = { ...job, steps: [] as Job['steps'] }
+
+  it('round-trips returns with choices, a choice that requires an integration, and defaults', () => {
+    const steps: Job['steps'] = [
+      {
+        id: 'plan',
+        name: 'Plan',
+        kind: 'agent',
+        when: 'on_success',
+        retries: 0,
+        config: {
+          agent: 'claude',
+          prompt: 'Plan it',
+          returns: [
+            { name: 'builder', type: 'choice', choices: [{ value: 'routini' }, { value: 'factory-task', requires: 'factory' }] },
+            { name: 'request', type: 'text' },
+            { name: 'confidence', type: 'number', required: false, description: 'How sure, 0-100' },
+          ],
+        },
+      },
+    ]
+    const form = fromJob({ ...base, steps })
+    expect(form.steps[0]).toMatchObject({
+      returns: [
+        { name: 'builder', type: 'choice', choicesText: 'routini, factory-task:factory', required: true },
+        { name: 'request', type: 'text', choicesText: '', required: true },
+        { name: 'confidence', type: 'number', choicesText: '', required: false, description: 'How sure, 0-100' },
+      ],
+    })
+    const r = toPayload(form)
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect((r.payload['steps'] as Array<{ config: { returns: unknown } }>)[0]!.config.returns).toEqual([
+      { name: 'builder', type: 'choice', choices: [{ value: 'routini' }, { value: 'factory-task', requires: 'factory' }] },
+      { name: 'request', type: 'text' },
+      { name: 'confidence', type: 'number', required: false, description: 'How sure, 0-100' },
+    ])
+  })
+
+  it('requires a lowercase name, unique across fields', () => {
+    const form = { ...emptyJob(), name: 'x' }
+    form.steps = [
+      {
+        ...emptyStep('agent', 0),
+        prompt: 'p',
+        returns: [
+          { key: 'a', name: 'Bad Name', type: 'text', choicesText: '', required: true, description: '' },
+          { key: 'b', name: 'ok', type: 'text', choicesText: '', required: true, description: '' },
+          { key: 'c', name: 'ok', type: 'text', choicesText: '', required: true, description: '' },
+        ],
+      },
+    ]
+    const r = toPayload(form)
+    expect(!r.ok && r.errors).toEqual([
+      'Step 1 (Agent): return field 1: name must start with a lowercase letter and contain only letters, numbers and _ (max 40 characters).',
+      'Step 1 (Agent): return field 3: name "ok" is already used.',
+    ])
+  })
+
+  it('needs 1 to 20 valid choices', () => {
+    const form = { ...emptyJob(), name: 'x' }
+    form.steps = [{ ...emptyStep('agent', 0), prompt: 'p', returns: [{ key: 'a', name: 'builder', type: 'choice', choicesText: 'Bad Value', required: true, description: '' }] }]
+    expect((toPayload(form) as { ok: false; errors: string[] }).errors).toEqual(['Step 1 (Agent): return field 1: choice "Bad Value" must be lowercase letters, numbers, "_-" (max 60 characters).'])
+
+    form.steps[0]!.returns[0]!.choicesText = ''
+    expect((toPayload(form) as { ok: false; errors: string[] }).errors).toEqual(['Step 1 (Agent): return field 1: needs 1 to 20 choices.'])
+  })
+
+  it('limits the description to 300 characters', () => {
+    const form = { ...emptyJob(), name: 'x' }
+    form.steps = [{ ...emptyStep('agent', 0), prompt: 'p', returns: [{ key: 'a', name: 'note', type: 'text', choicesText: '', required: true, description: 'x'.repeat(301) }] }]
+    expect((toPayload(form) as { ok: false; errors: string[] }).errors).toEqual(['Step 1 (Agent): return field 1: description must be at most 300 characters.'])
+  })
+
+  it('allows at most 20 return fields', () => {
+    const form = { ...emptyJob(), name: 'x' }
+    form.steps = [
+      { ...emptyStep('agent', 0), prompt: 'p', returns: Array.from({ length: 21 }, (_, i) => ({ key: String(i), name: `f${i}`, type: 'text' as const, choicesText: '', required: true, description: '' })) },
+    ]
+    expect((toPayload(form) as { ok: false; errors: string[] }).errors).toContain('Step 1 (Agent): at most 20 return fields.')
+  })
+})
+
+describe('job form: read-only repo', () => {
+  it('forces output to none and marks the repo read-only, even if a stale form still says "pr"', () => {
+    const form = { ...emptyJob(), name: 'ro' }
+    form.steps = [{ ...emptyStep('agent', 0), prompt: 'Plan', repoUrl: 'https://github.com/acme/app', repoReadOnly: true, output: 'pr' }]
+    const r = toPayload(form)
+    expect(r.ok && r.payload['steps']).toEqual([
+      {
+        id: 'step-1',
+        name: 'Agent',
+        kind: 'agent',
+        when: 'on_success',
+        config: { agent: 'claude', prompt: 'Plan', repo: { url: 'https://github.com/acme/app', baseBranch: 'main', readOnly: true }, output: 'none' },
+      },
+    ])
+  })
+
+  it('round-trips a read-only repo', () => {
+    const steps: Job['steps'] = [
+      {
+        id: 'plan',
+        name: 'Plan',
+        kind: 'agent',
+        when: 'on_success',
+        retries: 0,
+        config: { agent: 'claude', prompt: 'Plan', repo: { url: 'https://github.com/acme/app', baseBranch: 'main', readOnly: true }, output: 'none' },
+      },
+    ]
+    const form = fromJob({ ...job, steps })
+    expect(form.steps[0]!.repoReadOnly).toBe(true)
+    const r = toPayload(form)
+    expect(r.ok && r.payload['steps']).toEqual(steps.map(({ retries: _r, ...s }) => s))
+  })
+})
+
+describe('job form: "Plan, build, ship" template', () => {
+  it('prefills a read-only plan step with typed returns, and a build step that reads them', () => {
+    const form = { ...planBuildShipTemplate(), name: 'Ship it' }
+    const r = toPayload(form)
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    const steps = r.payload['steps'] as Array<Record<string, unknown>>
+    expect(steps).toHaveLength(2)
+    const plan = steps[0]! as { id: string; name: string; config: { output?: string; repo?: unknown; returns: Array<{ name: string }> } }
+    expect(plan.id).toBe('plan')
+    expect(plan.name).toBe('Plan the work')
+    // No repository filled in yet, so there is nothing for `output` or `repo.readOnly` to apply
+    // to; filling in a repository while "Read only" is checked is covered above, forcing 'none'.
+    expect(plan.config.output).toBeUndefined()
+    expect(plan.config.repo).toBeUndefined()
+    expect(plan.config.returns.map((f) => f.name)).toEqual(['builder', 'request', 'reason'])
+    // Likewise 'build' has no repository yet, so `output: 'pr'` only takes effect once one is added.
+    expect(steps[1]).toMatchObject({ id: 'build', name: 'Build and open PR', config: { prompt: 'Build this: {{steps.plan.out.request}}' } })
   })
 })
 

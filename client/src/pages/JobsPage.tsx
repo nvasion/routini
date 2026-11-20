@@ -6,6 +6,7 @@ import { describeTrigger, relativeTime } from '../lib/format'
 import { useApi } from '../lib/hooks'
 import type { Job } from '../lib/types'
 import { useOrg } from '../shell/OrgContext'
+import { PLAN_BUILD_SHIP_TEMPLATE } from './jobForm'
 
 export function JobsPage() {
   const org = useOrg()
@@ -28,9 +29,19 @@ export function JobsPage() {
       <div className="page-head">
         <h1 className="page-title">Jobs</h1>
         {org.can('member') && (
-          <Link className="btn primary" to={org.path('/jobs/new')}>
-            New job
-          </Link>
+          <div className="inline">
+            <Link className="btn primary" to={org.path('/jobs/new')}>
+              New job
+            </Link>
+            <details style={{ position: 'relative' }}>
+              <summary className="btn">New from template</summary>
+              <div className="card" role="menu" style={{ position: 'absolute', right: 0, marginTop: 4, zIndex: 10, minWidth: 200 }}>
+                <Link role="menuitem" to={org.path(`/jobs/new?template=${PLAN_BUILD_SHIP_TEMPLATE}`)}>
+                  Plan, build, ship
+                </Link>
+              </div>
+            </details>
+          </div>
         )}
       </div>
       <p className="lead">A job is a trigger plus steps. Steps run in order: actions (HTTP, SSH, IMAP), coding agents, and approvals that wait for a person.</p>

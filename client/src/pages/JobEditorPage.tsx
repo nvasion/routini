@@ -1,13 +1,29 @@
 // Create or edit a job: trigger plus an ordered list of steps.
 
 import { useEffect, useState, type FormEvent } from 'react'
-import { Link, useNavigate, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { ErrorBanner, Field, Icon, Modal } from '../components/ui'
 import { api } from '../lib/api'
 import { useApi } from '../lib/hooks'
 import type { Environment, Host, Job, PolicyDecision, StepKind } from '../lib/types'
 import { useOrg } from '../shell/OrgContext'
-import { ALERT_HOST, POOL_HOST, emptyJob, emptyStep, fromJob, poolMatch, poolTags, runOnOptions, toPayload, type JobForm, type StepForm } from './jobForm'
+import {
+  ALERT_HOST,
+  PLAN_BUILD_SHIP_TEMPLATE,
+  POOL_HOST,
+  emptyJob,
+  emptyReturnField,
+  emptyStep,
+  fromJob,
+  planBuildShipTemplate,
+  poolMatch,
+  poolTags,
+  runOnOptions,
+  toPayload,
+  type JobForm,
+  type ReturnFieldForm,
+  type StepForm,
+} from './jobForm'
 
 /** Labels for the action-type segmented control, keyed by ActionConfig type. */
 const ACTION_LABELS: Record<StepForm['actionType'], string> = {
@@ -23,11 +39,12 @@ export function JobEditorPage() {
   const org = useOrg()
   const navigate = useNavigate()
   const { id } = useParams()
+  const [searchParams] = useSearchParams()
   const isNew = !id || id === 'new'
   const existing = useApi<{ job: Job }>(isNew ? null : org.api(`/jobs/${id}`))
   const hosts = useApi<{ hosts: Host[] }>(org.api('/hosts'))
   const environments = useApi<{ environments: Environment[] }>(org.api('/environments'))
-  const [form, setForm] = useState<JobForm>(emptyJob)
+  const [form, setForm] = useState<JobForm>(() => (isNew && searchParams.get('template') === PLAN_BUILD_SHIP_TEMPLATE ? planBuildShipTemplate() : emptyJob()))
   const [errors, setErrors] = useState<string[]>([])
   const [saving, setSaving] = useState(false)
   const [secret, setSecret] = useState<{ secret: string; url: string; jobId: string } | null>(null)
@@ -570,7 +587,13 @@ function StepEditor(props: {
             )}
             <Field label="Result">
               {(id) => (
-                <select id={id} className="select" value={s.output} disabled={!s.repoUrl.trim() && !s.environmentId} onChange={(e) => set({ output: e.target.value as StepForm['output'] })}>
+                <select
+                  id={id}
+                  className="select"
+                  value={s.repoReadOnly ? 'none' : s.output}
+                  disabled={(!s.repoUrl.trim() && !s.environmentId) || s.repoReadOnly}
+                  onChange={(e) => set({ output: e.target.value as StepForm['output'] })}
+                >
                   <option value="pr">Open a pull request</option>
                   <option value="branch">Push a branch</option>
                   <option value="none">Nothing (report only)</option>
@@ -578,6 +601,22 @@ function StepEditor(props: {
               )}
             </Field>
           </div>
+          {!s.environmentId && (
+            <label className="inline" style={{ gap: 8, alignItems: 'flex-start' }}>
+              <input
+                type="checkbox"
+                checked={s.repoReadOnly}
+                onChange={(e) => set({ repoReadOnly: e.target.checked, ...(e.target.checked ? { output: 'none' } : {}) })}
+                style={{ marginTop: 3 }}
+              />
+              <span>
+                Read only
+                <span className="hint" style={{ display: 'block' }}>
+                  The agent gets a shallow copy and cannot push. On a self-hosted server without the credential broker this is enforced by the agent image only.
+                </span>
+              </span>
+            </label>
+          )}
           <Field label="Done check (optional)" hint="Runs after the agent; the step fails if it exits non-zero. E.g. npm test">
             {(id) => <input id={id} className="input mono" value={s.checkCommand} onChange={(e) => set({ checkCommand: e.target.value })} />}
           </Field>
@@ -590,6 +629,7 @@ function StepEditor(props: {
               </span>
             </span>
           </label>
+          <ReturnsEditor stepId={s.id} returns={s.returns} onChange={(returns) => set({ returns })} />
         </>
       )}
 
@@ -607,6 +647,33 @@ function StepEditor(props: {
           </Field>
         </div>
       )}
+
+      <details>
+        <summary className="muted">Run this step only if</summary>
+        <div className="row" style={{ marginTop: 10 }}>
+          <Field label="Path" hint="A template path without {{ }}, e.g. steps.plan.out.builder or trigger.kind.">
+            {(id) => <input id={id} className="input mono" value={s.ifPath} placeholder="steps.plan.out.builder" onChange={(e) => set({ ifPath: e.target.value })} />}
+          </Field>
+          <Field label="Operator">
+            {(id) => (
+              <select id={id} className="select" value={s.ifOp} onChange={(e) => set({ ifOp: e.target.value as StepForm['ifOp'] })}>
+                <option value="">Always runs</option>
+                <option value="eq">is</option>
+                <option value="ne">is not</option>
+                <option value="in">is one of</option>
+                <option value="not_in">is not one of</option>
+                <option value="exists">has a value</option>
+                <option value="missing">is empty</option>
+              </select>
+            )}
+          </Field>
+          {(s.ifOp === 'eq' || s.ifOp === 'ne' || s.ifOp === 'in' || s.ifOp === 'not_in') && (
+            <Field label="Value" hint={s.ifOp === 'in' || s.ifOp === 'not_in' ? 'Comma separated.' : undefined}>
+              {(id) => <input id={id} className="input mono" value={s.ifValue} onChange={(e) => set({ ifValue: e.target.value })} />}
+            </Field>
+          )}
+        </div>
+      </details>
 
       {s.kind !== 'approval' && (
         <details>
@@ -629,6 +696,51 @@ function StepEditor(props: {
           </div>
         </details>
       )}
+    </div>
+  )
+}
+
+/** An agent step's "Returns" list: typed fields later steps read as {{steps.<id>.out.<name>}}. */
+function ReturnsEditor({ stepId, returns, onChange }: { stepId: string; returns: ReturnFieldForm[]; onChange: (returns: ReturnFieldForm[]) => void }) {
+  const setField = (key: string, patch: Partial<ReturnFieldForm>) => onChange(returns.map((r) => (r.key === key ? { ...r, ...patch } : r)))
+  const removeField = (key: string) => onChange(returns.filter((r) => r.key !== key))
+  return (
+    <div className="field">
+      <span className="field-label">Returns</span>
+      <span className="hint">
+        Later steps read these as <span className="mono">{`{{steps.${stepId || 'this-step'}.out.<name>}}`}</span>
+      </span>
+      {returns.map((r, ri) => (
+        <div key={r.key} className="row" style={{ alignItems: 'flex-end' }}>
+          <Field label="Name">{(id) => <input id={id} className="input mono" value={r.name} placeholder="builder" onChange={(e) => setField(r.key, { name: e.target.value })} />}</Field>
+          <Field label="Type">
+            {(id) => (
+              <select id={id} className="select" value={r.type} onChange={(e) => setField(r.key, { type: e.target.value as ReturnFieldForm['type'] })}>
+                <option value="text">Text</option>
+                <option value="number">Number</option>
+                <option value="boolean">Boolean</option>
+                <option value="choice">Choice</option>
+              </select>
+            )}
+          </Field>
+          {r.type === 'choice' && (
+            <Field label="Choices" hint="Comma separated; a choice that needs an integration is value:integrationId.">
+              {(id) => <input id={id} className="input mono" value={r.choicesText} placeholder="routini, factory-task:factory" onChange={(e) => setField(r.key, { choicesText: e.target.value })} />}
+            </Field>
+          )}
+          <Field label="Description">{(id) => <input id={id} className="input" value={r.description} onChange={(e) => setField(r.key, { description: e.target.value })} />}</Field>
+          <label className="inline" style={{ gap: 6 }}>
+            <input type="checkbox" checked={r.required} onChange={(e) => setField(r.key, { required: e.target.checked })} />
+            Required
+          </label>
+          <button type="button" className="btn small danger" aria-label={`Remove return field ${ri + 1}`} onClick={() => removeField(r.key)}>
+            <Icon name="trash" size={14} />
+          </button>
+        </div>
+      ))}
+      <button type="button" className="btn small" onClick={() => onChange([...returns, emptyReturnField()])}>
+        <Icon name="plus" size={14} /> Return field
+      </button>
     </div>
   )
 }
