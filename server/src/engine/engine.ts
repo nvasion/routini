@@ -14,6 +14,7 @@
 import type { AppContext } from '../http/common.js'
 import { getOrgById } from '../repos/identity.js'
 import { getSecret } from '../repos/credentials.js'
+import { finishItemRun, setItemState, type BacklogRunOutcome } from '../repos/backlog.js'
 import {
   addRunUsage,
   createApproval,
@@ -62,10 +63,13 @@ export function createEngine(app: AppContext, opts: EngineOptions = {}): Engine 
 
   async function finishRun(run: Run, status: 'succeeded' | 'failed' | 'canceled', error?: string): Promise<void> {
     await db.org(run.orgId, async (q) => {
+      let steps: RunStep[] | undefined
+      if (status === 'canceled' || run.trigger.kind === 'backlog') {
+        steps = await listSteps(q, run.orgId, run.id)
+      }
       if (status === 'canceled') {
         // Close out anything still open.
-        const steps = await listSteps(q, run.orgId, run.id)
-        for (const s of steps) {
+        for (const s of steps!) {
           if (s.status === 'pending' || s.status === 'running' || s.status === 'waiting') {
             await updateStep(q, run, s.idx, { status: 'canceled' })
           }
@@ -80,11 +84,29 @@ export function createEngine(app: AppContext, opts: EngineOptions = {}): Engine 
       if (run.trigger.kind === 'alert') {
         await addIncidentEvent(q, run.orgId, run.trigger.incidentId, 'run.finished', null, { runId: run.id, number: run.number, status })
       }
+      if (run.trigger.kind === 'backlog') {
+        await finishItemRun(q, run.orgId, run.trigger.itemId, { id: run.id, number: run.number }, backlogOutcome(status, steps!, error))
+      }
     })
     if (opts.onRunFinished) {
       const final = await db.system((q) => getRunSystem(q, run.id))
       if (final) await opts.onRunFinished(final).catch((err) => console.error('[engine] onRunFinished failed:', (err as Error).message))
     }
+  }
+
+  /** What a finished backlog run means for its item (engine/engine.ts §5): did any step output a pull request, and was it Factory's work? */
+  function backlogOutcome(status: 'succeeded' | 'failed' | 'canceled', steps: RunStep[], error?: string): BacklogRunOutcome {
+    if (status !== 'succeeded') return { status, error }
+    for (const s of steps) {
+      const output = s.output as { pullRequest?: { url?: string } } | null
+      const url = output?.pullRequest?.url
+      if (url) {
+        const kinds = steps.map((x) => (x.output as { factory?: { kind?: string } } | null)?.factory?.kind)
+        const builtBy = kinds.includes('task') ? 'factory-task' : kinds.includes('orchestration') ? 'factory-orchestration' : 'routini'
+        return { status, pullRequestUrl: url, builtBy }
+      }
+    }
+    return { status }
   }
 
   /** Facts about a step for policy, then the org's decision. */
@@ -260,7 +282,12 @@ export function createEngine(app: AppContext, opts: EngineOptions = {}): Engine 
         }
       }
 
-      await db.org(run.orgId, (q) => updateStep(q, run, next.idx, { status: 'running', bumpAttempt: true, error: null }))
+      await db.org(run.orgId, async (q) => {
+        await updateStep(q, run, next.idx, { status: 'running', bumpAttempt: true, error: null })
+        if (run.trigger.kind === 'backlog' && spec.stage) {
+          await setItemState(q, run.orgId, run.trigger.itemId, spec.stage, { event: 'stage', data: { step: spec.id } })
+        }
+      })
       const result = await runStep(run, spec, { ...next, attempt: next.attempt + 1 }, signal)
 
       if (result.status === 'waiting') {
