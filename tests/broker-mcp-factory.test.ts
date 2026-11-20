@@ -11,6 +11,9 @@ import { agentExecutor, type AgentDocker } from '../server/src/engine/agent'
 import type { BrokerClient } from '../server/src/egress/client'
 import { PLACEHOLDER, type EgressSession, type SessionStats } from '../server/src/egress/types'
 import type { FactoryFetch } from '../server/src/engine/factory'
+import { prepareStep } from '../server/src/engine/prepare'
+import type { Step } from '../server/src/engine/spec'
+import type { Run, RunStep } from '../server/src/repos/runs'
 
 const TRANSCRIPT = readFileSync(join(__dirname, '../agents/fake/transcript.jsonl'), 'utf8').trim().split('\n')
 
@@ -267,6 +270,29 @@ describe('Factory action', () => {
     return (await u.post(`${base()}/jobs/${job.body.job.id}/run`)).body.run as { number: number; id: string }
   }
 
+  /** Recreates the test app with a different factoryFetch (for tests that need git/swarm endpoints). */
+  const freshFactoryApp = async (fetchImpl: FactoryFetch, email: string) => {
+    await t.close()
+    t = await makeTestApp({ providerCtx: { fetchImpl: providerFetch, ssrfCheck: async () => true }, engine: { actions: { factoryFetch: fetchImpl, factoryPollMs: 5 } } })
+    u = await t.signup(email)
+    await u.put(`${base()}/integrations/factory`, { credentials: { baseUrl: 'https://factory.example', apiToken: 'fk_x' } })
+  }
+
+  /**
+   * Matches the git-status and git-manifest endpoints `runFactoryAction` reads around
+   * dispatch; returns `null` for anything else so callers can layer their own routes.
+   */
+  const gitResponses = ({ branch = 'main', remoteUrl = 'https://github.com/acme/app', baseHead = 'sha-base', afterHead = 'sha-head', commits = 2, files = 3 } = {}) => {
+    return (url: string): Response | null => {
+      if (url.includes('/git/export/manifest')) {
+        if (url.includes(`base=${encodeURIComponent(branch)}&head=${encodeURIComponent(branch)}`)) return new Response(JSON.stringify({ head: baseHead }), { status: 200 })
+        return new Response(JSON.stringify({ head: afterHead, totals: { commits, files } }), { status: 200 })
+      }
+      if (url.endsWith('/git')) return new Response(JSON.stringify({ branch, remote_url: remoteUrl }), { status: 200 })
+      return null
+    }
+  }
+
   it('connects and checks the API key', async () => {
     await u.put(`${base()}/integrations/factory`, { credentials: { baseUrl: 'https://factory.internal.example', apiToken: 'fk_test' } })
     const test = await u.post(`${base()}/integrations/factory/test`)
@@ -321,5 +347,192 @@ describe('Factory action', () => {
     expect((await u.get(`${base()}/runs/${run.number}`)).body.steps[0].error).toMatch(/Factory integration is not connected/)
     const bad = await u.post(`${base()}/jobs`, { name: 'x', steps: [{ kind: 'action', config: { type: 'factory', operation: 'orchestrate', projectId: 'p' } }] })
     expect(bad.body.error).toMatch(/request must be a string/)
+  })
+
+  it('runs a Factory task, logging its status and recording output.factory', async () => {
+    const taskCalls: Array<{ method: string; url: string; body: unknown }> = []
+    const statuses2 = ['queued', 'running', 'merged']
+    const git = gitResponses()
+    const fetchImpl: FactoryFetch = async (url, init) => {
+      const method = init.method ?? 'GET'
+      taskCalls.push({ method, url, body: init.body ? JSON.parse(String(init.body)) : null })
+      const g = git(url)
+      if (g) return g
+      if (method === 'POST' && url.includes('/swarm/tasks')) return new Response(JSON.stringify({ id: 'task-9' }), { status: 201 })
+      if (method === 'GET' && url.includes('/swarm/tasks/')) {
+        const status = statuses2.length > 1 ? statuses2.shift()! : statuses2[0]!
+        return new Response(JSON.stringify({ status }), { status: 200 })
+      }
+      throw new Error(`unexpected call ${method} ${url}`)
+    }
+    await freshFactoryApp(fetchImpl, 'factory-task@example.com')
+    const run = await factoryJob({ operation: 'task', projectId: 'proj-1', request: 'Fix the bug', runtime: 'claude-code', maxRetries: 2 })
+    await new Worker(t.ctx, t.ctx.engine, { heartbeatMs: 20 }).drain()
+    const d = (await u.get(`${base()}/runs/${run.number}`)).body
+    expect(d.run.status, JSON.stringify(d)).toBe('succeeded')
+    expect(d.steps[0].output).toEqual({
+      taskId: 'task-9',
+      status: 'merged',
+      factory: { projectId: 'proj-1', kind: 'task', id: 'task-9', baseRef: 'sha-base', headRef: 'main', headSha: 'sha-head', commits: 2, files: 3 },
+    })
+    const start = taskCalls.find((c) => c.method === 'POST')!
+    expect(start).toMatchObject({ url: 'https://factory.example/api/projects/proj-1/swarm/tasks', body: { prompt: 'Fix the bug', branch_prefix: 'routini/', max_retries: 2, runtime: 'claude-code' } })
+    const events = (await u.get(`${base()}/runs/${run.id}/events`)).body.events as Array<{ type: string; data: Record<string, unknown> }>
+    expect(events.filter((e) => e.type === 'log').map((e) => e.data['message'])).toEqual(
+      expect.arrayContaining(['Started Factory task task-9 on project proj-1', 'Factory task: queued', 'Factory task: running', 'Factory task: merged']),
+    )
+  })
+
+  it('reports a failed or cancelled Factory task with its failure reason', async () => {
+    const cases: Array<[string, string | null, string]> = [
+      ['failed', 'build broke', 'Factory task failed: build broke'],
+      ['cancelled', null, 'Factory task failed'],
+    ]
+    for (const [status, reason, expected] of cases) {
+      const git = gitResponses()
+      const fetchImpl: FactoryFetch = async (url, init) => {
+        const method = init.method ?? 'GET'
+        const g = git(url)
+        if (g) return g
+        if (method === 'POST' && url.includes('/swarm/tasks')) return new Response(JSON.stringify({ id: 'task-x' }), { status: 201 })
+        if (method === 'GET' && url.includes('/swarm/tasks/')) return new Response(JSON.stringify({ status, failure_reason: reason }), { status: 200 })
+        throw new Error(`unexpected call ${method} ${url}`)
+      }
+      await freshFactoryApp(fetchImpl, `factory-task-${status}@example.com`)
+      const run = await factoryJob({ operation: 'task', projectId: 'proj-1', request: 'r' })
+      await new Worker(t.ctx, t.ctx.engine, { heartbeatMs: 20 }).drain()
+      const d = (await u.get(`${base()}/runs/${run.number}`)).body
+      expect(d.steps[0].error, status).toBe(expected)
+    }
+  })
+
+  it("fails before any POST when the project's repo does not match repoUrl", async () => {
+    const mismatchCalls: Array<{ method: string; url: string }> = []
+    const fetchImpl: FactoryFetch = async (url, init) => {
+      mismatchCalls.push({ method: init.method ?? 'GET', url })
+      if (url.endsWith('/git')) return new Response(JSON.stringify({ branch: 'main', remote_url: 'https://github.com/acme/app' }), { status: 200 })
+      throw new Error(`unexpected call ${url}`)
+    }
+    await freshFactoryApp(fetchImpl, 'factory-mismatch@example.com')
+    const run = await factoryJob({ operation: 'orchestrate', projectId: 'proj-1', request: 'r', repoUrl: 'https://github.com/acme/other' })
+    await new Worker(t.ctx, t.ctx.engine, { heartbeatMs: 20 }).drain()
+    const d = (await u.get(`${base()}/runs/${run.number}`)).body
+    expect(d.steps[0].error).toBe('Factory project proj-1 builds https://github.com/acme/app, but this step expects https://github.com/acme/other')
+    expect(mismatchCalls.some((c) => c.method === 'POST')).toBe(false)
+  })
+
+  it('fails when the Factory branch has no changes since dispatch', async () => {
+    const git = gitResponses({ commits: 0, files: 0 })
+    const fetchImpl: FactoryFetch = async (url, init) => {
+      const method = init.method ?? 'GET'
+      const g = git(url)
+      if (g) return g
+      if (method === 'POST' && url.includes('/swarm/tasks')) return new Response(JSON.stringify({ id: 'task-0' }), { status: 201 })
+      if (method === 'GET' && url.includes('/swarm/tasks/')) return new Response(JSON.stringify({ status: 'merged' }), { status: 200 })
+      throw new Error(`unexpected call ${method} ${url}`)
+    }
+    await freshFactoryApp(fetchImpl, 'factory-nochanges@example.com')
+    const run = await factoryJob({ operation: 'task', projectId: 'proj-1', request: 'r' })
+    await new Worker(t.ctx, t.ctx.engine, { heartbeatMs: 20 }).drain()
+    const d = (await u.get(`${base()}/runs/${run.number}`)).body
+    expect(d.steps[0].error).toBe('Factory finished, but its branch has no changes since dispatch')
+  })
+
+  it('rejects createPr for task and from-step operations, but not orchestrate', async () => {
+    const taskBad = await u.post(`${base()}/jobs`, { name: 'x', steps: [{ kind: 'action', config: { type: 'factory', operation: 'task', projectId: 'p', request: 'r', createPr: true } }] })
+    expect(taskBad.status).toBe(400)
+    expect(taskBad.body.error).toMatch(/Routini opens the pull request for this step's work/)
+
+    const fromStepBad = await u.post(`${base()}/jobs`, {
+      name: 'y',
+      steps: [{ kind: 'action', config: { type: 'factory', operation: 'from-step', operationFrom: 'steps.plan.out.builder', projectId: 'p', request: 'r', createPr: true } }],
+    })
+    expect(fromStepBad.status).toBe(400)
+    expect(fromStepBad.body.error).toMatch(/Routini opens the pull request for this step's work/)
+
+    const orchestrateOk = await u.post(`${base()}/jobs`, { name: 'z', steps: [{ kind: 'action', config: { type: 'factory', operation: 'orchestrate', projectId: 'p', request: 'r', createPr: true } }] })
+    expect(orchestrateOk.status, JSON.stringify(orchestrateOk.body)).toBe(201)
+  })
+
+  it('never reads git state for a plain orchestrate, even when git endpoints would fail', async () => {
+    const plainCalls: Array<{ method: string; url: string }> = []
+    const fetchImpl: FactoryFetch = async (url, init) => {
+      plainCalls.push({ method: init.method ?? 'GET', url })
+      if (url.includes('/git')) throw new Error('git endpoints must never be called for a plain orchestrate')
+      if (init.method === 'POST' && url.includes('/orchestrate')) return new Response(JSON.stringify({ id: 'orch-plain' }), { status: 201 })
+      return new Response(JSON.stringify({ orchestration: { id: 'orch-plain', status: 'completed', completed_tasks: 1, total_tasks: 1 } }), { status: 200 })
+    }
+    await freshFactoryApp(fetchImpl, 'factory-plain@example.com')
+    const run = await factoryJob({ operation: 'orchestrate', projectId: 'proj-1', request: 'r' })
+    await new Worker(t.ctx, t.ctx.engine, { heartbeatMs: 20 }).drain()
+    const d = (await u.get(`${base()}/runs/${run.number}`)).body
+    expect(d.run.status, JSON.stringify(d)).toBe('succeeded')
+    expect(d.steps[0].output).not.toHaveProperty('factory')
+    expect(plainCalls.some((c) => c.url.includes('/git'))).toBe(false)
+  })
+
+  describe('from-step resolution (prepare.ts)', () => {
+    const run: Run = {
+      id: 'run-1',
+      orgId: 'org-1',
+      jobId: 'job-1',
+      number: 1,
+      status: 'running',
+      trigger: { kind: 'manual' },
+      jobSnapshot: { name: 'j', steps: [] },
+      costUsd: 0,
+      agentSeconds: 0,
+      error: null,
+      cancelRequested: false,
+      createdAt: '',
+      startedAt: null,
+      finishedAt: null,
+      updatedAt: '',
+    }
+    const priorStep = (value: string): RunStep => ({
+      idx: 0,
+      stepId: 'plan',
+      name: 'plan',
+      kind: 'action',
+      status: 'succeeded',
+      attempt: 1,
+      output: { out: { builder: value } },
+      error: null,
+      startedAt: null,
+      finishedAt: null,
+      policyCleared: false,
+    })
+    const fromStepSpec = (): Step =>
+      ({
+        id: 'build',
+        name: 'build',
+        when: 'on_success',
+        retries: 0,
+        kind: 'action',
+        config: { type: 'factory', operation: 'from-step', operationFrom: 'steps.plan.out.builder', projectId: 'p', request: 'r' },
+      }) as unknown as Step
+
+    it.each([
+      ['task', 'task'],
+      ['factory-task', 'task'],
+      ['orchestrate', 'orchestrate'],
+      ['factory-orchestration', 'orchestrate'],
+    ])('maps earlier-step value %s to operation %s, keeping operationFrom as a marker', async (value, operation) => {
+      const result = await prepareStep({} as never, run, fromStepSpec(), [priorStep(value)])
+      expect('error' in result, JSON.stringify(result)).toBe(false)
+      expect((result as { step: Step }).step.config).toMatchObject({ operation, operationFrom: 'steps.plan.out.builder' })
+    })
+
+    it('fails clearly when the earlier step chose something that is not a Factory builder', async () => {
+      const result = await prepareStep({} as never, run, fromStepSpec(), [priorStep('something-else')])
+      expect(result).toEqual({ error: "Step chose 'something-else', which is not a Factory builder" })
+    })
+
+    it('never resolves from-step to a PRD execution', async () => {
+      for (const value of ['prd', 'factory-prd']) {
+        const result = await prepareStep({} as never, run, fromStepSpec(), [priorStep(value)])
+        expect(result).toEqual({ error: `Step chose '${value}', which is not a Factory builder` })
+      }
+    })
   })
 })
