@@ -95,6 +95,10 @@ alert
   command step can target **the alert's host**. Template values reach shells as
   variables, never as command text, so hostile labels stay inert. When the
   alert resolves, Routini drafts a **postmortem** from what actually happened.
+- **Credentials in http steps:** a header can carry a stored credential,
+  `"Authorization": "Bearer {{credentials.<key>}}"` (Settings → Credentials). It
+  is filled in when the step runs and redacted from the timeline. Such a header
+  can't also use other placeholders, so trigger data can never name a credential.
 - **Routini as an MCP server:** connect Claude Code (or any MCP client) to
   `/mcp` with an API token from Settings → API tokens:
   `claude mcp add --transport http routini https://routini.example.com/mcp --header "Authorization: Bearer rtk_…"`.

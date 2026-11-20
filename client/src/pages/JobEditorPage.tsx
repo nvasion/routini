@@ -364,7 +364,7 @@ function StepEditor(props: {
                 <Field label="Expected status">{(id) => <input id={id} className="input" inputMode="numeric" placeholder="200" value={s.expectStatus} onChange={(e) => set({ expectStatus: e.target.value })} />}</Field>
               </div>
               <div className="row">
-                <Field label="Headers (JSON)">{(id) => <textarea id={id} className="textarea mono" rows={2} value={s.headersJson} onChange={(e) => set({ headersJson: e.target.value })} />}</Field>
+                <Field label="Headers (JSON)" hint={'A stored credential: "Authorization": "Bearer {{credentials.<key>}}". It is filled in when the step runs and hidden from the timeline.'}>{(id) => <textarea id={id} className="textarea mono" rows={2} value={s.headersJson} onChange={(e) => set({ headersJson: e.target.value })} />}</Field>
                 <Field label="Body">{(id) => <textarea id={id} className="textarea mono" rows={2} value={s.body} onChange={(e) => set({ body: e.target.value })} />}</Field>
               </div>
             </>

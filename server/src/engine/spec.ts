@@ -13,6 +13,8 @@ import { CronExpressionParser } from 'cron-parser'
 import { AGENT_IDS, type AgentId } from '../integrations/catalog.js'
 import type { Role } from '../repos/identity.js'
 import { validateRepoUrl } from '../utils/repoUrl.js'
+import { RESERVED_PREFIXES, validateCredentialKey } from '../repos/credentials.js'
+import { credentialKeys, placeholderPaths } from './template.js'
 
 export type Trigger =
   | { kind: 'manual' }
@@ -61,7 +63,18 @@ export function evaluateIf(cond: IfCondition, actual: string): boolean {
 }
 
 export type ActionConfig =
-  | { type: 'http'; url: string; method?: string; headers?: Record<string, string>; body?: string; expectStatus?: number; timeoutMs?: number }
+  | {
+      type: 'http'
+      url: string
+      method?: string
+      /** A value may be credential references and literal text only, e.g. `Bearer {{credentials.<key>}}`. */
+      headers?: Record<string, string>
+      body?: string
+      expectStatus?: number
+      timeoutMs?: number
+      /** Headers that reference credentials, filled by the executor. Set by templating at run time, never by job authors. */
+      credentialHeaders?: Record<string, string>
+    }
   /** A command on a host, over SSH or routini-runner. `host: 'alert'` targets the incident's host. */
   | { type: 'ssh'; hostId?: string; host?: 'alert'; command: string; /** Set by templating at run time, never by job authors. */ env?: Record<string, string> }
   | { type: 'imap'; host: string; port?: number; username: string; credentialKey: string; mailbox?: string; search?: string; tls?: boolean }
@@ -173,6 +186,21 @@ const int = (v: unknown, path: string, min: number, max: number): number | undef
   return v
 }
 
+/** A header naming credentials holds only literal text and `{{credentials.<key>}}` of keys a job may read. */
+function checkCredentialRefs(value: string, path: string): void {
+  const keys = credentialKeys(value)
+  if (!keys.length) return
+  if (keys.length !== placeholderPaths(value).length) fail(`${path} can't mix a credential with other placeholders`)
+  for (const key of keys) {
+    try {
+      validateCredentialKey(key)
+    } catch (err) {
+      fail(`${path}: ${(err as Error).message}`)
+    }
+    if (RESERVED_PREFIXES.some((pre) => key.startsWith(pre))) fail(`${path}: credentials starting with ${RESERVED_PREFIXES.join(' or ')} are managed by Routini`)
+  }
+}
+
 export function isValidTimeZone(tz: string): boolean {
   try {
     new Intl.DateTimeFormat('en-US', { timeZone: tz })
@@ -253,6 +281,7 @@ function parseAction(c: Record<string, unknown>, p: string): ActionConfig {
         headers = {}
         for (const [k, v] of Object.entries(c['headers'] as Record<string, unknown>)) {
           if (typeof v !== 'string' || !/^[A-Za-z0-9-]{1,64}$/.test(k)) fail(`${p}.headers must map header names to strings`)
+          checkCredentialRefs(v as string, `${p}.headers.${k}`)
           headers[k] = v as string
         }
       }
