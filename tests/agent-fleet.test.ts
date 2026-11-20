@@ -326,6 +326,44 @@ describe('agent steps on a fleet host', () => {
     expect(detail.steps[0]!.error).toBe('Agent exited with code 2: the repo has no package.json')
   })
 
+  /** The out object as the entrypoint prints it: base64 pieces of 3000 chars, then the closing line. */
+  const outLines = (obj: unknown, drop?: number): string[] => {
+    const b64 = Buffer.from(JSON.stringify(obj)).toString('base64')
+    const parts: string[] = []
+    for (let i = 0; i < b64.length; i += 3000) parts.push(b64.slice(i, i + 3000))
+    return [
+      ...parts.flatMap((d, seq) => (seq === drop ? [] : [`::routini::${JSON.stringify({ type: 'out_part', seq, data: d })}`])),
+      `::routini::${JSON.stringify({ type: 'out', parts: parts.length })}`,
+    ]
+  }
+
+  it('reassembles a long "out" sent in pieces (fleet output lines are cut at 4000 chars)', async () => {
+    const { credential, hostId } = await enroll()
+    const request = 'Add a gift card balance page. '.repeat(400) // ~12 KB, well past one line
+    await connect(credential, {
+      onAgent: (s, r) => {
+        for (const line of [...TRANSCRIPT, ...outLines({ request })]) r.agentOutput(s.id, line)
+        r.agentExit(s.id, 0)
+      },
+    })
+    const { detail } = await runNow(await agentJob({ runOn: { hostId }, returns: [{ name: 'request', type: 'text' }] }))
+    expect(detail.steps[0]!.status, detail.steps[0]!.error).toBe('succeeded')
+    expect((detail.steps[0]!.output['out'] as { request: string }).request).toBe(request)
+  })
+
+  it('fails clearly when a piece of "out" goes missing', async () => {
+    const { credential, hostId } = await enroll()
+    await connect(credential, {
+      onAgent: (s, r) => {
+        for (const line of [...TRANSCRIPT, ...outLines({ request: 'y'.repeat(8000) }, 1)]) r.agentOutput(s.id, line)
+        r.agentExit(s.id, 0)
+      },
+    })
+    const { detail } = await runNow(await agentJob({ runOn: { hostId }, returns: [{ name: 'request', type: 'text' }] }))
+    expect(detail.steps[0]!.status).toBe('failed')
+    expect(detail.steps[0]!.error).toMatch(/could not be read \(\d+ of \d+ parts arrived\)/)
+  })
+
   it('resolves runOn { host: "alert" } to the incident\'s host', async () => {
     const { credential, hostId } = await enroll()
     let started: AgentStart | undefined

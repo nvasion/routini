@@ -35,9 +35,10 @@ export function JobsPage() {
             </Link>
             <details style={{ position: 'relative' }}>
               <summary className="btn">New from template</summary>
-              <div className="card" role="menu" style={{ position: 'absolute', right: 0, marginTop: 4, zIndex: 10, minWidth: 200 }}>
-                <Link role="menuitem" to={org.path(`/jobs/new?template=${PLAN_BUILD_SHIP_TEMPLATE}`)}>
-                  Plan, build, ship
+              <div className="card" role="menu" style={{ position: 'absolute', right: 0, marginTop: 4, zIndex: 10, width: 'min(300px, calc(100vw - 32px))', padding: 6 }}>
+                <Link role="menuitem" className="btn" style={{ width: '100%', justifyContent: 'flex-start', flexDirection: 'column', alignItems: 'flex-start', height: 'auto', padding: '8px 10px', border: 0, whiteSpace: 'normal', textAlign: 'left' }} to={org.path(`/jobs/new?template=${PLAN_BUILD_SHIP_TEMPLATE}`)}>
+                  <span>Plan, build, ship</span>
+                  <span className="hint">A read-only plan step picks who builds, then an agent builds and opens a PR.</span>
                 </Link>
               </div>
             </details>

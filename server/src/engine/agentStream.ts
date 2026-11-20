@@ -29,6 +29,8 @@ export interface AgentFacts {
   noChanges?: boolean
   /** Parsed `$ROUTINI_OUT_FILE` object, from the entrypoint's "out" control line (agent returns). */
   out?: Record<string, unknown>
+  /** Set when "out" arrived in pieces that could not be put back together. */
+  outError?: string
   errors: string[]
   /** Last lines of plain output, for failure messages. */
   tail: string[]
@@ -37,6 +39,8 @@ export interface AgentFacts {
 const CONTROL_PREFIX = '::routini::'
 const PREVIEW = 2000
 const TAIL = 20
+/** 64 KB of JSON is at most ~88 KB of base64, so 30 pieces of 3000 chars; a little headroom. */
+const MAX_OUT_PARTS = 40
 
 const clip = (s: string, n = PREVIEW) => (s.length > n ? `${s.slice(0, n)}… (${s.length - n} more chars)` : s)
 
@@ -53,6 +57,7 @@ function textOf(content: unknown): string {
 export class AgentStreamParser {
   readonly facts: AgentFacts = { costUsd: 0, errors: [], tail: [] }
   private readonly toolNames = new Map<string, string>()
+  private readonly outParts: string[] = []
 
   line(raw: string, stream: 'stdout' | 'stderr' = 'stdout'): TimelineEvent[] {
     const line = raw.trimEnd()
@@ -95,9 +100,37 @@ export class AgentStreamParser {
       case 'no_changes':
         this.facts.noChanges = true
         return [{ type: 'log', data: { message: 'The agent made no changes to the repository' } }]
-      case 'out':
-        this.facts.out = c['data'] && typeof c['data'] === 'object' && !Array.isArray(c['data']) ? (c['data'] as Record<string, unknown>) : {}
+      case 'out_part': {
+        // Base64 pieces of the out object (fleet output lines are cut at 4000 chars); joined on "out".
+        const seq = Number(c['seq'])
+        const data = c['data']
+        if (Number.isInteger(seq) && seq >= 0 && seq < MAX_OUT_PARTS && typeof data === 'string' && /^[A-Za-z0-9+/=]*$/.test(data)) this.outParts[seq] = data
+        return []
+      }
+      case 'out': {
+        if (c['parts'] !== undefined) {
+          const n = Number(c['parts'])
+          const parts = Number.isInteger(n) && n > 0 && n <= MAX_OUT_PARTS ? this.outParts.slice(0, n) : []
+          const got = parts.filter((p) => typeof p === 'string').length
+          let obj: unknown = null
+          if (got === n) {
+            try {
+              obj = JSON.parse(Buffer.from(parts.join(''), 'base64').toString('utf8'))
+            } catch {
+              obj = null
+            }
+          }
+          if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
+            this.facts.outError = `The agent's output could not be read (${got} of ${Number.isInteger(n) ? n : '?'} parts arrived)`
+            return [{ type: 'log', data: { message: this.facts.outError } }]
+          }
+          this.facts.out = obj as Record<string, unknown>
+        } else {
+          // Single-line form, from images before the pieces existed.
+          this.facts.out = c['data'] && typeof c['data'] === 'object' && !Array.isArray(c['data']) ? (c['data'] as Record<string, unknown>) : {}
+        }
         return [{ type: 'log', data: { message: 'Agent wrote its output' } }]
+      }
       case 'error': {
         const m = String(c['message'] ?? 'unknown error')
         this.facts.errors.push(m)

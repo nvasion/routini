@@ -510,6 +510,12 @@ export function agentExecutor(opts: AgentRunnerOptions = {}): StepExecutor {
           return { status: 'failed', error: `Agent exited with code ${result.exitCode}: ${why}${blockedHint}`, output: base }
         }
         if (facts.resultIsError) return { status: 'failed', error: `The agent reported an error: ${facts.resultText ?? 'unknown'}${blockedHint}`, output: base }
+        // Returns were declared but no "out" control line arrived: an agent image older than
+        // the returns contract (environments and fleet hosts can run their own images).
+        if (resolvedReturns && facts.outError) return { status: 'failed', error: facts.outError, output: base }
+        if (resolvedReturns && facts.out === undefined) {
+          return { status: 'failed', error: 'The agent image did not report its returns (no "out" control line); use a current Routini agent image', output: base }
+        }
         if (outResult && 'error' in outResult) return { status: 'failed', error: outResult.error, output: base }
 
         if (facts.noChanges || !facts.pushed) return { status: 'succeeded', output: { ...base, changes: false } }

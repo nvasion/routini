@@ -94,9 +94,18 @@ code=$?
 if [ -n "${ROUTINI_OUT_FILE:-}" ]; then
   [ -f "$ROUTINI_OUT_FILE" ] || fail "The agent did not write a JSON object to \$ROUTINI_OUT_FILE"
   size=$(wc -c < "$ROUTINI_OUT_FILE" | tr -d ' ')
-  [ "$size" -le 65536 ] || fail "The agent did not write a JSON object to \$ROUTINI_OUT_FILE"
+  [ "$size" -le 65536 ] || fail "The agent's output in \$ROUTINI_OUT_FILE is over 64 KB; keep the returned fields short"
   jq -e 'type == "object"' "$ROUTINI_OUT_FILE" >/dev/null 2>&1 || fail "The agent did not write a JSON object to \$ROUTINI_OUT_FILE"
-  ctl "{\"type\":\"out\",\"data\":$(jq -c '.' "$ROUTINI_OUT_FILE")}"
+  # Sent as base64 pieces of 3000 chars: output lines from fleet hosts travel through Postgres
+  # NOTIFY and are cut at 4000 chars, so one long line would arrive broken.
+  b64=$(jq -c '.' "$ROUTINI_OUT_FILE" | base64 | tr -d '\n')
+  parts=0
+  while [ -n "$b64" ]; do
+    ctl "{\"type\":\"out_part\",\"seq\":${parts},\"data\":\"${b64:0:3000}\"}"
+    b64=${b64:3000}
+    parts=$((parts + 1))
+  done
+  ctl "{\"type\":\"out\",\"parts\":${parts}}"
 fi
 
 if [ -n "${CHECK_COMMAND:-}" ]; then

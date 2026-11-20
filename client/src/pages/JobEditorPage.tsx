@@ -609,7 +609,7 @@ function StepEditor(props: {
                 onChange={(e) => set({ repoReadOnly: e.target.checked, ...(e.target.checked ? { output: 'none' } : {}) })}
                 style={{ marginTop: 3 }}
               />
-              <span>
+              <span style={{ flex: '1 1 0', minWidth: 0 }}>
                 Read only
                 <span className="hint" style={{ display: 'block' }}>
                   The agent gets a shallow copy and cannot push. On a self-hosted server without the credential broker this is enforced by the agent image only.
@@ -622,7 +622,7 @@ function StepEditor(props: {
           </Field>
           <label className="inline" style={{ gap: 8, alignItems: 'flex-start' }}>
             <input type="checkbox" checked={s.routini} onChange={(e) => set({ routini: e.target.checked })} style={{ marginTop: 3 }} />
-            <span>
+            <span style={{ flex: '1 1 0', minWidth: 0 }}>
               Can use Routini: run commands on fleet servers, read runs and incidents, add incident notes.
               <span className="hint" style={{ display: 'block' }}>
                 Through a token that only lives for this step. Commands follow org policy, and the agent can&apos;t approve anything.
@@ -711,31 +711,37 @@ function ReturnsEditor({ stepId, returns, onChange }: { stepId: string; returns:
         Later steps read these as <span className="mono">{`{{steps.${stepId || 'this-step'}.out.<name>}}`}</span>
       </span>
       {returns.map((r, ri) => (
-        <div key={r.key} className="row" style={{ alignItems: 'flex-end' }}>
-          <Field label="Name">{(id) => <input id={id} className="input mono" value={r.name} placeholder="builder" onChange={(e) => setField(r.key, { name: e.target.value })} />}</Field>
-          <Field label="Type">
-            {(id) => (
-              <select id={id} className="select" value={r.type} onChange={(e) => setField(r.key, { type: e.target.value as ReturnFieldForm['type'] })}>
-                <option value="text">Text</option>
-                <option value="number">Number</option>
-                <option value="boolean">Boolean</option>
-                <option value="choice">Choice</option>
-              </select>
-            )}
-          </Field>
+        <div key={r.key} className="stack" style={{ borderTop: '1px solid var(--line-soft)', paddingTop: 10 }}>
+          <div className="inline" style={{ alignItems: 'flex-end', gap: 12 }}>
+            <div style={{ flex: '2 1 160px', minWidth: 0 }}>
+              <Field label="Name">{(id) => <input id={id} className="input mono" value={r.name} placeholder="builder" onChange={(e) => setField(r.key, { name: e.target.value })} />}</Field>
+            </div>
+            <div style={{ flex: '1 1 120px', minWidth: 0 }}>
+              <Field label="Type">
+                {(id) => (
+                  <select id={id} className="select" value={r.type} onChange={(e) => setField(r.key, { type: e.target.value as ReturnFieldForm['type'] })}>
+                    <option value="text">Text</option>
+                    <option value="number">Number</option>
+                    <option value="boolean">Boolean</option>
+                    <option value="choice">Choice</option>
+                  </select>
+                )}
+              </Field>
+            </div>
+            <label className="inline" style={{ gap: 6, minHeight: 36 }}>
+              <input type="checkbox" checked={r.required} onChange={(e) => setField(r.key, { required: e.target.checked })} />
+              Required
+            </label>
+            <button type="button" className="btn small danger" aria-label={`Remove return field ${ri + 1}`} onClick={() => removeField(r.key)}>
+              <Icon name="trash" size={14} />
+            </button>
+          </div>
           {r.type === 'choice' && (
-            <Field label="Choices" hint="Comma separated; a choice that needs an integration is value:integrationId.">
+            <Field label="Choices" hint="Comma separated. Add :integration to offer a choice only when that integration is connected, e.g. factory-task:factory.">
               {(id) => <input id={id} className="input mono" value={r.choicesText} placeholder="routini, factory-task:factory" onChange={(e) => setField(r.key, { choicesText: e.target.value })} />}
             </Field>
           )}
-          <Field label="Description">{(id) => <input id={id} className="input" value={r.description} onChange={(e) => setField(r.key, { description: e.target.value })} />}</Field>
-          <label className="inline" style={{ gap: 6 }}>
-            <input type="checkbox" checked={r.required} onChange={(e) => setField(r.key, { required: e.target.checked })} />
-            Required
-          </label>
-          <button type="button" className="btn small danger" aria-label={`Remove return field ${ri + 1}`} onClick={() => removeField(r.key)}>
-            <Icon name="trash" size={14} />
-          </button>
+          <Field label="Description (shown to the agent)">{(id) => <input id={id} className="input" value={r.description} onChange={(e) => setField(r.key, { description: e.target.value })} />}</Field>
         </div>
       ))}
       <button type="button" className="btn small" onClick={() => onChange([...returns, emptyReturnField()])}>

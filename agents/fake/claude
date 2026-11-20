@@ -5,6 +5,7 @@
 #   contains "EDIT"   → also write NOTES.md in the working directory
 #   contains "SLOW"   → sleep 30s first (for cancel/timeout tests)
 #   "NET <url> ..."   → fetch each URL (through HTTPS_PROXY if set) and print "net <url> <status> <body>"
+#   contains "OUT"    → write a ~9 KB returns object to $ROUTINI_OUT_FILE (builder, request, reason)
 # With --mcp-config it prints the configured server names.
 prompt=""
 mcp=""
@@ -28,6 +29,10 @@ if [[ "$prompt" == *FAIL* ]]; then
   exit 1
 fi
 cat /opt/routini/transcript.jsonl
+if [[ "$prompt" == *OUT* ]] && [ -n "${ROUTINI_OUT_FILE:-}" ]; then
+  req=$(for i in $(seq 1 300); do printf 'Add the "gift card" balance page. '; done)
+  jq -n --arg r "$req" '{builder: "routini", request: $r, reason: "small change"}' > "$ROUTINI_OUT_FILE"
+fi
 if [[ "$prompt" == *EDIT* ]]; then
   echo "Notes written by the fake agent." > NOTES.md
 fi

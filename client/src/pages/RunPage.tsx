@@ -318,7 +318,7 @@ function StepItem(props: {
 
 const OUT_VALUE_TRUNCATE = 200
 
-/** An agent step's validated `out` fields: a key/value table, long values truncated with a toggle. */
+/** An agent step's validated `out` fields: a key/value list (like Fleet's host facts), long values truncated with a toggle. */
 function OutTable({ out }: { out: Record<string, unknown> }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const toggle = (key: string) =>
@@ -329,28 +329,29 @@ function OutTable({ out }: { out: Record<string, unknown> }) {
       return next
     })
   return (
-    <table className="table" aria-label="Output">
-      <tbody>
+    <div className="stack" style={{ gap: 6, marginTop: 10 }}>
+      <span className="meta">Returned</span>
+      <dl className="kv" aria-label="Returned" style={{ fontSize: 13 }}>
         {Object.entries(out).map(([key, value]) => {
           const text = typeof value === 'string' ? value : JSON.stringify(value)
           const long = text.length > OUT_VALUE_TRUNCATE
           const shown = expanded.has(key)
           return (
-            <tr key={key}>
-              <td className="mono">{key}</td>
-              <td>
-                <span className="mono">{long && !shown ? `${text.slice(0, OUT_VALUE_TRUNCATE)}…` : text}</span>
+            <div key={key} style={{ display: 'contents' }}>
+              <dt className="mono">{key}</dt>
+              <dd>
+                <span style={{ whiteSpace: 'pre-wrap' }}>{long && !shown ? `${text.slice(0, OUT_VALUE_TRUNCATE)}…` : text}</span>
                 {long && (
-                  <button type="button" className="btn small" onClick={() => toggle(key)}>
+                  <button type="button" className="btn small" style={{ marginLeft: 8 }} onClick={() => toggle(key)}>
                     {shown ? 'Show less' : 'Show more'}
                   </button>
                 )}
-              </td>
-            </tr>
+              </dd>
+            </div>
           )
         })}
-      </tbody>
-    </table>
+      </dl>
+    </div>
   )
 }
 

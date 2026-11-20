@@ -358,6 +358,13 @@ describe('agent steps', () => {
     expect(step.error).toMatch(/The agent did not write a JSON object to \$ROUTINI_OUT_FILE/)
   })
 
+  it('fails the step when returns are declared but the image never sends an "out" line (older image)', async () => {
+    script = () => ({ lines: [...TRANSCRIPT] })
+    const { step } = await run({ returns: [{ name: 'summary', type: 'text' }] })
+    expect(step.status).toBe('failed')
+    expect(step.error).toMatch(/did not report its returns/)
+  })
+
   it('fails the step when the written output does not validate, even though the agent exited 0', async () => {
     script = () => ({ lines: [...TRANSCRIPT, '::routini::{"type":"out","data":{"approved":"yes-ish"}}'] })
     const { step } = await run({ returns: [{ name: 'approved', type: 'boolean' }] })

@@ -63,7 +63,7 @@ Omnimancer's stream-json variant directly.
 | `CHECK_COMMAND` | Done-check run after the agent; non-zero fails the step. |
 | `ROUTINI_OUTPUT` | `pr`, `branch` or `none`. |
 | `ROUTINI_COMMIT_MESSAGE` | Commit message for the agent's changes. |
-| `ROUTINI_OUT_FILE` | Set when the step has `config.returns`: the path the agent must write one JSON object to before it finishes (fields and types are spelled out in `ROUTINI_SYSTEM_PROMPT`). The entrypoint checks it (exists, ≤ 64 KB, a JSON object) right after the agent exits and before `CHECK_COMMAND`, and fails the step if it's missing or malformed. |
+| `ROUTINI_OUT_FILE` | Set when the step has `config.returns`: the path the agent must write one JSON object to before it finishes (fields and types are spelled out in `ROUTINI_SYSTEM_PROMPT`). The entrypoint checks it (exists, ≤ 64 KB, a JSON object) and prints it as base64 pieces, `{"type":"out_part","seq":0,"data":"<3000 chars>"}` ... then `{"type":"out","parts":N}`, because fleet output lines are cut at 4000 chars right after the agent exits and before `CHECK_COMMAND`, and fails the step if it's missing or malformed. |
 | `ROUTINI_REPO_READONLY` | `1` when `config.repo.readOnly` is set: the entrypoint clones with `--depth 1` and never commits or pushes, whatever `ROUTINI_OUTPUT` says (the worker already forces it to `none`). |
 | `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` | Model endpoint, from the org's AI settings. |
 | `CLAUDE_CODE_USE_BEDROCK` / `AWS_REGION` / `AWS_BEARER_TOKEN_BEDROCK` | Model endpoint when the org routes Claude Code through AWS Bedrock (Bedrock API key). |
