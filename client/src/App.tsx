@@ -5,6 +5,7 @@ import { ThemeProvider } from './lib/theme'
 import { DockWindow, OrgShell } from './shell/Shell'
 import { LoginPage } from './pages/LoginPage'
 import { InboxPage } from './pages/InboxPage'
+import { BacklogPage } from './pages/BacklogPage'
 import { RunsPage } from './pages/RunsPage'
 import { RunPage } from './pages/RunPage'
 import { JobsPage } from './pages/JobsPage'
@@ -93,6 +94,7 @@ export function AppRoutes() {
       >
         <Route index element={<Navigate to="inbox" replace />} />
         <Route path="inbox" element={<InboxPage />} />
+        <Route path="backlog" element={<BacklogPage />} />
         <Route path="runs" element={<RunsPage />} />
         <Route path="runs/:run" element={<RunPage />} />
         <Route path="jobs" element={<JobsPage />} />

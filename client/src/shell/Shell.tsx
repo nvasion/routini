@@ -228,6 +228,7 @@ function LeftNav() {
     <nav className="nav" aria-label="Primary">
       <div className="nav-label">Work</div>
       {item('/inbox', 'inbox', 'Inbox', needs > 0 ? <span className="count" aria-label={`${needs} need attention`}>{needs}</span> : null)}
+      {item('/backlog', 'backlog', 'Backlog')}
       {item('/runs', 'runs', 'Runs', running > 0 ? <span className="dot running pulse" style={{ marginLeft: 'auto' }} aria-label={`${running} running`} /> : null)}
       {item('/incidents', 'alert', 'Incidents', openIncidents > 0 ? <span className="count" aria-label={`${openIncidents} open incidents`}>{openIncidents}</span> : null)}
       {item('/jobs', 'jobs', 'Jobs')}

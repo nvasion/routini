@@ -740,6 +740,119 @@ describe('job form: "Plan, build, ship" template', () => {
   })
 })
 
+describe('job form: backlog cron trigger ("Run once per backlog item")', () => {
+  const base = { ...job, trigger: { kind: 'cron', expr: '*/5 * * * *', tz: 'UTC' } as const }
+  const validStep = () => ({ ...emptyStep('action' as const, 0), url: 'https://x.test' })
+
+  it('round-trips the backlog block: sources, labels and maxPerFire', () => {
+    const trigger = { kind: 'cron' as const, expr: '*/5 * * * *', tz: 'UTC', backlog: { sourceIds: ['s1', 's2'], labels: ['urgent'], maxPerFire: 3 } }
+    const form = fromJob({ ...base, trigger })
+    expect(form).toMatchObject({ backlogEnabled: true, backlogSourceIds: ['s1', 's2'], backlogLabels: 'urgent', backlogMaxPerFire: '3' })
+    const r = toPayload({ ...form, name: 'x' })
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.payload['trigger']).toEqual(trigger)
+  })
+
+  it('round-trips a backlog block with no sources or labels (blank matches anything)', () => {
+    const trigger = { kind: 'cron' as const, expr: '*/5 * * * *', tz: 'UTC', backlog: { maxPerFire: 5 } }
+    const form = fromJob({ ...base, trigger })
+    expect(form).toMatchObject({ backlogEnabled: true, backlogSourceIds: [], backlogLabels: '', backlogMaxPerFire: '5' })
+    const r = toPayload({ ...form, name: 'x' })
+    expect(r.ok && r.payload['trigger']).toEqual(trigger)
+  })
+
+  it('omits the backlog block entirely when the switch is off', () => {
+    const form = { ...emptyJob(), name: 'x', triggerKind: 'cron' as const, steps: [validStep()] }
+    const r = toPayload(form)
+    expect(r.ok).toBe(true)
+    expect(r.ok && (r.payload['trigger'] as Record<string, unknown>)['backlog']).toBeUndefined()
+  })
+
+  it('rejects more than 20 sources, more than 10 labels, and a bad "up to"', () => {
+    const form = {
+      ...emptyJob(),
+      name: 'x',
+      triggerKind: 'cron' as const,
+      steps: [validStep()],
+      backlogEnabled: true,
+      backlogSourceIds: Array.from({ length: 21 }, (_, i) => `s${i}`),
+      backlogLabels: Array.from({ length: 11 }, (_, i) => `l${i}`).join(', '),
+      backlogMaxPerFire: '0',
+    }
+    const r = toPayload(form)
+    expect(r.ok).toBe(false)
+    if (r.ok) return
+    expect(r.errors).toEqual(['Schedule: choose at most 20 sources.', 'Schedule: at most 10 labels.', 'Schedule: "up to" must be a whole number from 1 to 20.'])
+  })
+
+  it('requires "up to" to be a whole number from 1 to 20', () => {
+    const form = { ...emptyJob(), name: 'x', triggerKind: 'cron' as const, steps: [validStep()], backlogEnabled: true, backlogMaxPerFire: '' }
+    expect((toPayload(form) as { ok: false; errors: string[] }).errors).toEqual(['Schedule: "up to" must be a whole number from 1 to 20.'])
+    form.backlogMaxPerFire = '21'
+    expect((toPayload(form) as { ok: false; errors: string[] }).errors).toEqual(['Schedule: "up to" must be a whole number from 1 to 20.'])
+    form.backlogMaxPerFire = '2.5'
+    expect((toPayload(form) as { ok: false; errors: string[] }).errors).toEqual(['Schedule: "up to" must be a whole number from 1 to 20.'])
+  })
+})
+
+describe('job form: agent repository "From the item"', () => {
+  const base = { ...job, steps: [] as Job['steps'] }
+
+  it("round-trips a step using the item's repository", () => {
+    const steps: Job['steps'] = [{ id: 'build', name: 'Build', kind: 'agent', when: 'on_success', retries: 0, config: { agent: 'claude', prompt: 'Build it', repo: { fromItem: true }, output: 'pr' } }]
+    const form = fromJob({ ...base, steps })
+    expect(form.steps[0]).toMatchObject({ repoFromItem: true, repoUrl: '', output: 'pr' })
+    const r = toPayload(form)
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.payload['steps']).toEqual(steps.map(({ retries: _r, ...s }) => s))
+  })
+
+  it('round-trips a read-only item repository, forcing output to none', () => {
+    const steps: Job['steps'] = [{ id: 'plan', name: 'Plan', kind: 'agent', when: 'on_success', retries: 0, config: { agent: 'claude', prompt: 'Plan', repo: { fromItem: true, readOnly: true }, output: 'none' } }]
+    const form = fromJob({ ...base, steps })
+    expect(form.steps[0]).toMatchObject({ repoFromItem: true, repoReadOnly: true })
+    const r = toPayload(form)
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.payload['steps']).toEqual(steps.map(({ retries: _r, ...s }) => s))
+  })
+
+  it('prefers "From the item" over a typed repository URL (the editor clears one when the other is picked)', () => {
+    const form = { ...emptyJob(), name: 'x' }
+    form.steps = [{ ...emptyStep('agent', 0), prompt: 'Build', repoFromItem: true, repoUrl: 'https://github.com/acme/app' }]
+    const r = toPayload(form)
+    expect(r.ok && r.payload['steps']).toEqual([{ id: 'step-1', name: 'Agent', kind: 'agent', when: 'on_success', config: { agent: 'claude', prompt: 'Build', repo: { fromItem: true }, output: 'pr' } }])
+  })
+})
+
+describe('job form: step "Stage"', () => {
+  const base = { ...job, steps: [] as Job['steps'] }
+
+  it('round-trips a stage on an action and an agent step', () => {
+    const steps: Job['steps'] = [
+      { id: 'probe', name: 'Probe', kind: 'action', when: 'on_success', retries: 0, stage: 'planning', config: { type: 'http', url: 'https://x.test', method: 'GET' } },
+      { id: 'build', name: 'Build', kind: 'agent', when: 'on_success', retries: 0, stage: 'building', config: { agent: 'claude', prompt: 'Build' } },
+    ]
+    const form = fromJob({ ...base, steps })
+    expect(form.steps.map((s) => s.stage)).toEqual(['planning', 'building'])
+    const r = toPayload(form)
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.payload['steps']).toEqual(steps.map(({ retries: _r, ...s }) => s))
+  })
+
+  it('omits stage entirely when left at "No change"', () => {
+    const form = { ...emptyJob(), name: 'x' }
+    form.steps = [{ ...emptyStep('action', 0), url: 'https://x.test' }]
+    const r = toPayload(form)
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.payload['steps']).toEqual([{ id: 'step-1', name: 'Action', kind: 'action', when: 'on_success', config: { type: 'http', url: 'https://x.test', method: 'GET' } }])
+  })
+})
+
 describe('job form: IMAP steps still round-trip', () => {
   const base = { ...job, steps: [] as Job['steps'] }
 
