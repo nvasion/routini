@@ -27,6 +27,8 @@ export interface AgentFacts {
   commit?: { sha: string; files: number }
   pushed?: { branch: string }
   noChanges?: boolean
+  /** Parsed `$ROUTINI_OUT_FILE` object, from the entrypoint's "out" control line (agent returns). */
+  out?: Record<string, unknown>
   errors: string[]
   /** Last lines of plain output, for failure messages. */
   tail: string[]
@@ -93,6 +95,9 @@ export class AgentStreamParser {
       case 'no_changes':
         this.facts.noChanges = true
         return [{ type: 'log', data: { message: 'The agent made no changes to the repository' } }]
+      case 'out':
+        this.facts.out = c['data'] && typeof c['data'] === 'object' && !Array.isArray(c['data']) ? (c['data'] as Record<string, unknown>) : {}
+        return [{ type: 'log', data: { message: 'Agent wrote its output' } }]
       case 'error': {
         const m = String(c['message'] ?? 'unknown error')
         this.facts.errors.push(m)

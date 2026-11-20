@@ -4,10 +4,12 @@
 # In:  ROUTINI_PROMPT (required), ROUTINI_SYSTEM_PROMPT, ROUTINI_MODEL,
 #      REPO_URL + BASE_BRANCH + WORK_BRANCH (optional), CHECK_COMMAND (optional),
 #      ROUTINI_OUTPUT = pr | branch | none, ROUTINI_COMMIT_MESSAGE,
+#      ROUTINI_OUT_FILE (config.returns: path the agent must write one JSON object to),
+#      ROUTINI_REPO_READONLY = 1 (shallow clone, never commit or push),
 #      GITHUB_TOKEN (used for clone/push on github.com when present).
 # Out: the agent's stdout (Claude Code stream-json, or a launcher's — see
 #      /usr/local/bin/routini-agent below) plus control lines
-#      "::routini::{json}" for check / commit / pushed / no_changes / error.
+#      "::routini::{json}" for check / commit / pushed / no_changes / out / error.
 # Exit: 0 success · 3 check failed · other = failure.
 set -uo pipefail
 
@@ -64,7 +66,10 @@ if [ -n "${ROUTINI_REPO_DIR:-}" ]; then
   git worktree add --quiet -B "${WORK_BRANCH:-routini/work}" "$wt" "origin/${BASE_BRANCH:-main}" || fail "cannot create worktree $wt"
   cd "$wt" || fail "cannot enter $wt"
 elif [ -n "${REPO_URL:-}" ]; then
-  git clone --quiet --depth 50 --branch "${BASE_BRANCH:-main}" "$REPO_URL" repo 2>&1 | sed 's/^/[git] /' \
+  # Read-only steps never commit or push, so a single commit's worth of history is enough.
+  depth=50
+  [ "${ROUTINI_REPO_READONLY:-}" = "1" ] && depth=1
+  git clone --quiet --depth "$depth" --branch "${BASE_BRANCH:-main}" "$REPO_URL" repo 2>&1 | sed 's/^/[git] /' \
     || fail "git clone of ${BASE_BRANCH:-main} failed"
   [ -d repo/.git ] || fail "git clone of ${BASE_BRANCH:-main} failed"
   cd repo || fail "cannot enter repository"
@@ -85,6 +90,15 @@ fi
 code=$?
 [ "$code" -eq 0 ] || fail "agent exited with code $code" "$code"
 
+# Agent returns (config.returns): the agent must have written one small JSON object, before the check.
+if [ -n "${ROUTINI_OUT_FILE:-}" ]; then
+  [ -f "$ROUTINI_OUT_FILE" ] || fail "The agent did not write a JSON object to \$ROUTINI_OUT_FILE"
+  size=$(wc -c < "$ROUTINI_OUT_FILE" | tr -d ' ')
+  [ "$size" -le 65536 ] || fail "The agent did not write a JSON object to \$ROUTINI_OUT_FILE"
+  jq -e 'type == "object"' "$ROUTINI_OUT_FILE" >/dev/null 2>&1 || fail "The agent did not write a JSON object to \$ROUTINI_OUT_FILE"
+  ctl "{\"type\":\"out\",\"data\":$(jq -c '.' "$ROUTINI_OUT_FILE")}"
+fi
+
 if [ -n "${CHECK_COMMAND:-}" ]; then
   # Prefix each line without `sed -u` (BusyBox sed lacks it) so output streams live.
   bash -c "$CHECK_COMMAND" 2>&1 | while IFS= read -r line; do printf '[check] %s\n' "$line"; done
@@ -93,7 +107,7 @@ if [ -n "${CHECK_COMMAND:-}" ]; then
   [ "$check" -eq 0 ] || exit 3
 fi
 
-if [ -n "${REPO_URL:-}" ] && [ "${ROUTINI_OUTPUT:-pr}" != "none" ]; then
+if [ -n "${REPO_URL:-}" ] && [ "${ROUTINI_OUTPUT:-pr}" != "none" ] && [ "${ROUTINI_REPO_READONLY:-}" != "1" ]; then
   git add -A
   git diff --cached --quiet || git commit --quiet -m "${ROUTINI_COMMIT_MESSAGE:-Routini run}"
   ahead=$(git rev-list --count "origin/${BASE_BRANCH:-main}..HEAD" 2>/dev/null || echo 0)

@@ -15,25 +15,32 @@ import { pickPoolHost, PoolError } from './pool.js'
 import type { Step } from './spec.js'
 import { renderStep, type TemplateData } from './template.js'
 
-export async function prepareStep(app: AppContext, run: Run, spec: Step, steps: RunStep[]): Promise<{ step: Step } | { error: string }> {
+/** The template data for a run: earlier steps' outputs, the trigger, and (alerts) the alert/incident/host. */
+export async function buildTemplateData(app: AppContext, run: Run, steps: RunStep[]): Promise<TemplateData> {
   const t = run.trigger
   const data: TemplateData = { steps: {}, trigger: { kind: t.kind } }
   for (const s of steps) if (s.output && typeof s.output === 'object') data.steps![s.stepId] = s.output as Record<string, unknown>
   if (t.kind === 'webhook') data.trigger = { kind: t.kind, payload: t.payload }
 
-  let host: { name: string; address: string } | null = null
-  let incident: { number: number; title: string } | null = null
   if (t.kind === 'alert') {
     const found = await app.db.org(run.orgId, async (q) => ({
       incident: await getIncident(q, run.orgId, t.incidentId),
       host: t.hostId ? await getHost(q, run.orgId, t.hostId) : null,
     }))
-    incident = { number: t.incidentNumber, title: found.incident?.title ?? t.alert.name }
-    host = found.host ? { name: found.host.name, address: found.host.address } : null
+    const incident = { number: t.incidentNumber, title: found.incident?.title ?? t.alert.name }
+    const host = found.host ? { name: found.host.name, address: found.host.address } : null
     data.alert = { ...t.alert }
     data.incident = { id: t.incidentId, ...incident }
     if (host) data.host = host
   }
+  return data
+}
+
+export async function prepareStep(app: AppContext, run: Run, spec: Step, steps: RunStep[]): Promise<{ step: Step } | { error: string }> {
+  const t = run.trigger
+  const data = await buildTemplateData(app, run, steps)
+  const incident = data.incident as { id: string; number: number; title: string } | undefined
+  const host = data.host as { name: string; address: string } | undefined
 
   let step = spec
   if (step.kind === 'action' && step.config.type === 'ssh' && step.config.host === 'alert') {
@@ -61,7 +68,7 @@ export async function prepareStep(app: AppContext, run: Run, spec: Step, steps: 
   step = renderStep(step, data)
 
   if (step.kind === 'agent' && t.kind === 'alert' && incident) {
-    step = { ...step, config: { ...step.config, prompt: alertContext(t.alert, incident, host) + step.config.prompt } }
+    step = { ...step, config: { ...step.config, prompt: alertContext(t.alert, incident, host ?? null) + step.config.prompt } }
   }
   return { step }
 }
