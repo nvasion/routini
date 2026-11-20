@@ -65,6 +65,15 @@ function refuseConnect(socket: Duplex, status: string, body = '', headers: strin
   socket.end(`${head.join('\r\n')}\r\n\r\n${body}`)
 }
 
+/** A read-only binding is only injected for a fetch (GET/HEAD) or the git-upload-pack POST (git fetch/clone over https). */
+function readOnlyAllowed(method: string | undefined, url: string | undefined): boolean {
+  const m = (method ?? '').toUpperCase()
+  if (m === 'GET' || m === 'HEAD') return true
+  if (m !== 'POST') return false
+  const path = (url ?? '').split('?')[0]
+  return path.endsWith('/git-upload-pack')
+}
+
 function credentialValue(b: CredentialBinding): string {
   switch (b.format) {
     case 'bearer':
@@ -90,7 +99,7 @@ function validSession(raw: unknown, token: string): EgressSession {
     Array.isArray(s.allowedHosts) &&
     s.allowedHosts.every((h) => typeof h === 'string') &&
     Array.isArray(s.bindings) &&
-    s.bindings.every((b) => b && typeof b.host === 'string' && typeof b.header === 'string' && typeof b.secret === 'string') &&
+    s.bindings.every((b) => b && typeof b.host === 'string' && typeof b.header === 'string' && typeof b.secret === 'string' && (b.readOnly === undefined || typeof b.readOnly === 'boolean')) &&
     typeof s.expiresAt === 'string' &&
     !Number.isNaN(Date.parse(s.expiresAt))
   if (!ok) throw new Error('invalid session')
@@ -222,7 +231,10 @@ export class EgressProxy {
     m.live.stats.intercepted++
     const headers: Record<string, string | string[]> = {}
     for (const [k, v] of Object.entries(req.headers)) if (v !== undefined && !HOP_BY_HOP.includes(k)) headers[k] = v
-    for (const b of m.live.session.bindings.filter((x) => x.host === m.host)) headers[b.header.toLowerCase()] = credentialValue(b)
+    for (const b of m.live.session.bindings.filter((x) => x.host === m.host)) {
+      if (b.readOnly && !readOnlyAllowed(req.method, req.url)) continue
+      headers[b.header.toLowerCase()] = credentialValue(b)
+    }
     headers['host'] = m.port === 443 ? m.host : `${m.host}:${m.port}`
     const t = this.target(m.host, m.port)
     const upstream = https.request(

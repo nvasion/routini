@@ -79,6 +79,38 @@ function viaProxy(host: string, token: string | null, trust: string, headers: Re
   })
 }
 
+/** Like `viaProxy`, but with a chosen method and path — for a bound (intercepted) host, so trusts Routini's CA. */
+function rawPost(host: string, token: string | null, method: string, path: string, headers: Record<string, string> = {}): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const req = http.request({
+      host: '127.0.0.1',
+      port: ports.proxyPort,
+      method: 'CONNECT',
+      path: `${host}:443`,
+      headers: token ? { 'proxy-authorization': `Basic ${Buffer.from(`routini:${token}`).toString('base64')}` } : {},
+    })
+    req.on('connect', (res, socket) => {
+      if (res.statusCode !== 200) {
+        socket.destroy()
+        resolve({ status: 0, body: '' })
+        return
+      }
+      const s = tls.connect({ socket, servername: host, ca: [routiniCa.certPem] }, () => {
+        const r = https.request({ createConnection: () => s, host, path, method, headers: { ...headers, host } }, (resp) => {
+          let body = ''
+          resp.on('data', (c) => (body += c))
+          resp.on('end', () => resolve({ status: resp.statusCode ?? 0, body }))
+        })
+        r.on('error', reject)
+        r.end()
+      })
+      s.on('error', reject)
+    })
+    req.on('error', reject)
+    req.end()
+  })
+}
+
 /** Sends a raw CONNECT and returns the proxy's reply head and body, read until the proxy closes. */
 function rawConnect(target: string, token: string | null): Promise<{ status: number; headers: Record<string, string>; body: string }> {
   return new Promise((resolve, reject) => {
@@ -202,6 +234,40 @@ describe('proxying', () => {
     await expect(viaProxy('api.github.com', token, upstreamCa.certPem)).rejects.toThrow()
     const stats = (await control('GET', `/sessions/${token}/stats`)).body
     expect(stats.intercepted).toBeGreaterThanOrEqual(3)
+  })
+
+  it('injects a readOnly binding only for GET/HEAD and the git-upload-pack POST, not other requests', async () => {
+    const roToken = 'f'.repeat(32)
+    await control(
+      'PUT',
+      `/sessions/${roToken}`,
+      session(roToken, {
+        allowedHosts: ['api.github.com', 'github.com'],
+        bindings: [
+          { host: 'api.github.com', header: 'authorization', format: 'bearer', secret: 'ghp_REAL_readonly', readOnly: true },
+          { host: 'github.com', header: 'authorization', format: 'basic-token', secret: 'ghp_REAL_readonly_git', readOnly: true },
+        ],
+      }),
+    )
+    // GET: the binding is injected.
+    const getRes = JSON.parse((await viaProxy('api.github.com', roToken, routiniCa.certPem, { authorization: `Bearer ${PLACEHOLDER}` })).body)
+    expect(getRes.authorization).toBe('Bearer ghp_REAL_readonly')
+
+    // POST .../git-upload-pack (a fetch/clone over the smart HTTP protocol): injected.
+    const upload = await rawPost('github.com', roToken, 'POST', '/acme/app.git/git-upload-pack', { authorization: `Basic ${Buffer.from(`x:${PLACEHOLDER}`).toString('base64')}` })
+    expect(JSON.parse(upload.body).authorization).toBe(`Basic ${Buffer.from('x-access-token:ghp_REAL_readonly_git').toString('base64')}`)
+
+    // POST .../git-receive-pack (a push): not injected — the client's own (placeholder) header goes through as-is.
+    const receive = await rawPost('github.com', roToken, 'POST', '/acme/app.git/git-receive-pack', { authorization: `Basic ${Buffer.from(`x:${PLACEHOLDER}`).toString('base64')}` })
+    expect(JSON.parse(receive.body).authorization).toBe(`Basic ${Buffer.from(`x:${PLACEHOLDER}`).toString('base64')}`)
+
+    // PUT to the bound host: not injected either.
+    const put = await rawPost('api.github.com', roToken, 'PUT', '/repos/acme/app/contents/x', { authorization: `Bearer ${PLACEHOLDER}` })
+    expect(JSON.parse(put.body).authorization).toBe(`Bearer ${PLACEHOLDER}`)
+
+    // A non-readOnly binding on the same proxy is unaffected: the earlier `token` session still gets its header on every method.
+    const normalPost = await rawPost('api.github.com', token, 'POST', '/repos/acme/app/pulls', { authorization: `Bearer ${PLACEHOLDER}` })
+    expect(JSON.parse(normalPost.body).authorization).toBe('Bearer ghp_REAL_api')
   })
 
   it('presents a token binding to upstream as Authorization: Token token=<secret> (PagerDuty)', async () => {

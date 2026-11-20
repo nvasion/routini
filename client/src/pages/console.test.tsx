@@ -184,6 +184,57 @@ describe('run page', () => {
     expect(within(main).queryByRole('button', { name: 'Cancel run' })).toBeNull()
     expect(within(main).getByText(/Waiting for someone with the member role/)).toBeTruthy()
   })
+
+  it("shows a skipped step's reason from its log event, not duplicated in the generic entry list", async () => {
+    const detail: RunDetail = {
+      ...DETAIL,
+      run: { ...DETAIL.run, jobSnapshot: { name: '5xx triage', steps: [{ id: 'build', name: 'Build', kind: 'agent', when: 'on_success', retries: 0, config: { agent: 'claude', prompt: 'Build it' } }] } },
+      steps: [{ idx: 0, stepId: 'build', name: 'Build', kind: 'agent', status: 'skipped', attempt: 1, output: null, error: null, startedAt: null, finishedAt: null }],
+      approvals: [],
+    }
+    mockFetch(baseRoutes({ 'GET /api/orgs/acme/runs/7': () => detail }))
+    renderAt('/o/acme/runs/7')
+    const main = await screen.findByRole('main')
+    await within(main).findByText('Build')
+    await waitFor(() => expect(FakeEventSource.instances.some((e) => e.url === '/api/orgs/acme/runs/7/stream')).toBe(true))
+    FakeEventSource.emit('/runs/7/stream', 'log', { id: 20, runId: 'r1', stepIdx: 0, ts: '2026-10-04T11:50:01Z', type: 'log', data: { message: 'Skipped: steps.plan.out.builder is "factory-task"' } })
+    expect(await within(main).findByText('Skipped: steps.plan.out.builder is "factory-task"')).toBeTruthy()
+  })
+
+  it("shows a succeeded step's `out` fields as a table, truncating long values behind a Show more toggle", async () => {
+    const long = 'y'.repeat(250)
+    const detail: RunDetail = {
+      ...DETAIL,
+      run: { ...DETAIL.run, jobSnapshot: { name: '5xx triage', steps: [{ id: 'plan', name: 'Plan', kind: 'agent', when: 'on_success', retries: 0, config: { agent: 'claude', prompt: 'Plan it' } }] } },
+      steps: [
+        {
+          idx: 0,
+          stepId: 'plan',
+          name: 'Plan',
+          kind: 'agent',
+          status: 'succeeded',
+          attempt: 1,
+          output: { out: { builder: 'routini', notes: long } },
+          error: null,
+          startedAt: '2026-10-04T11:50:01Z',
+          finishedAt: '2026-10-04T11:50:05Z',
+        },
+      ],
+      approvals: [],
+    }
+    mockFetch(baseRoutes({ 'GET /api/orgs/acme/runs/7': () => detail }))
+    renderAt('/o/acme/runs/7')
+    const main = await screen.findByRole('main')
+    await within(main).findByText('builder')
+    expect(within(main).getByText('routini')).toBeTruthy()
+    expect(within(main).getByText(`${long.slice(0, 200)}…`)).toBeTruthy()
+    expect(within(main).queryByText(long)).toBeNull()
+
+    fireEvent.click(within(main).getByRole('button', { name: 'Show more' }))
+    expect(within(main).getByText(long)).toBeTruthy()
+    fireEvent.click(within(main).getByRole('button', { name: 'Show less' }))
+    expect(within(main).queryByText(long)).toBeNull()
+  })
 })
 
 describe('dock and theme', () => {

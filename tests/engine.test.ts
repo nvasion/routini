@@ -120,6 +120,22 @@ describe('jobs', () => {
     expect(await bad({ name: 'x', steps: [{ kind: 'agent', config: { agent: 'claude', prompt: 'p', repo: { url: 'http://evil.internal/repo' } } }] })).toMatch(/https/)
     expect(await bad({ name: 'x', steps: [{ id: 'a', ...http('a', '/ok') }, { id: 'a', ...http('b', '/ok') }] })).toMatch(/used by another step/)
     expect(await bad({ name: 'x', steps: [{ kind: 'action', config: { type: 'ssh', hostId: '00000000-0000-0000-0000-000000000000', command: 'ls' } }] })).toMatch(/does not match a host/)
+    // `if`: path root, op, and a later/self step reference.
+    expect(await bad({ name: 'x', steps: [http('a', '/ok', { if: { path: 'bogus.x', op: 'eq', value: 'y' } })] })).toMatch(/must start with "steps\." or "trigger\."/)
+    expect(await bad({ name: 'x', steps: [http('a', '/ok', { if: { path: 'trigger.kind', op: 'between', value: 'y' } })] })).toMatch(/if\.op must be one of/)
+    expect(
+      await bad({
+        name: 'x',
+        steps: [http('a', '/ok', { if: { path: 'steps.step-2.statusCode', op: 'eq', value: '200' } }), http('b', '/ok')],
+      }),
+    ).toMatch(/Step 1 condition refers to step 'step-2', which does not run before it/)
+    expect(
+      await bad({ name: 'x', steps: [{ id: 's1', ...http('a', '/ok', { if: { path: 'steps.s1.statusCode', op: 'eq', value: '200' } }) }] }),
+    ).toMatch(/Step 1 condition refers to step 's1', which does not run before it/)
+    // `repo.readOnly` forbids `output: pr | branch`.
+    expect(
+      await bad({ name: 'x', steps: [{ kind: 'agent', config: { agent: 'claude', prompt: 'p', repo: { url: 'https://github.com/a/b', readOnly: true }, output: 'pr' } }] }),
+    ).toMatch(/A read-only repository can't produce a pull request or branch/)
   })
 
   it('computes the next cron fire time and lists jobs with their last run', async () => {
@@ -187,6 +203,39 @@ describe('runs', () => {
     expect(d.steps.map((s: { status: string }) => s.status)).toEqual(['failed', 'skipped', 'succeeded', 'succeeded'])
     expect(d.run.status).toBe('failed')
     expect(d.run.error).toMatch(/Step "breaks" failed/)
+  })
+
+  it('skips a step whose `if` condition is false, logging why, without breaking `when` for later steps', async () => {
+    const { job } = await makeJob([
+      http('check', '/ok', { id: 'check' }), // output: { statusCode: 200 }
+      http('eq-true', '/ok', { if: { path: 'steps.check.statusCode', op: 'eq', value: '200' } }),
+      http('eq-false', '/ok', { if: { path: 'steps.check.statusCode', op: 'eq', value: '404' } }),
+      http('ne-true', '/ok', { if: { path: 'steps.check.statusCode', op: 'ne', value: '404' } }),
+      http('in-true', '/ok', { if: { path: 'steps.check.statusCode', op: 'in', value: ['200', '201'] } }),
+      http('not_in-true', '/ok', { if: { path: 'steps.check.statusCode', op: 'not_in', value: ['404'] } }),
+      http('exists-true', '/ok', { if: { path: 'steps.check.statusCode', op: 'exists' } }),
+      http('missing-true', '/ok', { if: { path: 'steps.check.nope', op: 'missing' } }),
+      // `on_success` relative to the last step that *ran*: `eq-false` above was skipped, not failed.
+      http('after-a-skip', '/ok', { when: 'on_success' }),
+    ])
+    const run = await startRun(job.id)
+    await worker.drain()
+    const d = await getRunDetail(run.number)
+    expect(d.steps.map((s: { name: string; status: string }) => [s.name, s.status])).toEqual([
+      ['check', 'succeeded'],
+      ['eq-true', 'succeeded'],
+      ['eq-false', 'skipped'],
+      ['ne-true', 'succeeded'],
+      ['in-true', 'succeeded'],
+      ['not_in-true', 'succeeded'],
+      ['exists-true', 'succeeded'],
+      ['missing-true', 'succeeded'],
+      ['after-a-skip', 'succeeded'],
+    ])
+    expect(d.run.status).toBe('succeeded')
+    const events = (await u.get(`${base()}/runs/${run.id}/events`)).body.events as Array<{ type: string; data: Record<string, unknown>; stepIdx: number }>
+    const skipLog = events.find((e) => e.type === 'log' && e.stepIdx === 2)
+    expect(skipLog!.data['message']).toBe('Skipped: steps.check.statusCode is "200"')
   })
 
   it('retries a failing step up to its limit', async () => {

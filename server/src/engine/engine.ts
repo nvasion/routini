@@ -33,10 +33,11 @@ import {
 } from '../repos/runs.js'
 import { redact, redactDeep } from '../utils/redact.js'
 import { actionExecutor, approvalExecutor, unavailableAgentExecutor } from './executors.js'
-import type { Step } from './spec.js'
+import { evaluateIf, type Step } from './spec.js'
 import { evaluatePolicy, stepFacts, type Decision } from './policy.js'
 import { getPolicy } from '../repos/policy.js'
-import { prepareStep } from './prepare.js'
+import { buildTemplateData, prepareStep } from './prepare.js'
+import { lookup } from './template.js'
 import { addIncidentEvent } from '../repos/incidents.js'
 import type { EngineOptions, StepContext, StepExecutor, StepResult } from './types.js'
 
@@ -214,6 +215,18 @@ export function createEngine(app: AppContext, opts: EngineOptions = {}): Engine 
       if (!shouldRun(rawSpec.when, lastOutcome(steps, next.idx))) {
         await db.org(run.orgId, (q) => updateStep(q, run, next.idx, { status: 'skipped' }))
         continue
+      }
+
+      if (rawSpec.if) {
+        const cond = rawSpec.if
+        const actual = lookup(await buildTemplateData(app, run, steps), cond.path)
+        if (!evaluateIf(cond, actual)) {
+          await db.org(run.orgId, async (q) => {
+            await updateStep(q, run, next.idx, { status: 'skipped' })
+            await appendEvent(q, run.orgId, run.id, 'log', { message: `Skipped: ${cond.path} is "${actual.slice(0, 80)}"` }, next.idx)
+          })
+          continue
+        }
       }
 
       // Templates, the alert's host, alert context for agents.
