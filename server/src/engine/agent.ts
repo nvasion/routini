@@ -250,6 +250,8 @@ interface FactoryStepOutput {
   id: string
   baseRef: string
   headRef: string
+  /** The commit headRef pointed at when the Factory step finished; the branch may move on afterwards. */
+  headSha?: string
 }
 
 function isFactoryStepOutput(v: unknown): v is FactoryStepOutput {
@@ -285,7 +287,17 @@ async function resolveStartFrom(ctx: StepContext, cfg: AgentConfig, repo: { url:
   }
   const label = `${factory.kind} ${factory.id}`
   const token = jwt.sign(
-    { k: 'pull', org: orgId, run: ctx.run.id, step: ctx.idx, project: factory.projectId, base: factory.baseRef, head: factory.headRef, label },
+    {
+      k: 'pull',
+      org: orgId,
+      run: ctx.run.id,
+      step: ctx.idx,
+      project: factory.projectId,
+      base: factory.baseRef,
+      head: factory.headRef,
+      ...(typeof factory.headSha === 'string' ? { headSha: factory.headSha } : {}),
+      label,
+    },
     ctx.app.config.jwtSecret,
     { expiresIn: timeoutSec + GRACE_SEC },
   )

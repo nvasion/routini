@@ -150,6 +150,24 @@ describe('GET /api/agent/factory-export', () => {
     expect(calls[0]!.url).toContain('format=patch')
   })
 
+  it('pins the patch to headSha, so work Factory merged later never comes along', async () => {
+    const run = await startRunningRun()
+    const res = await supertest(t.app).get(`${PULL_PATH}?format=patch`).set('x-routini-pull-token', pullToken(run, { headSha: 'abc123def' }))
+    expect(res.status).toBe(200)
+    expect(calls[0]!.url).toBe('https://factory.example/api/projects/proj-1/git/export?base=main&head=abc123def&format=patch')
+  })
+
+  it('refuses a bundle with 409 when the branch has moved past headSha (the entrypoint then uses the patch)', async () => {
+    const run = await startRunningRun()
+    const moved = await supertest(t.app).get(`${PULL_PATH}?format=bundle`).set('x-routini-pull-token', pullToken(run, { headSha: 'not-head1' }))
+    expect(moved.status).toBe(409)
+    expect(moved.body.error).toBe("Factory's branch has moved since the step finished; use the patch")
+
+    const same = await supertest(t.app).get(`${PULL_PATH}?format=bundle`).set('x-routini-pull-token', pullToken(run, { headSha: 'head1' }))
+    expect(same.status).toBe(200)
+    expect(same.text).toBe('bundle-bytes')
+  })
+
   it('rejects an unknown format with 400', async () => {
     const run = await startRunningRun()
     const res = await supertest(t.app).get(`${PULL_PATH}?format=zip`).set('x-routini-pull-token', pullToken(run))

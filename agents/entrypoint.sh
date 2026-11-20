@@ -27,7 +27,7 @@ fail() {
 # or unreadable (e.g. Factory's branch has diverged in a way a bundle export can't represent).
 pull_factory() {
   local bundle="/tmp/routini-factory.bundle" patch="/tmp/routini-factory.patch" http format headref commits files
-  http=$(curl -sS -o "$bundle" -w '%{http_code}' -H "x-routini-pull-token: ${ROUTINI_PULL_TOKEN:-}" "${ROUTINI_PULL_URL}?format=bundle")
+  http=$(curl -sS --connect-timeout 20 --max-time 600 -o "$bundle" -w '%{http_code}' -H "x-routini-pull-token: ${ROUTINI_PULL_TOKEN:-}" "${ROUTINI_PULL_URL}?format=bundle")
   if [ "$http" = "200" ] && git bundle verify "$bundle" >/dev/null 2>&1; then
     headref=$(git bundle list-heads "$bundle" | head -n1 | awk '{print $2}')
     [ -n "$headref" ] || fail "Factory's result does not apply to ${BASE_BRANCH:-main}"
@@ -37,8 +37,8 @@ pull_factory() {
     format=bundle
   else
     rm -f "$bundle"
-    http=$(curl -sS -o "$patch" -w '%{http_code}' -H "x-routini-pull-token: ${ROUTINI_PULL_TOKEN:-}" "${ROUTINI_PULL_URL}?format=patch")
-    [ "$http" = "200" ] || fail "Factory's result does not apply to ${BASE_BRANCH:-main}"
+    http=$(curl -sS --connect-timeout 20 --max-time 600 -o "$patch" -w '%{http_code}' -H "x-routini-pull-token: ${ROUTINI_PULL_TOKEN:-}" "${ROUTINI_PULL_URL}?format=patch")
+    [ "$http" = "200" ] || fail "Could not download Factory's result (HTTP ${http:-none} from ${ROUTINI_PULL_URL})"
     git apply --3way --index "$patch" || fail "Factory's result does not apply to ${BASE_BRANCH:-main}"
     git commit --quiet -m "Factory result (${ROUTINI_PULL_LABEL:-Factory})" || fail "Factory's result does not apply to ${BASE_BRANCH:-main}"
     format=patch

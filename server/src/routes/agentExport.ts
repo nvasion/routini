@@ -35,6 +35,8 @@ interface PullTokenPayload {
   project: string
   base: string
   head: string
+  /** The commit `head` pointed at when the Factory step finished (the branch can move on later). */
+  headSha?: string
   label: string
 }
 
@@ -48,7 +50,8 @@ function isPullTokenPayload(v: unknown): v is PullTokenPayload {
     typeof p['project'] === 'string' &&
     typeof p['base'] === 'string' &&
     typeof p['head'] === 'string' &&
-    typeof p['label'] === 'string'
+    typeof p['label'] === 'string' &&
+    (p['headSha'] === undefined || typeof p['headSha'] === 'string')
   )
 }
 
@@ -108,7 +111,9 @@ export function agentExportRouter(ctx: AppContext): Router {
 
       const exportUrl = new URL(`/api/projects/${encodeURIComponent(payload.project)}/git/export`, base)
       exportUrl.searchParams.set('base', payload.base)
-      exportUrl.searchParams.set('head', payload.head)
+      // A patch can name the exact commit; a bundle needs the branch name, so it is checked
+      // against headSha below and refused if Factory has merged more work since.
+      exportUrl.searchParams.set('head', format === 'patch' && payload.headSha ? payload.headSha : payload.head)
       exportUrl.searchParams.set('format', format)
 
       const fetchImpl = ctx.actions?.factoryFetch ?? (fetch as FactoryFetch)
@@ -133,6 +138,13 @@ export function agentExportRouter(ctx: AppContext): Router {
         }
         const msg = data && typeof data === 'object' && 'error' in data ? String((data as { error: unknown }).error) : `HTTP ${upstream.status}`
         throw new HttpError(502, msg)
+      }
+
+      const exportedHead = upstream.headers.get('x-git-head')
+      if (format === 'bundle' && payload.headSha && exportedHead && exportedHead !== payload.headSha) {
+        await upstream.body?.cancel().catch(() => {})
+        // The entrypoint falls back to the patch, which is pinned to headSha.
+        throw new HttpError(409, "Factory's branch has moved since the step finished; use the patch")
       }
 
       res.status(upstream.status)
