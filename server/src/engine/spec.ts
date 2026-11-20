@@ -67,7 +67,9 @@ export type ActionConfig =
   | { type: 'imap'; host: string; port?: number; username: string; credentialKey: string; mailbox?: string; search?: string; tls?: boolean }
   | {
       type: 'factory'
-      operation: 'orchestrate' | 'prd'
+      operation: 'orchestrate' | 'prd' | 'task' | 'from-step'
+      /** `from-step` only: a template path (e.g. `steps.plan.out.builder`) naming an earlier step. */
+      operationFrom?: string
       projectId?: string
       prdId?: string
       request?: string
@@ -75,6 +77,10 @@ export type ActionConfig =
       provider?: string
       model?: string
       createPr?: boolean
+      /** The Factory project's origin must be this repo. */
+      repoUrl?: string
+      /** `task` only, 0-5. */
+      maxRetries?: number
     }
   | { type: 'azure-boards'; project: string; query?: string; limit?: number }
   | { type: 'teams'; message: string; title?: string }
@@ -277,28 +283,60 @@ function parseAction(c: Record<string, unknown>, p: string): ActionConfig {
         tls: c['tls'] === undefined ? undefined : c['tls'] === true,
       }
     case 'factory': {
-      const operation = (c['operation'] ?? 'orchestrate') as 'orchestrate' | 'prd'
-      if (operation !== 'orchestrate' && operation !== 'prd') fail(`${p}.operation must be orchestrate or prd`)
+      const operation = (c['operation'] ?? 'orchestrate') as 'orchestrate' | 'prd' | 'task' | 'from-step'
+      if (!['orchestrate', 'prd', 'task', 'from-step'].includes(operation)) fail(`${p}.operation must be orchestrate, prd, task or from-step`)
       const id = (k: string) => {
         const v = str(c[k], `${p}.${k}`, 64)!
         if (!/^[A-Za-z0-9_-]+$/.test(v)) fail(`${p}.${k} is not a valid id`)
         return v
       }
+      if (operation === 'prd') {
+        if (c['repoUrl'] !== undefined) fail(`${p}.repoUrl is only valid for orchestrate, task or from-step`)
+        if (c['maxRetries'] !== undefined) fail(`${p}.maxRetries is only valid for operation "task"`)
+        if (c['operationFrom'] !== undefined) fail(`${p}.operationFrom is only valid for operation "from-step"`)
+        return { type: 'factory', operation, prdId: id('prdId') }
+      }
+
       const runtime = c['runtime']
       if (runtime !== undefined && runtime !== 'claude-code' && runtime !== 'omnimancer') fail(`${p}.runtime must be claude-code or omnimancer`)
-      if (operation === 'orchestrate') {
-        return {
-          type: 'factory',
-          operation,
-          projectId: id('projectId'),
-          request: str(c['request'], `${p}.request`, 20_000)!,
-          runtime: runtime as 'claude-code' | 'omnimancer' | undefined,
-          provider: str(c['provider'], `${p}.provider`, 40, { optional: true }),
-          model: str(c['model'], `${p}.model`, 200, { optional: true }),
-          createPr: c['createPr'] === undefined ? undefined : c['createPr'] === true,
-        }
+
+      const createPr = c['createPr'] === undefined ? undefined : c['createPr'] === true
+      if (createPr && (operation === 'task' || operation === 'from-step')) fail(`Routini opens the pull request for this step's work`)
+
+      let repoUrl: string | undefined
+      if (c['repoUrl'] !== undefined) {
+        repoUrl = str(c['repoUrl'], `${p}.repoUrl`, 500)!
+        const check = validateRepoUrl(repoUrl)
+        if (!check.valid) fail(`${p}.repoUrl: ${check.error}`)
       }
-      return { type: 'factory', operation, prdId: id('prdId') }
+
+      let maxRetries: number | undefined
+      if (c['maxRetries'] !== undefined) {
+        if (operation !== 'task') fail(`${p}.maxRetries is only valid for operation "task"`)
+        maxRetries = int(c['maxRetries'], `${p}.maxRetries`, 0, 5)
+      }
+
+      let operationFrom: string | undefined
+      if (operation === 'from-step') {
+        operationFrom = str(c['operationFrom'], `${p}.operationFrom`, 200)!
+        if (!/^steps\.[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$/.test(operationFrom)) fail(`${p}.operationFrom must be a template path rooted at "steps." (e.g. steps.plan.out.builder)`)
+      } else if (c['operationFrom'] !== undefined) {
+        fail(`${p}.operationFrom is only valid for operation "from-step"`)
+      }
+
+      return {
+        type: 'factory',
+        operation,
+        operationFrom,
+        projectId: id('projectId'),
+        request: str(c['request'], `${p}.request`, 20_000)!,
+        runtime: runtime as 'claude-code' | 'omnimancer' | undefined,
+        provider: str(c['provider'], `${p}.provider`, 40, { optional: true }),
+        model: str(c['model'], `${p}.model`, 200, { optional: true }),
+        createPr,
+        repoUrl,
+        maxRetries,
+      }
     }
     case 'azure-boards': {
       const project = str(c['project'], `${p}.project`, 64)!
@@ -506,9 +544,17 @@ export function parseSteps(raw: unknown): Step[] {
     const c = s['config'] as Record<string, unknown>
     let step: Step
     switch (s['kind']) {
-      case 'action':
-        step = { ...base, kind: 'action', config: parseAction(c, `${p}.config`) }
+      case 'action': {
+        const config = parseAction(c, `${p}.config`)
+        if (config.type === 'factory' && config.operation === 'from-step') {
+          const stepId = config.operationFrom!.split('.')[1]
+          if (!stepId || !priorIds.includes(stepId)) {
+            fail(`Step ${i + 1} operationFrom refers to step '${stepId ?? ''}', which does not run before it`)
+          }
+        }
+        step = { ...base, kind: 'action', config }
         break
+      }
       case 'agent':
         step = { ...base, kind: 'agent', config: parseAgent(c, `${p}.config`) }
         break
