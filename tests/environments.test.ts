@@ -208,7 +208,7 @@ describe('environments on a fleet host', () => {
     const hostId = await runnerHost('fleet-03')
     const res = await u.post(base(), { name: 'x', hostId, image: 'evil/miner:latest' })
     expect(res.status).toBe(400)
-    expect(res.body.error).toBe('image must be one of: ghcr.io/nvasion/routini-agent-claude:latest')
+    expect(res.body.error).toBe('image must be one of: ghcr.io/nvasion/routini-agent-claude:latest, ghcr.io/nvasion/routini-agent-omnimancer:latest')
   })
 
   it('refuses to delete a host that an environment still references', async () => {

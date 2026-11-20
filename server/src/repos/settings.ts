@@ -23,7 +23,6 @@ export const KEYED_ENDPOINTS = AI_ENDPOINTS.filter((e) => e !== 'gateway')
  */
 export const AGENT_ALLOWED_ENDPOINTS: Record<AgentId, readonly AIEndpoint[]> = {
   claude: ['anthropic', 'openrouter', 'digitalocean', 'aws-bedrock', 'gateway'],
-  opencode: ['anthropic', 'openai', 'openrouter'],
   omnimancer: AI_ENDPOINTS.filter((e) => e !== 'gateway'),
 }
 
@@ -59,7 +58,6 @@ export const DEFAULT_AI: AiSettings = {
   defaultAgent: 'claude',
   agents: {
     claude: { endpoint: 'anthropic', model: '' },
-    opencode: { endpoint: 'openrouter', model: '' },
     omnimancer: { endpoint: 'openrouter', model: '' },
   },
 }

@@ -153,7 +153,8 @@ async function main() {
     entries.push({ path: routePath, meta })
   }
 
-  const notFoundHtml = setRootContent(stripModuleScripts(addRobotsNoIndex(stripSeoTags(template))), renderNotFound())
+  const notFoundHead = insertBeforeHeadClose(stripSeoTags(template), `<title>${escapeHtml(`Page not found - ${site.name}`)}</title>`)
+  const notFoundHtml = setRootContent(stripModuleScripts(addRobotsNoIndex(notFoundHead)), renderNotFound())
   await writeFile(path.join(DIST, '404.html'), notFoundHtml, 'utf8')
 
   await writeFile(path.join(DIST, 'sitemap.xml'), buildSitemap(site.origin, entries), 'utf8')

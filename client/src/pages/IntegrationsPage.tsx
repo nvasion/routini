@@ -11,7 +11,6 @@ import { McpServers } from './McpServers'
 const AGENTS: Array<[AgentId, string]> = [
   ['claude', 'Claude Code'],
   ['omnimancer', 'Omnimancer'],
-  ['opencode', 'OpenCode'],
 ]
 
 const STATUS: Record<Integration['status'], { label: string; cls: string }> = {

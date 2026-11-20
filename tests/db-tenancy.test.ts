@@ -106,4 +106,40 @@ describe('embedded Postgres on disk', () => {
     expect(await migrate(owner)).toEqual([])
     await lite.close()
   })
+
+  it('migration 10 moves stored OpenCode references off the dropped agent', async () => {
+    const lite = await openPglite(':memory:')
+    const owner = {
+      query: async (sql: string, params?: unknown[]) => (await lite.query(sql, params)).rows as never[],
+      exec: async (sql: string) => {
+        await lite.exec(sql)
+      },
+    }
+    await migrate(owner, MIGRATIONS.filter((m) => m.version < 10))
+    await lite.exec(`SELECT set_config('app.system', 'on', false)`)
+    const [{ id: org }] = (await lite.query<{ id: string }>(`INSERT INTO orgs (slug, name) VALUES ('o', 'O') RETURNING id`)).rows
+    await lite.query(`INSERT INTO mcp_servers (org_id, name, url) VALUES ($1, 'm', 'https://mcp.example.com')`, [org])
+    await lite.query(`INSERT INTO integrations (org_id, integration_id, scopes) VALUES ($1, 'github', '{"agents":["claude","opencode"]}')`, [org])
+    await lite.query(
+      `INSERT INTO org_settings (org_id, ai) VALUES ($1, '{"defaultAgent":"opencode","agents":{"claude":{"endpoint":"anthropic","model":""},"opencode":{"endpoint":"openrouter","model":""}}}')`,
+      [org],
+    )
+    const steps = [
+      { id: 'a', kind: 'agent', config: { agent: 'opencode', prompt: 'p' } },
+      { id: 'b', kind: 'agent', config: { agent: 'omnimancer', prompt: 'q' } },
+      { id: 'c', kind: 'action', config: { action: 'http' } },
+    ]
+    await lite.query(`INSERT INTO jobs (org_id, name, trigger, steps) VALUES ($1, 'j', '{"kind":"manual"}', $2)`, [org, JSON.stringify(steps)])
+
+    expect(await migrate(owner)).toEqual([10])
+    const one = async <T>(sql: string) => (await lite.query<T>(sql)).rows[0]!
+    expect((await one<{ agents: string[] }>('SELECT agents FROM mcp_servers')).agents).toEqual(['claude', 'omnimancer'])
+    expect((await one<{ scopes: unknown }>('SELECT scopes FROM integrations')).scopes).toEqual({ agents: ['claude'] })
+    expect((await one<{ ai: unknown }>('SELECT ai FROM org_settings')).ai).toEqual({ defaultAgent: 'claude', agents: { claude: { endpoint: 'anthropic', model: '' } } })
+    const after = (await one<{ steps: Array<{ id: string; config: Record<string, unknown> }> }>('SELECT steps FROM jobs')).steps
+    expect(after.map((s) => [s.id, s.config['agent']])).toEqual([['a', 'claude'], ['b', 'omnimancer'], ['c', undefined]])
+    await lite.query(`INSERT INTO mcp_servers (org_id, name, url) VALUES ($1, 'n', 'https://n.example.com')`, [org])
+    expect((await one<{ agents: string[] }>(`SELECT agents FROM mcp_servers WHERE name = 'n'`)).agents).toEqual(['claude', 'omnimancer'])
+    await lite.close()
+  })
 })

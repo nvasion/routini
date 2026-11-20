@@ -529,6 +529,36 @@ ALTER TABLE environments ADD COLUMN host_id uuid REFERENCES hosts(id) ON DELETE 
 CREATE INDEX environments_host_idx ON environments (host_id) WHERE host_id IS NOT NULL;
 `,
   },
+  {
+    version: 10,
+    name: 'Drop the OpenCode agent',
+    sql: `
+-- Tenant tables force RLS even for the owner; rewrite every org's rows.
+SELECT set_config('app.system', 'on', true);
+
+ALTER TABLE mcp_servers ALTER COLUMN agents SET DEFAULT '{claude,omnimancer}';
+UPDATE mcp_servers SET agents = array_remove(agents, 'opencode') WHERE 'opencode' = ANY (agents);
+
+UPDATE integrations
+   SET scopes = jsonb_set(scopes, '{agents}',
+         coalesce((SELECT jsonb_agg(a) FROM jsonb_array_elements(scopes->'agents') a WHERE a <> '"opencode"'), '[]'::jsonb))
+ WHERE jsonb_typeof(scopes->'agents') = 'array' AND scopes->'agents' ? 'opencode';
+
+UPDATE org_settings
+   SET ai = CASE WHEN ai->>'defaultAgent' = 'opencode' THEN jsonb_set(ai, '{defaultAgent}', '"claude"') ELSE ai END #- '{agents,opencode}'
+ WHERE ai->>'defaultAgent' = 'opencode' OR ai->'agents' ? 'opencode';
+
+-- Agent steps that named OpenCode run on Claude Code (OpenCode never had a published image).
+UPDATE jobs
+   SET steps = (SELECT jsonb_agg(
+                  CASE WHEN s->>'kind' = 'agent' AND s->'config'->>'agent' = 'opencode'
+                       THEN jsonb_set(s, '{config,agent}', '"claude"') ELSE s END ORDER BY i)
+                  FROM jsonb_array_elements(steps) WITH ORDINALITY AS t(s, i)),
+       updated_at = now()
+ WHERE jsonb_typeof(steps) = 'array'
+   AND EXISTS (SELECT 1 FROM jsonb_array_elements(steps) s WHERE s->>'kind' = 'agent' AND s->'config'->>'agent' = 'opencode');
+`,
+  },
 ]
 
 /** Grants the app role access to everything a migration created. Runs after every migration. */

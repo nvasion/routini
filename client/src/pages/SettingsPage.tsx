@@ -264,7 +264,6 @@ const ENDPOINT_LABEL: Record<AIEndpoint, string> = {
 }
 const AGENT_ENDPOINTS: Record<AgentId, AIEndpoint[]> = {
   claude: ['anthropic', 'openrouter', 'aws-bedrock', 'gateway'],
-  opencode: ['anthropic', 'openai', 'openrouter'],
   omnimancer: ['anthropic', 'openrouter', 'digitalocean', 'aws-bedrock', 'openai', 'google', 'azure'],
 }
 
@@ -310,7 +309,7 @@ function Models() {
         </div>
         {(Object.keys(agents) as AgentId[]).map((a) => (
           <div key={a} className="card">
-            <h3>{a === 'claude' ? 'Claude Code' : a === 'omnimancer' ? 'Omnimancer' : 'OpenCode'}</h3>
+            <h3>{a === 'claude' ? 'Claude Code' : 'Omnimancer'}</h3>
             <div className="row">
               <Field label="Endpoint">
                 {(id) => (

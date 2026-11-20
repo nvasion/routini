@@ -35,8 +35,11 @@ export interface Config {
   publicUrl: string
   /** Where agent containers reach this server for Routini's MCP tools (ROUTINI_AGENT_API_URL; default publicUrl). */
   agentApiUrl: string
-  /** Sign-in with an OIDC provider (TynHub), or null. */
-  oidc: { issuer: string; clientId: string; clientSecret: string; name: string; scopes: string } | null
+  /**
+   * Sign-in with an OIDC provider, or null. `tynhub` (hosted mode only) means
+   * the provider is TynHub: its `orgs` claim and TynHub org links apply.
+   */
+  oidc: { issuer: string; clientId: string; clientSecret: string; name: string; scopes: string; tynhub: boolean } | null
   signup: SignupPolicy
   /**
    * Agent steps and environments need an org owner with a verified email
@@ -122,7 +125,7 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): Config {
     clientUrl: nonEmpty('CLIENT_URL') ?? 'http://localhost:5173',
     publicUrl,
     agentApiUrl: (nonEmpty('ROUTINI_AGENT_API_URL') ?? publicUrl).replace(/\/+$/, ''),
-    oidc: oidcFromEnv(nonEmpty),
+    oidc: oidcFromEnv(nonEmpty, mode),
     signup,
     requireVerifiedEmail,
     clientIpHeader: nonEmpty('ROUTINI_CLIENT_IP_HEADER')?.toLowerCase(),
@@ -131,18 +134,38 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): Config {
   }
 }
 
-/** OIDC sign-in (TynHub or any provider): all of issuer, client id and secret, or nothing. */
-function oidcFromEnv(nonEmpty: (k: string) => string | undefined): Config['oidc'] {
+/** True for TynHub's own issuer (tynhub.com or a subdomain of it). */
+export function isTynhubIssuer(issuer: string): boolean {
+  try {
+    const host = new URL(issuer).hostname.toLowerCase()
+    return host === 'tynhub.com' || host.endsWith('.tynhub.com')
+  } catch {
+    return false
+  }
+}
+
+/**
+ * OIDC sign-in: all of issuer, client id and secret, or nothing. In hosted
+ * mode (routini.tynhub.com) the provider is TynHub. Self-hosted installs keep
+ * generic OIDC (Dex, Google, a company IdP) but never TynHub, which only
+ * serves TynHub-hosted products.
+ */
+function oidcFromEnv(nonEmpty: (k: string) => string | undefined, mode: Config['mode']): Config['oidc'] {
   const issuer = nonEmpty('ROUTINI_OIDC_ISSUER')
   const clientId = nonEmpty('ROUTINI_OIDC_CLIENT_ID')
   const clientSecret = nonEmpty('ROUTINI_OIDC_CLIENT_SECRET')
   if (!issuer && !clientId && !clientSecret) return null
   if (!issuer || !clientId || !clientSecret) throw new Error('ROUTINI_OIDC_ISSUER, ROUTINI_OIDC_CLIENT_ID and ROUTINI_OIDC_CLIENT_SECRET must be set together')
+  const tynhub = mode === 'hosted'
+  if (!tynhub && isTynhubIssuer(issuer)) {
+    throw new Error('Sign in with TynHub is only available on TynHub-hosted Routini; set ROUTINI_OIDC_ISSUER to your own OIDC provider')
+  }
   return {
     issuer: issuer.replace(/\/+$/, ''),
     clientId,
     clientSecret,
-    name: nonEmpty('ROUTINI_OIDC_NAME') ?? 'TynHub',
-    scopes: nonEmpty('ROUTINI_OIDC_SCOPES') ?? 'openid profile email orgs',
+    name: nonEmpty('ROUTINI_OIDC_NAME') ?? (tynhub ? 'TynHub' : 'Single sign-on'),
+    scopes: nonEmpty('ROUTINI_OIDC_SCOPES') ?? (tynhub ? 'openid profile email orgs' : 'openid profile email'),
+    tynhub,
   }
 }

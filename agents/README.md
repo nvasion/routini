@@ -16,9 +16,8 @@ docker build -f claude-code/Dockerfile -t routini/agent-claude:latest .
 docker build -f fake/Dockerfile -t routini/agent-fake:test .
 ```
 
-Omnimancer and OpenCode use the same contract. Point `ROUTINI_AGENT_IMAGE_OMNIMANCER`
-or `ROUTINI_AGENT_IMAGE_OPENCODE` at an image that follows it; without one,
-those agents' steps fail with a clear message.
+Omnimancer uses the same contract. Point `ROUTINI_AGENT_IMAGE_OMNIMANCER`
+at an image that follows it; without one, its steps fail with a clear message.
 
 Images for other agents reuse `entrypoint.sh` (clone, broker CA, check, commit,
 push) and add an executable `/usr/local/bin/routini-agent`. When it exists, the
@@ -32,6 +31,12 @@ stream-json on stdout, and exits non-zero on failure. `omnimancer/` is one.
 docker build -f omnimancer/Dockerfile -t routini/agent-omnimancer:latest .   # --build-arg OMNIMANCER_REF=<branch|tag|sha>
 # then on the server: ROUTINI_AGENT_IMAGE_OMNIMANCER=routini/agent-omnimancer:latest
 ```
+
+It shares the Claude Code image's `node:22-bookworm` base, so a step's checks
+have the same tools (node, python3, make, g++) whichever agent runs.
+`OMNIMANCER_REF` defaults to a pinned commit; bump it in the Dockerfile to
+take a newer Omnimancer. Fleet hosts pull the published
+`ghcr.io/nvasion/routini-agent-omnimancer` (see below).
 
 The launcher runs `omn -p … --output-format stream-json --dangerously-skip-permissions`.
 It writes `~/.omnimancer/config.json` (provider, model, Bedrock `aws_region`),
@@ -60,7 +65,7 @@ Omnimancer's stream-json variant directly.
 | `ROUTINI_COMMIT_MESSAGE` | Commit message for the agent's changes. |
 | `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` | Model endpoint, from the org's AI settings. |
 | `CLAUDE_CODE_USE_BEDROCK` / `AWS_REGION` / `AWS_BEARER_TOKEN_BEDROCK` | Model endpoint when the org routes Claude Code through AWS Bedrock (Bedrock API key). |
-| `ROUTINI_ENDPOINT` / `ROUTINI_ENDPOINT_KEY` | Other agents (Omnimancer, OpenCode) instead of the vars above: the endpoint name from the AI settings (`anthropic`, `openrouter`, `aws-bedrock`, `gateway`, …) and its key. The image maps these onto the agent's own config. |
+| `ROUTINI_ENDPOINT` / `ROUTINI_ENDPOINT_KEY` | Other agents (Omnimancer) instead of the vars above: the endpoint name from the AI settings (`anthropic`, `openrouter`, `aws-bedrock`, `gateway`, …) and its key. The image maps these onto the agent's own config. |
 | `ROUTINI_ENDPOINT_REGION` / `ROUTINI_GATEWAY_URL` | AWS region for `aws-bedrock` (the key is a Bedrock API key, sent as `authorization: Bearer`); URL for `gateway`. |
 | `GITHUB_TOKEN`, `SLACK_BOT_TOKEN`, … | Connected integrations whose scope includes this agent. |
 
@@ -126,8 +131,7 @@ and the agent can reach what that server reaches.
 | Variable | Default | Meaning |
 |---|---|---|
 | `ROUTINI_FLEET_AGENT_IMAGE_CLAUDE` | `ghcr.io/nvasion/routini-agent-claude:latest` | Claude Code on fleet hosts. |
-| `ROUTINI_FLEET_AGENT_IMAGE_OMNIMANCER` | — | Omnimancer; without it those steps fail with a clear message. |
-| `ROUTINI_FLEET_AGENT_IMAGE_OPENCODE` | — | OpenCode; same. |
+| `ROUTINI_FLEET_AGENT_IMAGE_OMNIMANCER` | `ghcr.io/nvasion/routini-agent-omnimancer:latest` | Omnimancer on fleet hosts. |
 | `ROUTINI_FLEET_EGRESS_IMAGE` | `ghcr.io/nvasion/routini-egress:latest` | The egress proxy started next to the agent container. |
 
 These are separate from the `ROUTINI_AGENT_IMAGE_*` vars, which stay with the
@@ -136,7 +140,7 @@ sandbox may use one you built locally.
 
 The images must be **public**. v1 sends no registry credentials, so a runner
 pulls anonymously; a private image fails at pull time. [images.yml](../.github/workflows/images.yml)
-publishes both to GHCR on every `v*` tag, multi-arch (amd64 and arm64) and
+publishes all three (Claude Code, Omnimancer, egress) to GHCR on every `v*` tag, multi-arch (amd64 and arm64) and
 tagged `X.Y.Z`, `X.Y` and `latest`.
 
 Policy still applies — rules can match agent steps by where they run (sandbox or

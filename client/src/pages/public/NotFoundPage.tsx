@@ -2,10 +2,25 @@
 // org route that no longer exists). The static dist/404.html nginx serves
 // for unknown public paths is generated separately by scripts/prerender.mjs.
 
+import { useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { PublicLayout } from './PublicLayout'
 
 export function NotFoundPage() {
+  // Not in pageMeta.json (it has no URL of its own), so set the title and
+  // noindex here; otherwise the previous page's title and canonical linger.
+  useEffect(() => {
+    document.title = 'Page not found - Routini'
+    document.querySelector('link[rel="canonical"]')?.remove()
+    let robots = document.querySelector<HTMLMetaElement>('meta[name="robots"]')
+    if (!robots) {
+      robots = document.createElement('meta')
+      robots.name = 'robots'
+      document.head.appendChild(robots)
+    }
+    robots.content = 'noindex'
+  }, [])
+
   return (
     <PublicLayout>
       <div className="public-section" style={{ textAlign: 'center' }}>

@@ -222,6 +222,7 @@ export const SHIPPED = [
   'Alerts → incidents → runbooks → postmortems',
   '13 integrations, with Azure Boards and Teams steps',
   'Routini as an MCP server for Claude Code',
+  'Sign in with TynHub: one account across the TynHub network',
   'Email verification, password reset and account deletion',
 ]
 
@@ -229,7 +230,6 @@ export const NEXT = [
   'Start a job when a board work item changes',
   'Run notifications to Slack and Teams',
   'Import DigitalOcean droplets into the fleet',
-  'Sign in with TynHub across the network',
   'ttyy.ai integration',
   'Paid plans with more managed compute',
 ]

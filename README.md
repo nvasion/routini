@@ -103,10 +103,14 @@ alert
   Commands are ordinary runs under org policy; there is deliberately no approve
   tool. Agent steps can opt in to the same tools (`routini: true`) through a
   token that lives only for the step.
-- **Sign in with TynHub** (any OIDC provider): "Continue with TynHub" on the
-  login page. Owners can link an org to a TynHub org so its members join on
-  sign-in. A new sign-in never attaches itself to an existing account by email;
-  password users link TynHub from their account menu.
+- **Single sign-on (OIDC)**: "Continue with …" on the login page. On
+  TynHub-hosted Routini (`ROUTINI_MODE=hosted`) the provider is TynHub, and
+  owners can link an org to a TynHub org so its members join on sign-in.
+  Self-hosted servers can use their own OIDC provider (Dex, Google, a company
+  IdP) but not TynHub, which only serves TynHub-hosted products. A new sign-in
+  joins an existing account with the same email only when both the provider
+  and Routini have verified that address; otherwise password users link it from
+  their account menu.
 
 ## The console
 
@@ -174,9 +178,9 @@ stored secrets cannot be decrypted.
 | `CREDENTIALS_MASTER_KEY` | required in production | 32 bytes (hex/base64). Encrypts every stored secret. |
 | `CLIENT_URL` | `http://localhost:5173` | Console origin (CORS). |
 | `DOCKER_HOST` | local socket | Where agent containers run. |
-| `ROUTINI_AGENT_IMAGE_CLAUDE` | `routini/agent-claude:latest` | Agent image (also `_OMNIMANCER`, `_OPENCODE`). |
+| `ROUTINI_AGENT_IMAGE_CLAUDE` | `routini/agent-claude:latest` | Agent image (also `_OMNIMANCER`). |
 | `ROUTINI_FLEET_AGENT_IMAGE_CLAUDE` | `ghcr.io/nvasion/routini-agent-claude:latest` | Agent image a fleet host pulls for `runOn` steps. |
-| `ROUTINI_FLEET_AGENT_IMAGE_OMNIMANCER`, `…_OPENCODE` | — | The same for those agents; without one, their fleet steps fail with a clear message. |
+| `ROUTINI_FLEET_AGENT_IMAGE_OMNIMANCER` | `ghcr.io/nvasion/routini-agent-omnimancer:latest` | The same for Omnimancer. |
 | `ROUTINI_FLEET_EGRESS_IMAGE` | `ghcr.io/nvasion/routini-egress:latest` | Egress proxy a fleet host runs beside the agent container. |
 | `ROUTINI_RUNNER_LATEST_VERSION` | — (ask GitHub) | Pin the routini-runner release the Fleet page offers as an update, e.g. `v0.3.0` (air-gapped installs). |
 | `ROUTINI_RUNNER_RELEASES` | — | `off`: never ask GitHub for the latest runner release (no update offers). |
@@ -185,8 +189,8 @@ stored secrets cannot be decrypted.
 | `ROUTINI_FLEET_ENV_IMAGES` | fleet agent images | Images a fleet-hosted environment (`hostId`) may use (comma separated); needs routini-runner v0.4.0+ with `agents`. |
 | `ROUTINI_PUBLIC_URL` | `CLIENT_URL` | Where runners and monitoring tools reach this server (install commands and the alert endpoint use it). |
 | `ROUTINI_AGENT_API_URL` | the public URL | Where agent containers reach this server for Routini's MCP tools. |
-| `ROUTINI_OIDC_ISSUER`, `ROUTINI_OIDC_CLIENT_ID`, `ROUTINI_OIDC_CLIENT_SECRET` | — | Sign in with TynHub (or any OIDC provider). Redirect URI: `<public URL>/api/auth/oidc/callback`. |
-| `ROUTINI_OIDC_NAME`, `ROUTINI_OIDC_SCOPES` | `TynHub`, `openid profile email orgs` | Button label; requested scopes (filtered to what the provider supports). |
+| `ROUTINI_OIDC_ISSUER`, `ROUTINI_OIDC_CLIENT_ID`, `ROUTINI_OIDC_CLIENT_SECRET` | — | OIDC sign-in, all three or none. Redirect URI: `<public URL>/api/auth/oidc/callback`. A TynHub issuer (`tynhub.com`) requires `ROUTINI_MODE=hosted`; self-hosted servers use their own provider. |
+| `ROUTINI_OIDC_NAME`, `ROUTINI_OIDC_SCOPES` | hosted: `TynHub`, `openid profile email orgs`; self-hosted: `Single sign-on`, `openid profile email` | Button label; requested scopes (filtered to what the provider supports). |
 | `ROUTINI_EGRESS_CONTROL_URL`, `ROUTINI_EGRESS_SECRET` | — | Credential broker: the egress proxy's control API and its shared secret. Both set = broker on. |
 | `ROUTINI_EGRESS_PROXY_HOST`, `ROUTINI_EGRESS_PROXY_PORT` | `routini-egress`, `3128` | The proxy as sandboxed containers see it (a network alias). |
 | `ROUTINI_EGRESS_CONTAINER` | `routini-egress` | Proxy container, attached to each org's sandbox network. |

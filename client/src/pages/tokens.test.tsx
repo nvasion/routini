@@ -95,7 +95,7 @@ describe('sign in with TynHub', () => {
   it('lets owners link the org to a TynHub org', async () => {
     const log = mockFetch(
       baseRoutes({
-        'GET /api/auth/providers': () => ({ oidc: { name: 'TynHub' } }),
+        'GET /api/auth/providers': () => ({ oidc: { name: 'TynHub', tynhub: true }, hosted: true }),
         'PUT /api/orgs/acme/tynhub': ({ body }) => ({ org: { ...ORG, tynhubOrg: (body as { tynhubOrg: string }).tynhubOrg } }),
       }),
     )
@@ -105,6 +105,14 @@ describe('sign in with TynHub', () => {
     fireEvent.click(within(main).getByRole('button', { name: 'Save link' }))
     await within(main).findByText(/Linked\. Members of acme-inc on TynHub join this org/)
     expect(log.calls.find((c) => c.method === 'PUT')!.body).toEqual({ tynhubOrg: 'acme-inc' })
+  })
+
+  it('hides the TynHub org link on self-hosted servers', async () => {
+    mockFetch(baseRoutes({ 'GET /api/auth/providers': () => ({ oidc: { name: 'Corp SSO', tynhub: false }, hosted: false }) }))
+    renderAt('/o/acme/settings/general')
+    const main = await screen.findByRole('main')
+    await waitFor(() => expect(within(main).queryByLabelText(/org slug/)).toBeNull())
+    expect(within(main).queryByText(/Org on/)).toBeNull()
   })
 
   it('offers linking a password account from the account menu', async () => {

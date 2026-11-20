@@ -47,11 +47,11 @@ services:
       # and where agent containers reach it for Routini's own tools (default: the public URL).
       ROUTINI_PUBLIC_URL: "${ROUTINI_PUBLIC_URL:-}"
       ROUTINI_AGENT_API_URL: "${ROUTINI_AGENT_API_URL:-}"
-      # Sign in with TynHub (or any OIDC provider); all three or none.
+      # Single sign-on with your own OIDC provider; all three or none.
       ROUTINI_OIDC_ISSUER: "${ROUTINI_OIDC_ISSUER:-}"
       ROUTINI_OIDC_CLIENT_ID: "${ROUTINI_OIDC_CLIENT_ID:-}"
       ROUTINI_OIDC_CLIENT_SECRET: "${ROUTINI_OIDC_CLIENT_SECRET:-}"
-      ROUTINI_OIDC_NAME: "${ROUTINI_OIDC_NAME:-TynHub}"
+      ROUTINI_OIDC_NAME: "${ROUTINI_OIDC_NAME:-}"
       JWT_SECRET: "${JWT_SECRET:?set JWT_SECRET in .env}"
       COOKIE_SECRET: "${COOKIE_SECRET:?set COOKIE_SECRET in .env}"
       CREDENTIALS_MASTER_KEY: "${CREDENTIALS_MASTER_KEY:?set CREDENTIALS_MASTER_KEY in .env}"

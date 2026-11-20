@@ -87,10 +87,15 @@ export function orgRouter(ctx: AppContext): Router {
   })
 
   // Link this org to a TynHub org: its members join here when they sign in with TynHub.
+  // TynHub sign-in exists only on TynHub-hosted Routini.
   r.put(
     '/tynhub',
     requireRole('owner'),
     ah(async (req, res) => {
+      if (ctx.config.mode !== 'hosted') {
+        res.status(404).json({ error: 'TynHub org links are only available on TynHub-hosted Routini' })
+        return
+      }
       const org = currentOrg(req)
       const raw = (req.body ?? {})['tynhubOrg']
       const slug = raw === null || raw === '' ? null : typeof raw === 'string' ? raw.trim().toLowerCase() : undefined
