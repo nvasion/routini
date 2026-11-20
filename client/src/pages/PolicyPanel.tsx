@@ -69,7 +69,8 @@ export function PolicyPanel() {
     setHosts(res.data.policy.egress.allowedHosts.join('\n'))
   }, [res.data])
 
-  const update = (key: string, patch: Partial<RuleForm>) => setRules((rs) => rs.map((r) => (r.key === key ? { ...r, ...patch } : r)))
+  const update = (key: string, patch: Partial<RuleForm> | ((r: RuleForm) => Partial<RuleForm>)) =>
+    setRules((rs) => rs.map((r) => (r.key === key ? { ...r, ...(typeof patch === 'function' ? patch(r) : patch) } : r)))
   const move = (i: number, by: -1 | 1) =>
     setRules((rs) => {
       const j = i + by
@@ -193,10 +194,20 @@ function Checks<T extends string>({ label, options, value, onChange }: { label: 
   )
 }
 
-function RuleCard(props: { rule: RuleForm; index: number; count: number; onChange: (p: Partial<RuleForm>) => void; onMove: (by: -1 | 1) => void; onRemove: () => void }) {
+function RuleCard(props: {
+  rule: RuleForm
+  index: number
+  count: number
+  onChange: (p: Partial<RuleForm> | ((r: RuleForm) => Partial<RuleForm>)) => void
+  onMove: (by: -1 | 1) => void
+  onRemove: () => void
+}) {
   const { rule: r, onChange: set, index } = props
   const m = r.match
-  const setMatch = (patch: Partial<RuleForm['match']>) => set({ match: { ...m, ...patch } })
+  // Functional form: two match edits fired back-to-back (e.g. toggling two
+  // checkboxes in the same test/batch before React re-renders) must each
+  // merge onto the *latest* match, not a match snapshot captured at render.
+  const setMatch = (patch: Partial<RuleForm['match']>) => set((cur) => ({ match: { ...cur.match, ...patch } }))
   const setList = (k: ListKey, v: string) => set({ lists: { ...r.lists, [k]: v } })
   const kinds = m.kinds ?? []
   const actions = kinds.length === 0 || kinds.includes('action')

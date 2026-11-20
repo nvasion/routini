@@ -24,6 +24,7 @@ import { mcpRouter, type McpFetch } from './routes/mcp.js'
 import { runnerEnrollRouter, runnersRouter } from './routes/runners.js'
 import { alertIntakeRouter, incidentsRouter } from './routes/incidents.js'
 import { tokensRouter } from './routes/tokens.js'
+import { agentExportRouter } from './routes/agentExport.js'
 import { mcpRouter as routiniMcpRouter } from './mcp/server.js'
 import { identitiesRouter, oidcRouter } from './http/oidc.js'
 import { accountRouter } from './http/account.js'
@@ -94,6 +95,10 @@ export function createApp(ctx: AppContext, opts: AppOptions = {}): Express {
     rateLimit({ windowMs: 60_000, max: 600, standardHeaders: true, legacyHeaders: false, skip: () => ctx.config.env === 'test' }),
     routiniMcpRouter(ctx, auth, { commandWaitMs: opts.mcpCommandWaitMs }),
   )
+
+  // Agent containers pull a Factory step's result with a short-lived, run-scoped
+  // token (config.startFrom) — no session, so this mounts before the org routers.
+  app.use('/api/agent', agentExportRouter(ctx))
 
   // Every org route: authenticated, CSRF-checked for mutations, membership-resolved.
   app.use('/api/orgs', auth.requireAuth, auth.requireCsrf, orgCollectionRouter(ctx))

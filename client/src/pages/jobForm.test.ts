@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Host, Job, StepCondition } from '../lib/types'
-import { ALERT_HOST, POOL_HOST, emptyJob, emptyStep, fromJob, planBuildShipTemplate, poolMatch, runOnBlocked, runOnOptions, toPayload } from './jobForm'
+import { ALERT_HOST, POOL_HOST, emptyJob, emptyStep, fromJob, planBuildShipTemplate, poolMatch, runOnBlocked, runOnOptions, toPayload, type StepForm } from './jobForm'
 
 const job: Job = {
   id: 'j1',
@@ -270,6 +270,137 @@ describe('job form: Factory steps', () => {
     form.steps = form.steps.slice(0, 1)
     const ok = toPayload(form)
     expect(ok.ok && ok.payload['steps']).toEqual([{ id: 'step-1', name: 'Action', kind: 'action', when: 'on_success', config: { type: 'factory', operation: 'orchestrate', projectId: 'routini', request: 'x', runtime: 'claude-code', createPr: true } }])
+  })
+
+  it('round-trips a single-task step with a repository and max retries', () => {
+    const steps: Job['steps'] = [
+      { id: 'task', name: 'Task', kind: 'action', when: 'on_success', retries: 0, config: { type: 'factory', operation: 'task', projectId: 'routini', request: 'Fix the flaky test', repoUrl: 'https://github.com/acme/app', maxRetries: 3, runtime: 'claude-code' } },
+    ]
+    const r = toPayload(fromJob({ ...base, steps }))
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.payload['steps']).toEqual(steps.map(({ retries: _r, ...s }) => s))
+  })
+
+  it('round-trips a from-step step naming an earlier step, with a repository', () => {
+    const steps: Job['steps'] = [
+      { id: 'plan', name: 'Plan', kind: 'agent', when: 'on_success', retries: 0, config: { agent: 'claude', prompt: 'Plan', returns: [{ name: 'builder', type: 'text' }] } },
+      {
+        id: 'from',
+        name: 'From step',
+        kind: 'action',
+        when: 'on_success',
+        retries: 0,
+        config: { type: 'factory', operation: 'from-step', operationFrom: 'steps.plan.out.builder', projectId: 'routini', request: '{{steps.plan.out.builder}}', repoUrl: 'https://github.com/acme/app', runtime: 'claude-code' },
+      },
+    ]
+    const r = toPayload(fromJob({ ...base, steps }))
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.payload['steps']).toEqual(steps.map(({ retries: _r, ...s }) => s))
+  })
+
+  it('drops createPr, maxRetries and repoUrl when not set, for task and from-step', () => {
+    const form = { ...emptyJob(), name: 'x' }
+    form.steps = [
+      { ...emptyStep('action', 0), actionType: 'factory', factoryOperation: 'task', factoryProjectId: 'routini', factoryRequest: 'Fix it' },
+      { ...emptyStep('action', 1), actionType: 'factory', factoryOperation: 'from-step', factoryOperationFrom: 'steps.step-1.out.builder', factoryProjectId: 'routini', factoryRequest: 'Fix it' },
+    ]
+    const r = toPayload(form)
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.payload['steps']).toEqual([
+      { id: 'step-1', name: 'Action', kind: 'action', when: 'on_success', config: { type: 'factory', operation: 'task', projectId: 'routini', request: 'Fix it', runtime: 'claude-code' } },
+      {
+        id: 'step-2',
+        name: 'Action',
+        kind: 'action',
+        when: 'on_success',
+        config: { type: 'factory', operation: 'from-step', operationFrom: 'steps.step-1.out.builder', projectId: 'routini', request: 'Fix it', runtime: 'claude-code' },
+      },
+    ])
+  })
+
+  it('rejects max retries outside 0 to 5', () => {
+    const form = { ...emptyJob(), name: 'x' }
+    form.steps = [{ ...emptyStep('action', 0), actionType: 'factory', factoryOperation: 'task', factoryProjectId: 'routini', factoryRequest: 'x', factoryMaxRetries: '6' }]
+    expect((toPayload(form) as { ok: false; errors: string[] }).errors).toEqual(['Step 1 (Action): max retries must be a whole number from 0 to 5.'])
+
+    form.steps[0]!.factoryMaxRetries = '-1'
+    expect((toPayload(form) as { ok: false; errors: string[] }).errors).toEqual(['Step 1 (Action): max retries must be a whole number from 0 to 5.'])
+  })
+
+  it('validates a from-step path: shape, root and "earlier step"', () => {
+    const form = { ...emptyJob(), name: 'x' }
+    form.steps = [{ ...emptyStep('action', 0), actionType: 'factory', factoryOperation: 'from-step', factoryProjectId: 'routini', factoryRequest: 'x', factoryOperationFrom: 'bad path!' }]
+    expect((toPayload(form) as { ok: false; errors: string[] }).errors).toEqual(['Step 1 (Action): the step path must use only letters, numbers and "_.-" (max 200 characters).'])
+
+    form.steps[0]!.factoryOperationFrom = 'trigger.kind'
+    expect((toPayload(form) as { ok: false; errors: string[] }).errors).toEqual(['Step 1 (Action): the step path must start with steps.'])
+
+    form.steps[0]!.factoryOperationFrom = 'steps.later.out.builder'
+    expect((toPayload(form) as { ok: false; errors: string[] }).errors).toEqual(['Step 1 (Action): the step path must name a step that runs before this one.'])
+  })
+})
+
+describe('job form: agent startFrom (pull back from Factory)', () => {
+  const base = { ...job, steps: [] as Job['steps'] }
+
+  it('round-trips startFrom naming an earlier Factory step', () => {
+    const steps: Job['steps'] = [
+      { id: 'factory', name: 'Factory', kind: 'action', when: 'on_success', retries: 0, config: { type: 'factory', operation: 'task', projectId: 'routini', request: 'Fix it', runtime: 'claude-code' } },
+      {
+        id: 'build',
+        name: 'Build',
+        kind: 'agent',
+        when: 'on_success',
+        retries: 0,
+        config: { agent: 'claude', prompt: 'Build', repo: { url: 'https://github.com/acme/app', baseBranch: 'main' }, output: 'pr', startFrom: { step: 'factory' } },
+      },
+    ]
+    const form = fromJob({ ...base, steps })
+    expect(form.steps[1]!.startFromStep).toBe('factory')
+    const r = toPayload(form)
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.payload['steps']).toEqual(steps.map(({ retries: _r, ...s }) => s))
+  })
+
+  it("flags a read-only step that tries to start from Factory's result", () => {
+    const form = { ...emptyJob(), name: 'x' }
+    form.steps = [
+      { ...emptyStep('action', 0), actionType: 'factory', factoryOperation: 'task', factoryProjectId: 'routini', factoryRequest: 'x' },
+      { ...emptyStep('agent', 1), prompt: 'Build', repoUrl: 'https://github.com/acme/app', repoReadOnly: true, startFromStep: 'step-1' },
+    ]
+    const r = toPayload(form)
+    expect(!r.ok && r.errors).toEqual(["Step 2 (Agent): A read-only step can't start from Factory's result."])
+  })
+
+  it('needs a repository, and not an environment', () => {
+    const form = { ...emptyJob(), name: 'x' }
+    form.steps = [
+      { ...emptyStep('action', 0), actionType: 'factory', factoryOperation: 'task', factoryProjectId: 'routini', factoryRequest: 'x' },
+      { ...emptyStep('agent', 1), prompt: 'Build', startFromStep: 'step-1' },
+    ]
+    expect((toPayload(form) as { ok: false; errors: string[] }).errors).toEqual(["Step 2 (Agent): starting from Factory's result needs a repository."])
+
+    form.steps[1] = { ...form.steps[1]!, environmentId: '9a1f0c2e-0000-4000-8000-000000000001' }
+    expect((toPayload(form) as { ok: false; errors: string[] }).errors).toEqual(["Step 2 (Agent): starting from Factory's result needs a repository, not an environment."])
+  })
+
+  it('must name an earlier Factory step', () => {
+    const form = { ...emptyJob(), name: 'x' }
+    form.steps = [{ ...emptyStep('agent', 0), prompt: 'Build', repoUrl: 'https://github.com/acme/app', startFromStep: 'nope' }]
+    expect((toPayload(form) as { ok: false; errors: string[] }).errors).toEqual(['Step 1 (Agent): "Starts from" must name an earlier Factory step.'])
+  })
+
+  it('omits startFrom entirely when blank', () => {
+    const form = { ...emptyJob(), name: 'x' }
+    form.steps = [{ ...emptyStep('agent', 0), prompt: 'Build', repoUrl: 'https://github.com/acme/app' }]
+    const r = toPayload(form)
+    expect(r.ok && r.payload['steps']).toEqual([
+      { id: 'step-1', name: 'Agent', kind: 'agent', when: 'on_success', config: { agent: 'claude', prompt: 'Build', repo: { url: 'https://github.com/acme/app', baseBranch: 'main' }, output: 'pr' } },
+    ])
   })
 })
 
@@ -561,23 +692,51 @@ describe('job form: read-only repo', () => {
 })
 
 describe('job form: "Plan, build, ship" template', () => {
-  it('prefills a read-only plan step with typed returns, and a build step that reads them', () => {
-    const form = { ...planBuildShipTemplate(), name: 'Ship it' }
-    const r = toPayload(form)
+  it('prefills a read-only plan step with typed returns, a Factory hand-off gated on its choice, and a build step that pulls Factory\'s result', () => {
+    const form = planBuildShipTemplate()
+    expect(form.steps.map((s) => s.id)).toEqual(['plan', 'factory', 'build'])
+
+    const [plan, factory, build] = form.steps as [StepForm, StepForm, StepForm]
+    expect(plan).toMatchObject({ name: 'Plan the work', kind: 'agent', repoReadOnly: true, output: 'none' })
+    expect(plan.returns.map((f) => f.name)).toEqual(['builder', 'request', 'reason'])
+
+    expect(factory).toMatchObject({
+      name: 'Hand off to Factory',
+      kind: 'action',
+      actionType: 'factory',
+      factoryOperation: 'from-step',
+      factoryOperationFrom: 'steps.plan.out.builder',
+      factoryRequest: '{{steps.plan.out.request}}',
+      factoryProjectId: '',
+      ifPath: 'steps.plan.out.builder',
+      ifOp: 'in',
+      ifValue: 'factory-task, factory-orchestration',
+    })
+
+    expect(build).toMatchObject({
+      name: 'Build and open PR',
+      kind: 'agent',
+      startFromStep: 'factory',
+      prompt: "If Factory built it, merge origin/main, run the check and fix only what fails. Otherwise build it yourself: {{steps.plan.out.request}}",
+      output: 'pr',
+    })
+
+    // The Factory project id and the build step's repository are, like an agent step's
+    // repository elsewhere, left for the editor to fill in before the job can run.
+    const filled = { ...form, name: 'Ship it' }
+    filled.steps = [plan, { ...factory, factoryProjectId: 'routini' }, { ...build, repoUrl: 'https://github.com/acme/app' }]
+    const r = toPayload(filled)
     expect(r.ok).toBe(true)
     if (!r.ok) return
     const steps = r.payload['steps'] as Array<Record<string, unknown>>
-    expect(steps).toHaveLength(2)
-    const plan = steps[0]! as { id: string; name: string; config: { output?: string; repo?: unknown; returns: Array<{ name: string }> } }
-    expect(plan.id).toBe('plan')
-    expect(plan.name).toBe('Plan the work')
-    // No repository filled in yet, so there is nothing for `output` or `repo.readOnly` to apply
-    // to; filling in a repository while "Read only" is checked is covered above, forcing 'none'.
-    expect(plan.config.output).toBeUndefined()
-    expect(plan.config.repo).toBeUndefined()
-    expect(plan.config.returns.map((f) => f.name)).toEqual(['builder', 'request', 'reason'])
-    // Likewise 'build' has no repository yet, so `output: 'pr'` only takes effect once one is added.
-    expect(steps[1]).toMatchObject({ id: 'build', name: 'Build and open PR', config: { prompt: 'Build this: {{steps.plan.out.request}}' } })
+    expect(steps).toHaveLength(3)
+    expect(steps[1]).toMatchObject({
+      id: 'factory',
+      name: 'Hand off to Factory',
+      if: { path: 'steps.plan.out.builder', op: 'in', value: ['factory-task', 'factory-orchestration'] },
+      config: { type: 'factory', operation: 'from-step', operationFrom: 'steps.plan.out.builder', projectId: 'routini', request: '{{steps.plan.out.request}}', runtime: 'claude-code' },
+    })
+    expect(steps[2]).toMatchObject({ id: 'build', config: { startFrom: { step: 'factory' } } })
   })
 })
 
