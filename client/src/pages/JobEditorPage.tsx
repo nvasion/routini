@@ -616,18 +616,21 @@ function StepEditor(props: {
                   {(id) => <input id={id} className="input" value={s.repoUrl} placeholder="https://github.com/acme/app" onChange={(e) => set({ repoUrl: e.target.value })} />}
                 </Field>
                 <Field label="Base branch">{(id) => <input id={id} className="input mono" value={s.baseBranch} onChange={(e) => set({ baseBranch: e.target.value })} />}</Field>
-                <Field label="Starts from" hint="Falls back to the repository when that step was skipped.">
-                  {(id) => (
-                    <select id={id} className="select" value={s.startFromStep} onChange={(e) => set({ startFromStep: e.target.value })}>
-                      <option value="">The repository</option>
-                      {props.earlierFactorySteps.map((f) => (
-                        <option key={f.id} value={f.id}>
-                          Factory&apos;s result from step {f.name}
-                        </option>
-                      ))}
-                    </select>
-                  )}
-                </Field>
+                {/* Only offered after a Factory step (or kept while set, so a stale choice can be fixed). */}
+                {(props.earlierFactorySteps.length > 0 || s.startFromStep) && (
+                  <Field label="Starts from" hint="Falls back to the repository when that step was skipped.">
+                    {(id) => (
+                      <select id={id} className="select" value={s.startFromStep} onChange={(e) => set({ startFromStep: e.target.value })}>
+                        <option value="">The repository</option>
+                        {props.earlierFactorySteps.map((f) => (
+                          <option key={f.id} value={f.id}>
+                            Factory&apos;s result from step {f.name}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                  </Field>
+                )}
               </>
             )}
             <Field label="Result">
