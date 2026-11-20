@@ -48,8 +48,118 @@ export interface AlertMatch {
   severities?: string[]
   labels?: Record<string, string>
 }
-export type Trigger = { kind: 'manual' } | { kind: 'cron'; expr: string; tz: string } | { kind: 'webhook' } | { kind: 'alert'; match: AlertMatch }
+/** A cron job that picks ready backlog items instead of (or as well as) running on the clock alone. */
+export interface CronBacklog {
+  sourceIds?: string[]
+  labels?: string[]
+  maxPerFire: number
+}
+export type Trigger =
+  | { kind: 'manual' }
+  | { kind: 'cron'; expr: string; tz: string; backlog?: CronBacklog }
+  | { kind: 'webhook' }
+  | { kind: 'alert'; match: AlertMatch }
 export type When = 'on_success' | 'on_failure' | 'always'
+
+// ── Backlog (work intake, Phase 3) ───────────────────────────────────────────
+
+/** One item's lifecycle. Nothing automatic moves an item out of `blocked`; only a person does. */
+export type ItemState = 'ready' | 'planning' | 'building' | 'finishing' | 'done' | 'blocked' | 'dropped'
+export const ITEM_STATES: ItemState[] = ['ready', 'planning', 'building', 'finishing', 'done', 'blocked', 'dropped']
+
+/** How Routini states map onto a source's own status values, and which of the source's values mean "ready" or "dropped". */
+export interface StatusMapping {
+  out: Partial<Record<ItemState, { value: string; comment?: boolean }>>
+  in: { ready: string[]; dropped: string[] }
+}
+
+/** One item as read from a source adapter, before Routini has a row for it. */
+export interface SourceItem {
+  externalId: string
+  title: string
+  body: string
+  url?: string | null
+  repoUrl?: string | null
+  baseBranch?: string | null
+  labels?: string[]
+  externalState: string
+  position?: number | null
+}
+
+export interface BacklogSource {
+  id: string
+  orgId: string
+  name: string
+  kind: 'monday' | 'repo'
+  config: Record<string, unknown>
+  mapping: StatusMapping
+  defaultRepoUrl: string | null
+  defaultBaseBranch: string
+  factoryProjectId: string | null
+  enabled: boolean
+  syncEveryMin: number
+  nextSyncAt: string
+  lastSyncAt: string | null
+  lastSyncError: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export type SourceInput = {
+  name: string
+  kind: 'monday' | 'repo'
+  config: Record<string, unknown>
+  mapping: StatusMapping
+  defaultRepoUrl?: string | null
+  defaultBaseBranch?: string
+  factoryProjectId?: string | null
+  enabled?: boolean
+  syncEveryMin?: number
+}
+
+export interface BacklogItem {
+  id: string
+  orgId: string
+  sourceId: string
+  externalId: string
+  title: string
+  body: string
+  url: string | null
+  repoUrl: string | null
+  baseBranch: string | null
+  labels: string[]
+  externalState: string
+  state: ItemState
+  stateNote: string | null
+  position: number | null
+  runId: string | null
+  lastRunId: string | null
+  builtBy: string | null
+  pullRequestUrl: string | null
+  dropAfterRun: boolean
+  createdAt: string
+  updatedAt: string
+}
+
+export interface BacklogItemEvent {
+  id: string
+  at: string
+  kind: string
+  data: Record<string, unknown>
+}
+
+/** A failed status write, as listed on a source and on the inbox. */
+export interface BacklogWrite {
+  id: string
+  itemId: string
+  itemTitle: string
+  sourceName: string
+  state: ItemState
+  note?: string | null
+  attempts: number
+  lastError: string | null
+  failedAt: string | null
+}
 
 export type ActionConfig =
   | { type: 'http'; url: string; method?: string; headers?: Record<string, string>; body?: string; expectStatus?: number; timeoutMs?: number }
@@ -98,7 +208,10 @@ export interface AgentReturnField {
 export interface AgentConfig {
   agent: AgentId
   prompt: string
-  repo?: { url: string; baseBranch: string; /** A shallow, read-only checkout: the agent can't push, so output defaults to 'none'. */ readOnly?: boolean }
+  repo?:
+    | { url: string; baseBranch: string; /** A shallow, read-only checkout: the agent can't push, so output defaults to 'none'. */ readOnly?: boolean }
+    /** The repository of the backlog item this run was started from (only valid on a backlog run). */
+    | { fromItem: true; readOnly?: boolean }
   output?: 'pr' | 'branch' | 'none'
   check?: { command: string }
   model?: string
@@ -132,6 +245,8 @@ interface StepBase {
   timeoutSec?: number
   retries: number
   if?: StepCondition
+  /** On a backlog run, moves the item to this state when the step starts running. */
+  stage?: 'planning' | 'building' | 'finishing'
 }
 export type Step =
   | (StepBase & { kind: 'action'; config: ActionConfig })
@@ -218,6 +333,8 @@ export interface Inbox {
   upcoming: Array<{ jobId: string; name: string; nextRunAt: string }>
   /** Open incidents (Phase 3). */
   incidents?: Incident[]
+  /** Status writes to a backlog source that have failed at least once (Phase 3). */
+  backlogWrites?: BacklogWrite[]
 }
 
 export interface HostCheck {
