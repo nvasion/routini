@@ -29,6 +29,8 @@ export interface StepForm {
   ifOp: IfOp
   /** eq/ne: the raw value. in/not_in: comma separated. exists/missing: unused. */
   ifValue: string
+  /** On a backlog run, moves the item to this state when the step starts. '' means no change. */
+  stage: '' | 'planning' | 'building' | 'finishing'
   // action
   actionType: 'http' | 'ssh' | 'imap' | 'factory' | 'azure-boards' | 'teams'
   url: string
@@ -71,8 +73,10 @@ export interface StepForm {
   prompt: string
   repoUrl: string
   baseBranch: string
+  /** Use the backlog item's own repository (only meaningful on a backlog job) instead of `repoUrl`. */
+  repoFromItem: boolean
   output: 'pr' | 'branch' | 'none'
-  /** A shallow, read-only checkout next to `repoUrl`; forces `output` to 'none'. */
+  /** A shallow, read-only checkout next to `repoUrl` (or the item's repo); forces `output` to 'none'. */
   repoReadOnly: boolean
   checkCommand: string
   model: string
@@ -106,6 +110,13 @@ export interface JobForm {
   alertLabels: string
   cronExpr: string
   cronTz: string
+  /** Cron only: "Run once per backlog item" — picks ready items instead of (or alongside) the clock. */
+  backlogEnabled: boolean
+  backlogSourceIds: string[]
+  /** Comma separated; blank matches any label. */
+  backlogLabels: string
+  /** "Up to N per run", 1-20. */
+  backlogMaxPerFire: string
   steps: StepForm[]
 }
 
@@ -231,6 +242,7 @@ export function emptyStep(kind: StepKind, index: number): StepForm {
     ifPath: '',
     ifOp: '',
     ifValue: '',
+    stage: '',
     actionType: 'http',
     url: '',
     method: 'GET',
@@ -268,6 +280,7 @@ export function emptyStep(kind: StepKind, index: number): StepForm {
     prompt: '',
     repoUrl: '',
     baseBranch: 'main',
+    repoFromItem: false,
     output: 'pr',
     repoReadOnly: false,
     checkCommand: '',
@@ -285,7 +298,22 @@ export function emptyStep(kind: StepKind, index: number): StepForm {
 }
 
 export function emptyJob(): JobForm {
-  return { name: '', description: '', enabled: true, triggerKind: 'manual', cronExpr: '0 9 * * 1-5', cronTz: guessTz(), alertNames: '', alertSeverities: [], alertLabels: '', steps: [emptyStep('action', 0)] }
+  return {
+    name: '',
+    description: '',
+    enabled: true,
+    triggerKind: 'manual',
+    cronExpr: '0 9 * * 1-5',
+    cronTz: guessTz(),
+    alertNames: '',
+    alertSeverities: [],
+    alertLabels: '',
+    backlogEnabled: false,
+    backlogSourceIds: [],
+    backlogLabels: '',
+    backlogMaxPerFire: '5',
+    steps: [emptyStep('action', 0)],
+  }
 }
 
 /** The query value for the "Plan, build, ship" starter: /jobs/new?template=plan-build-ship. */
@@ -346,6 +374,7 @@ function guessTz(): string {
 }
 
 export function fromJob(job: Job): JobForm {
+  const backlog = job.trigger.kind === 'cron' ? job.trigger.backlog : undefined
   return {
     name: job.name,
     description: job.description,
@@ -361,6 +390,10 @@ export function fromJob(job: Job): JobForm {
             .map(([k, v]) => `${k}=${v}`)
             .join('\n')
         : '',
+    backlogEnabled: backlog !== undefined,
+    backlogSourceIds: backlog?.sourceIds ?? [],
+    backlogLabels: (backlog?.labels ?? []).join(', '),
+    backlogMaxPerFire: backlog ? String(backlog.maxPerFire) : '5',
     steps: job.steps.map((s, i) => fromStep(s, i)),
   }
 }
@@ -385,7 +418,16 @@ function fromReturns(returns: AgentReturnField[] | undefined): ReturnFieldForm[]
 }
 
 function fromStep(s: Step, i: number): StepForm {
-  const f = { ...emptyStep(s.kind, i), id: s.id, name: s.name, when: s.when, retries: String(s.retries ?? 0), timeoutSec: s.timeoutSec ? String(s.timeoutSec) : '', ...fromCondition(s.if) }
+  const f = {
+    ...emptyStep(s.kind, i),
+    id: s.id,
+    name: s.name,
+    when: s.when,
+    retries: String(s.retries ?? 0),
+    timeoutSec: s.timeoutSec ? String(s.timeoutSec) : '',
+    stage: s.stage ?? ('' as const),
+    ...fromCondition(s.if),
+  }
   if (s.kind === 'action') {
     const c = s.config
     f.actionType = c.type
@@ -416,11 +458,13 @@ function fromStep(s: Step, i: number): StepForm {
     }
   } else if (s.kind === 'agent') {
     const c = s.config
+    const repoFromItem = c.repo !== undefined && 'fromItem' in c.repo
     Object.assign(f, {
       agent: c.agent,
       prompt: c.prompt,
-      repoUrl: c.repo?.url ?? '',
-      baseBranch: c.repo?.baseBranch ?? 'main',
+      repoUrl: c.repo && !repoFromItem ? (c.repo as { url: string }).url : '',
+      baseBranch: c.repo && !repoFromItem ? (c.repo as { baseBranch: string }).baseBranch : 'main',
+      repoFromItem,
       output: c.output ?? (c.repo || c.environmentId ? 'pr' : 'none'),
       repoReadOnly: c.repo?.readOnly === true,
       checkCommand: c.check?.command ?? '',
@@ -546,6 +590,25 @@ function buildReturns(s: StepForm, label: string, errors: string[]): AgentReturn
   })
 }
 
+/**
+ * A cron trigger's "Run once per backlog item" block from the Schedule tab:
+ * at most 20 sources, at most 10 labels of 1-60 characters, and "up to N per
+ * run" as a whole number 1-20. Mirrors the server's cron `backlog` validation
+ * (engine/spec.ts); undefined when the switch is off.
+ */
+function buildBacklogBlock(form: JobForm, errors: string[]): { sourceIds?: string[]; labels?: string[]; maxPerFire: number } | undefined {
+  if (!form.backlogEnabled) return undefined
+  const sourceIds = [...new Set(form.backlogSourceIds)]
+  if (sourceIds.length > 20) errors.push('Schedule: choose at most 20 sources.')
+  const labels = list(form.backlogLabels)
+  if (labels.length > 10) errors.push('Schedule: at most 10 labels.')
+  for (const l of labels) if (l.length < 1 || l.length > 60) errors.push('Schedule: each label must be 1 to 60 characters.')
+  const raw = form.backlogMaxPerFire.trim()
+  const maxPerFire = Number(raw)
+  if (!raw || !Number.isInteger(maxPerFire) || maxPerFire < 1 || maxPerFire > 20) errors.push('Schedule: "up to" must be a whole number from 1 to 20.')
+  return { ...(sourceIds.length ? { sourceIds } : {}), ...(labels.length ? { labels } : {}), maxPerFire }
+}
+
 export type PayloadResult = { ok: true; payload: Record<string, unknown> } | { ok: false; errors: string[] }
 
 export function toPayload(form: JobForm): PayloadResult {
@@ -567,6 +630,7 @@ export function toPayload(form: JobForm): PayloadResult {
     }
     const condition = buildCondition(s, i, stepIds.slice(0, i), label, errors)
     if (condition) base['if'] = condition
+    if (s.stage) base['stage'] = s.stage
     if (s.kind === 'action') {
       if (s.actionType === 'http') {
         if (!s.url.trim()) errors.push(`${label}: enter a URL.`)
@@ -649,6 +713,11 @@ export function toPayload(form: JobForm): PayloadResult {
         // The environment brings its own repository.
         cfg['environmentId'] = s.environmentId
         cfg['output'] = s.output
+      } else if (s.repoFromItem) {
+        const repo: Record<string, unknown> = { fromItem: true }
+        if (s.repoReadOnly) repo['readOnly'] = true
+        cfg['repo'] = repo
+        cfg['output'] = s.repoReadOnly ? 'none' : s.output
       } else if (s.repoUrl.trim()) {
         const repo: Record<string, unknown> = { url: s.repoUrl.trim(), baseBranch: s.baseBranch.trim() || 'main' }
         // A read-only checkout can't produce a pull request or branch; the editor
@@ -688,9 +757,10 @@ export function toPayload(form: JobForm): PayloadResult {
   })
 
   if (errors.length) return { ok: false, errors }
+  const backlog = form.triggerKind === 'cron' ? buildBacklogBlock(form, errors) : undefined
   const trigger =
     form.triggerKind === 'cron'
-      ? { kind: 'cron', expr: form.cronExpr.trim(), tz: form.cronTz.trim() || 'UTC' }
+      ? { kind: 'cron', expr: form.cronExpr.trim(), tz: form.cronTz.trim() || 'UTC', ...(backlog ? { backlog } : {}) }
       : form.triggerKind === 'alert'
         ? { kind: 'alert', match: alertMatch(form, errors) }
         : { kind: form.triggerKind }

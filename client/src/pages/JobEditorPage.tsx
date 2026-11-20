@@ -5,7 +5,7 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { ErrorBanner, Field, Icon, Modal } from '../components/ui'
 import { api } from '../lib/api'
 import { useApi } from '../lib/hooks'
-import type { Environment, Host, Job, PolicyDecision, StepKind } from '../lib/types'
+import type { BacklogSource, Environment, Host, Job, PolicyDecision, StepKind } from '../lib/types'
 import { useOrg } from '../shell/OrgContext'
 import {
   ALERT_HOST,
@@ -45,6 +45,7 @@ export function JobEditorPage() {
   const existing = useApi<{ job: Job }>(isNew ? null : org.api(`/jobs/${id}`))
   const hosts = useApi<{ hosts: Host[] }>(org.api('/hosts'))
   const environments = useApi<{ environments: Environment[] }>(org.api('/environments'))
+  const backlogSources = useApi<{ sources: BacklogSource[] }>(org.api('/backlog/sources'))
   const [form, setForm] = useState<JobForm>(() => (isNew && searchParams.get('template') === PLAN_BUILD_SHIP_TEMPLATE ? planBuildShipTemplate() : emptyJob()))
   const [errors, setErrors] = useState<string[]>([])
   const [saving, setSaving] = useState(false)
@@ -193,12 +194,50 @@ export function JobEditorPage() {
             </>
           )}
           {form.triggerKind === 'cron' && (
-            <div className="row">
-              <Field label="Cron expression" hint="minute hour day month weekday — e.g. 0 */6 * * * is every 6 hours">
-                {(fid) => <input id={fid} className="input mono" value={form.cronExpr} onChange={(e) => set({ cronExpr: e.target.value })} />}
-              </Field>
-              <Field label="Time zone">{(fid) => <input id={fid} className="input" value={form.cronTz} onChange={(e) => set({ cronTz: e.target.value })} />}</Field>
-            </div>
+            <>
+              <div className="row">
+                <Field label="Cron expression" hint="minute hour day month weekday — e.g. 0 */6 * * * is every 6 hours">
+                  {(fid) => <input id={fid} className="input mono" value={form.cronExpr} onChange={(e) => set({ cronExpr: e.target.value })} />}
+                </Field>
+                <Field label="Time zone">{(fid) => <input id={fid} className="input" value={form.cronTz} onChange={(e) => set({ cronTz: e.target.value })} />}</Field>
+              </div>
+              <label className="inline" style={{ gap: 8 }}>
+                <input type="checkbox" checked={form.backlogEnabled} onChange={(e) => set({ backlogEnabled: e.target.checked })} />
+                Run once per backlog item
+              </label>
+              {form.backlogEnabled && (
+                <>
+                  <p className="muted" style={{ margin: 0 }}>
+                    Each time this job is due, it takes ready backlog items (up to the limit below) and starts one run per item. With no ready items, nothing runs. Blocked items wait until someone sets them ready.
+                  </p>
+                  <div className="row">
+                    <div className="field">
+                      <span className="field-label">Sources</span>
+                      <select
+                        multiple
+                        className="select"
+                        style={{ minHeight: 90 }}
+                        value={form.backlogSourceIds}
+                        onChange={(e) => set({ backlogSourceIds: Array.from(e.target.selectedOptions).map((o) => o.value) })}
+                      >
+                        {(backlogSources.data?.sources ?? []).map((s) => (
+                          <option key={s.id} value={s.id}>
+                            {s.name}
+                          </option>
+                        ))}
+                      </select>
+                      <span className="hint">Blank matches items from any source.</span>
+                    </div>
+                    <Field label="Labels" hint="Comma separated; blank matches any label.">
+                      {(fid) => <input id={fid} className="input" value={form.backlogLabels} onChange={(e) => set({ backlogLabels: e.target.value })} />}
+                    </Field>
+                    <Field label="Up to N per run">
+                      {(fid) => <input id={fid} className="input" inputMode="numeric" value={form.backlogMaxPerFire} onChange={(e) => set({ backlogMaxPerFire: e.target.value })} />}
+                    </Field>
+                  </div>
+                </>
+              )}
+            </>
           )}
           {form.triggerKind === 'webhook' && (
             <p className="muted" style={{ margin: 0 }}>
@@ -334,6 +373,16 @@ function StepEditor(props: {
               <option value="on_success">previous succeeded</option>
               <option value="on_failure">previous failed</option>
               <option value="always">always</option>
+            </select>
+          )}
+        </Field>
+        <Field label="Stage" hint="On a backlog run, moves the item to this state when the step starts.">
+          {(id) => (
+            <select id={id} className="select" value={s.stage} onChange={(e) => set({ stage: e.target.value as StepForm['stage'] })}>
+              <option value="">No change</option>
+              <option value="planning">Planning</option>
+              <option value="building">Building</option>
+              <option value="finishing">Finishing</option>
             </select>
           )}
         </Field>
@@ -609,8 +658,19 @@ function StepEditor(props: {
               </span>
             </>
           )}
+          {!s.environmentId && (
+            <label className="inline" style={{ gap: 6 }}>
+              <input
+                type="checkbox"
+                checked={s.repoFromItem}
+                onChange={(e) => set({ repoFromItem: e.target.checked, ...(e.target.checked ? { repoUrl: '', startFromStep: '' } : {}) })}
+              />
+              From the item
+              <span className="hint">Use the backlog item&apos;s own repository (only valid on a backlog job&apos;s steps).</span>
+            </label>
+          )}
           <div className="row">
-            {!s.environmentId && (
+            {!s.environmentId && !s.repoFromItem && (
               <>
                 <Field label="Repository (optional)" hint="https URL on GitHub, GitLab, Bitbucket or Azure DevOps.">
                   {(id) => <input id={id} className="input" value={s.repoUrl} placeholder="https://github.com/acme/app" onChange={(e) => set({ repoUrl: e.target.value })} />}
@@ -639,7 +699,7 @@ function StepEditor(props: {
                   id={id}
                   className="select"
                   value={s.repoReadOnly ? 'none' : s.output}
-                  disabled={(!s.repoUrl.trim() && !s.environmentId) || s.repoReadOnly}
+                  disabled={(!s.repoUrl.trim() && !s.environmentId && !s.repoFromItem) || s.repoReadOnly}
                   onChange={(e) => set({ output: e.target.value as StepForm['output'] })}
                 >
                   <option value="pr">Open a pull request</option>

@@ -26,10 +26,12 @@ export interface TemplateData {
   /** Earlier steps' outputs, by step id. */
   steps?: Record<string, unknown>
   trigger?: Record<string, unknown>
+  /** The backlog item a `backlog`-triggered run was leased to. */
+  item?: Record<string, unknown>
 }
 
 const PLACEHOLDER = /\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}/g
-const ROOTS = new Set(['alert', 'incident', 'host', 'steps', 'trigger'])
+const ROOTS = new Set(['alert', 'incident', 'host', 'steps', 'trigger', 'item'])
 
 export function lookup(data: TemplateData, path: string): string {
   const parts = path.split('.')
@@ -124,7 +126,17 @@ export function renderStep(step: Step, data: TemplateData): Step {
         const env: Record<string, string> = { ...(c.env ?? {}) }
         return { ...step, config: { ...c, command: renderCommand(c.command, data, env), env } }
       }
-      if (c.type === 'factory' && c.request) return { ...step, config: { ...c, request: renderText(c.request, data) } }
+      if (c.type === 'factory') {
+        return {
+          ...step,
+          config: {
+            ...c,
+            request: c.request ? renderText(c.request, data) : c.request,
+            projectId: c.projectId ? renderText(c.projectId, data) : c.projectId,
+            repoUrl: c.repoUrl ? renderText(c.repoUrl, data) : c.repoUrl,
+          },
+        }
+      }
       if (c.type === 'azure-boards') {
         if (c.query === undefined) return step
         return { ...step, config: { ...c, query: renderText(c.query, data) } }

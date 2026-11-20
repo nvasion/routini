@@ -38,7 +38,7 @@ import { AgentStreamParser } from './agentStream.js'
 import { EnvError, type EnvPlacement } from './environments.js'
 import { addEnvironmentEvent, getEnvironment, type Environment } from '../repos/environments.js'
 import { promptForReturns, validateReturns } from './returns.js'
-import type { AgentConfig, ReturnField } from './spec.js'
+import { concreteRepo, type AgentConfig, type ReturnField } from './spec.js'
 import type { StepContext, StepExecutor, StepResult } from './types.js'
 import { emitPlacement } from './placement.js'
 import { dockerHostLabel, sandboxHostConfig } from '../services/dockerClient.js'
@@ -371,7 +371,7 @@ export function agentExecutor(opts: AgentRunnerOptions = {}): StepExecutor {
               : `No runner image is configured for the ${cfg.agent} agent on this server`,
           )
         }
-        const repo = cfg.repo ?? (environment?.repo ? { url: environment.repo.url, baseBranch: environment.repo.branch } : undefined)
+        const repo = concreteRepo(cfg.repo) ?? (environment?.repo ? { url: environment.repo.url, baseBranch: environment.repo.branch } : undefined)
 
         // ── Credentials: brokered (placeholders + proxy bindings) or direct env ─
         // A fleet step is always brokered, by the egress proxy the runner starts on its

@@ -24,6 +24,8 @@ export type RunTrigger =
   | { kind: 'alert'; incidentId: string; incidentNumber: number; alert: NormalizedAlert; hostId: string | null }
   /** Started from an MCP client (or an agent's Routini tools) with an API token. */
   | { kind: 'mcp'; userId: string; tokenId: string; tokenName: string; tool: string }
+  /** Scheduler-picked, or started by hand, from a backlog item leased to this run. */
+  | { kind: 'backlog'; itemId: string; sourceId: string; scheduledFor?: string; userId?: string }
 
 export interface Run {
   id: string

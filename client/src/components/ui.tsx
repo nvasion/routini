@@ -27,6 +27,7 @@ const PATHS = {
   trash: 'M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3',
   external: 'M14 4h6v6M20 4l-9 9M18 14v6H4V6h6',
   alert: 'M12 3l10 18H2zM12 10v4M12 17h.01',
+  backlog: 'M4 6h16M4 12h16M4 18h10M4 6v.01M4 12v.01M4 18v.01',
 } as const
 export type IconName = keyof typeof PATHS
 

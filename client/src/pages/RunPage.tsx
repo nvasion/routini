@@ -6,7 +6,7 @@ import { ErrorBanner, RunBadge, StatusDot } from '../components/ui'
 import { api } from '../lib/api'
 import { duration, money, relativeTime, stepStatusLabel } from '../lib/format'
 import { useApi, useEventStream, useTick } from '../lib/hooks'
-import type { AgentConfig, Approval, Host, RunDetail, RunEvent, RunStep, Step } from '../lib/types'
+import type { AgentConfig, Approval, BacklogItem, Host, RunDetail, RunEvent, RunStep, Step } from '../lib/types'
 import { useDock } from '../shell/Dock'
 import { useOrg } from '../shell/OrgContext'
 import { buildTimeline, mergeEvents, placementLabel } from './timeline'
@@ -20,6 +20,9 @@ export function RunPage() {
   const { run: ref = '' } = useParams()
   const detail = useApi<RunDetail>(org.api(`/runs/${ref}`))
   const fleet = useApi<{ hosts: Host[] }>(org.api('/hosts'))
+  // Backlog runs carry the item id in their trigger; fetch it so the header can link the item.
+  const backlogItemId = detail.data?.run.trigger.kind === 'backlog' ? String(detail.data.run.trigger['itemId'] ?? '') : ''
+  const backlogItem = useApi<{ item: BacklogItem }>(backlogItemId ? org.api(`/backlog/items/${backlogItemId}`) : null)
   const [events, setEvents] = useState<RunEvent[]>([])
   const [actionError, setActionError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -127,6 +130,11 @@ export function RunPage() {
             incident #{run.trigger['incidentNumber']}
           </Link>
         )}
+        {run.trigger.kind === 'backlog' && backlogItem.data && (
+          <Link className="badge accent" to={org.path(`/backlog?item=${backlogItem.data.item.id}`)}>
+            Item: {backlogItem.data.item.title}
+          </Link>
+        )}
         <span className="badge">started {relativeTime(run.startedAt ?? run.createdAt)}</span>
         <span className="badge">{duration(run.startedAt, run.finishedAt)}</span>
         <span className="badge">model spend {money(run.costUsd)}</span>
@@ -209,8 +217,11 @@ function stepSummary(spec: Step | undefined, hostNames: Map<string, string>): st
     if (c.type === 'teams') return `teams: ${c.title ? c.title + ' · ' : ''}${c.message}`
     return `imap: ${c.username}@${c.host}`
   }
-  if (spec.kind === 'agent')
-    return `${spec.config.agent}${spec.config.environmentId ? ' · in an environment' : spec.config.repo ? ` · ${spec.config.repo.url}@${spec.config.repo.baseBranch}` : ''}${runOnSummary(spec.config.runOn, hostNames)}`
+  if (spec.kind === 'agent') {
+    const repo = spec.config.repo
+    const repoText = !repo ? '' : 'fromItem' in repo ? ' · the item’s repository' : ` · ${repo.url}@${repo.baseBranch}`
+    return `${spec.config.agent}${spec.config.environmentId ? ' · in an environment' : repoText}${runOnSummary(spec.config.runOn, hostNames)}`
+  }
   return spec.config.message
 }
 
