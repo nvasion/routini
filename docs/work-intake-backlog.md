@@ -9,7 +9,7 @@ A team connects where its work is tracked (a monday board, or a repo of spec fil
 Routini keeps one state per item: `ready | planning | building | finishing | done | blocked | dropped`.
 
 - `ready`: waiting to be picked. `planning`, `building`, `finishing`: a run has it (the item is leased: `run_id` set). `done`: a run opened a PR. `blocked`: a run failed or ended without a PR; it waits for a person. `dropped`: the source says it won't be done.
-- **Nothing moves an item out of `blocked` except a person**: "Set ready" in Routini, or the source's status changing to a ready value. The scheduler never retries a blocked item.
+- **Nothing automatic moves an item out of `blocked`.** Only a person does, either with "Set ready" in Routini or by changing the item's status at the source to a ready value (which the next sync reads). The scheduler never retries a blocked item.
 
 ## 2. Tables (migration 11, "Backlog sources, items and status writes")
 
@@ -58,15 +58,9 @@ Caps: title 300, body 20000, labels at most 20 of at most 60 chars, state_note 2
 
 ## 3. Repository module `server/src/repos/backlog.ts`
 
-Types (exported, camelCase, ISO strings for times):
+`ItemState`, `ITEM_STATES`, `StatusMapping`, `SourceItem`, `AdapterCtx`, `StatusWrite` and `SourceAdapter` already exist in `server/src/backlog/types.ts`: import them from there (repos/backlog.ts re-exports ItemState and StatusMapping). Do not redefine them. Further types (exported, camelCase, ISO strings for times):
 
 ```ts
-export type ItemState = 'ready' | 'planning' | 'building' | 'finishing' | 'done' | 'blocked' | 'dropped'
-export const ITEM_STATES: readonly ItemState[]
-export interface StatusMapping {
-  out: Partial<Record<ItemState, { value: string; comment?: boolean }>>
-  in: { ready: string[]; dropped: string[] }
-}
 export interface BacklogSource { id; orgId; name; kind: 'monday' | 'repo'; config: Record<string, unknown>; mapping: StatusMapping;
   defaultRepoUrl: string | null; defaultBaseBranch: string; factoryProjectId: string | null; enabled: boolean; syncEveryMin: number;
   nextSyncAt: string; lastSyncAt: string | null; lastSyncError: string | null; createdAt: string; updatedAt: string }
@@ -111,26 +105,12 @@ Functions (tenant ones take `(q, orgId, ...)` and filter by org_id; `system` one
 
 ## 6. Source adapters `server/src/backlog/`
 
-```ts
-// types.ts
-export interface SourceItem { externalId: string; title: string; body: string; url: string | null; state: string; labels: string[];
-  repoUrl?: string | null; baseBranch?: string | null; position?: number | null }
-export interface AdapterCtx { fetch: FetchFn /* integrations/providers.ts */; credentials(integration: 'monday' | 'github'): Promise<Record<string, string>>; signal?: AbortSignal }
-export interface StatusWrite { value: string; comment?: string }
-export interface SourceAdapter<C = unknown> {
-  kind: 'monday' | 'repo'; integration: 'monday' | 'github'
-  parseConfig(raw: unknown): C                       // throws SpecError with the exact field
-  fetch(ctx: AdapterCtx, cfg: C): Promise<SourceItem[]>   // at most 500
-  write(ctx: AdapterCtx, cfg: C, item: { externalId: string; title: string; url: string | null }, w: StatusWrite): Promise<void>
-}
-// index.ts
-export function getAdapter(kind: 'monday' | 'repo'): SourceAdapter
-```
+`types.ts` (exists; see it for SourceItem, AdapterCtx, StatusWrite, SourceAdapter). New: `index.ts` exporting `getAdapter(kind: 'monday' | 'repo'): SourceAdapter`.
 
 - `mapping.ts`: `parseMapping(raw): StatusMapping` (out keys must be states, values 1-100 chars; in.ready 1-20 values; in.dropped 0-20). It rejects any out value for planning, building, finishing, done or blocked that matches in.ready: "'<value>' is written for <state> and read as ready; items would loop". `matchesAny(external, list)`: case-insensitive prefix match ("Planned (2026-11-11)" matches "Planned").
 - `glob.ts`: `globToRegExp(glob)` supporting `**`, `*`, `?` (no dependency).
 - `monday.ts`: config `{ boardId: string /* digits */, groupId?: string, statusColumnId: string, repoColumnId?: string, labelsColumnId?: string }`. POST `https://api.monday.com/v2` with headers `authorization: <apiToken>` (raw, monday integration) and `api-version: 2024-10`. Fetch: `boards(ids: [boardId]) { items_page(limit: 500) { items { id name url group { id } column_values { id text } } } }`, keeping groupId when set; state = status column text; repoUrl = repo column text; labels = labels column text split on commas. write: `change_simple_column_value(board_id, item_id, column_id: statusColumnId, value)` and, with a comment, `create_update(item_id, body)`. GraphQL `errors` -> throw with the first message.
-- `repo.ts` (a repo used for tracking, on GitHub; github integration token, Bearer, `https://api.github.com`): config `{ repoUrl, branch /* default main */, glob, status: { kind: 'frontmatter'; key } | { kind: 'line'; prefix }, repoKey? }`.
+- `repo.ts` (a repo used for tracking, on GitHub; github integration token, Bearer, always the fixed host `https://api.github.com`): config `{ repoUrl, branch /* default main */, glob, status: { kind: 'frontmatter'; key } | { kind: 'line'; prefix }, repoKey? }`. repoUrl must parse with `parseGithubRepo` (integrations/github.ts), else "repoUrl must be a https://github.com/<owner>/<repo> URL"; branch matches `^[A-Za-z0-9._/-]{1,200}$`; path segments are URL-encoded.
   - fetch: GET `/repos/{o}/{r}/git/trees/{branch}?recursive=1`, keep blobs matching the glob (more than 200 -> "Narrow the glob: N files match, the limit is 200"), GET `/repos/{o}/{r}/contents/{path}?ref={branch}` each (base64). externalId = path; title = front-matter `title`, else the first `# ` heading, else the file name; body = file text; url = `https://github.com/{o}/{r}/blob/{branch}/{path}`; state = the front-matter value, or the rest of the first line starting with prefix (trimmed); repoUrl = front-matter `repoKey` value when set.
   - write (the status writer). It never touches the default branch. Branch `routini/status/<slug of path>` (lowercase, non-alphanumerics to `-`, max 80).
     1. Find an open PR with `head={o}:{branch}`.
