@@ -559,6 +559,89 @@ UPDATE jobs
    AND EXISTS (SELECT 1 FROM jsonb_array_elements(steps) s WHERE s->>'kind' = 'agent' AND s->'config'->>'agent' = 'opencode');
 `,
   },
+  {
+    version: 11,
+    name: 'Backlog sources, items and status writes',
+    sql: `
+CREATE TABLE backlog_sources (
+  id                  uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  org_id              uuid NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  name                text NOT NULL CHECK (length(name) BETWEEN 1 AND 80),
+  kind                text NOT NULL CHECK (kind IN ('monday', 'repo')),
+  config              jsonb NOT NULL,
+  mapping             jsonb NOT NULL,
+  default_repo_url    text,
+  default_base_branch text NOT NULL DEFAULT 'main',
+  factory_project_id  text,
+  enabled             boolean NOT NULL DEFAULT true,
+  sync_every_min      integer NOT NULL DEFAULT 5 CHECK (sync_every_min BETWEEN 1 AND 1440),
+  next_sync_at        timestamptz NOT NULL DEFAULT now(),
+  last_sync_at        timestamptz,
+  last_sync_error     text,
+  created_at          timestamptz NOT NULL DEFAULT now(),
+  updated_at          timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (org_id, name)
+);
+SELECT routini_tenant('backlog_sources');
+
+CREATE TABLE backlog_items (
+  id                uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  org_id            uuid NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  source_id         uuid NOT NULL REFERENCES backlog_sources(id) ON DELETE CASCADE,
+  external_id       text NOT NULL,
+  title             text NOT NULL,
+  body              text NOT NULL DEFAULT '',
+  url               text,
+  repo_url          text,
+  base_branch       text,
+  labels            text[] NOT NULL DEFAULT '{}',
+  external_state    text NOT NULL DEFAULT '',
+  state             text NOT NULL CHECK (state IN ('ready', 'planning', 'building', 'finishing', 'done', 'blocked', 'dropped')),
+  state_note        text,
+  position          double precision,
+  run_id            uuid REFERENCES runs(id) ON DELETE SET NULL,
+  last_run_id       uuid REFERENCES runs(id) ON DELETE SET NULL,
+  built_by          text,
+  pull_request_url  text,
+  drop_after_run    boolean NOT NULL DEFAULT false,
+  created_at        timestamptz NOT NULL DEFAULT now(),
+  updated_at        timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (source_id, external_id)
+);
+CREATE INDEX backlog_items_org_state_idx ON backlog_items (org_id, state);
+CREATE INDEX backlog_items_source_idx ON backlog_items (source_id);
+SELECT routini_tenant('backlog_items');
+
+CREATE TABLE backlog_item_events (
+  id       bigserial PRIMARY KEY,
+  org_id   uuid NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  item_id  uuid NOT NULL REFERENCES backlog_items(id) ON DELETE CASCADE,
+  at       timestamptz NOT NULL DEFAULT now(),
+  kind     text NOT NULL,
+  data     jsonb NOT NULL DEFAULT '{}'::jsonb
+);
+CREATE INDEX backlog_item_events_item_idx ON backlog_item_events (item_id, at);
+SELECT routini_tenant('backlog_item_events');
+
+-- One pending (not yet done or failed) write per item: a new state coalesces into it.
+CREATE TABLE backlog_writes (
+  id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  org_id          uuid NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  item_id         uuid NOT NULL REFERENCES backlog_items(id) ON DELETE CASCADE,
+  source_id       uuid NOT NULL REFERENCES backlog_sources(id) ON DELETE CASCADE,
+  state           text NOT NULL,
+  note            text,
+  attempts        integer NOT NULL DEFAULT 0,
+  next_attempt_at timestamptz NOT NULL DEFAULT now(),
+  last_error      text,
+  done_at         timestamptz,
+  failed_at       timestamptz,
+  created_at      timestamptz NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX backlog_writes_pending_idx ON backlog_writes (item_id) WHERE done_at IS NULL AND failed_at IS NULL;
+SELECT routini_tenant('backlog_writes');
+`,
+  },
 ]
 
 /** Grants the app role access to everything a migration created. Runs after every migration. */

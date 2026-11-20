@@ -131,7 +131,8 @@ describe('embedded Postgres on disk', () => {
     ]
     await lite.query(`INSERT INTO jobs (org_id, name, trigger, steps) VALUES ($1, 'j', '{"kind":"manual"}', $2)`, [org, JSON.stringify(steps)])
 
-    expect(await migrate(owner)).toEqual([10])
+    // Migration 10 and every later one apply; only 10's effect is checked here.
+    expect(await migrate(owner)).toEqual(MIGRATIONS.map((m) => m.version).filter((v) => v >= 10))
     const one = async <T>(sql: string) => (await lite.query<T>(sql)).rows[0]!
     expect((await one<{ agents: string[] }>('SELECT agents FROM mcp_servers')).agents).toEqual(['claude', 'omnimancer'])
     expect((await one<{ scopes: unknown }>('SELECT scopes FROM integrations')).scopes).toEqual({ agents: ['claude'] })

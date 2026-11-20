@@ -29,6 +29,19 @@ export function InboxPage() {
     }
   }
 
+  async function retryWrite(id: string) {
+    setBusy(`write:${id}`)
+    setActionError(null)
+    try {
+      await api(org.api(`/backlog/writes/${id}/retry`), { method: 'POST', body: {} })
+      await inbox.reload()
+    } catch (err) {
+      setActionError((err as Error).message)
+    } finally {
+      setBusy(null)
+    }
+  }
+
   const d = inbox.data
   const needCount = (d?.approvals.length ?? 0) + (d?.failures.length ?? 0) + (d?.incidents?.length ?? 0)
   return (
@@ -122,6 +135,32 @@ export function InboxPage() {
           </article>
         ))}
       </section>
+
+      {d?.backlogWrites && d.backlogWrites.length > 0 && (
+        <section className="section" aria-labelledby="backlog-writes">
+          <h2 id="backlog-writes" className="section-title">
+            Status writes that failed
+          </h2>
+          <div className="list">
+            {d.backlogWrites.map((w) => (
+              <div key={w.id} className="list-row" style={{ cursor: 'default' }}>
+                <StatusDot status="fail" />
+                <span className="grow">
+                  <span className="title">
+                    {w.itemTitle} → {w.sourceName}
+                  </span>
+                  <span className="sub">
+                    {w.lastError} · {w.attempts} attempt{w.attempts === 1 ? '' : 's'}
+                  </span>
+                </span>
+                <button type="button" className="btn small" disabled={busy !== null} onClick={() => retryWrite(w.id)}>
+                  Retry
+                </button>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       <div className="row">
         <section className="section" aria-labelledby="live">

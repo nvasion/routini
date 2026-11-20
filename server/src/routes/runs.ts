@@ -18,6 +18,7 @@ import { requireRole } from '../http/orgContext.js'
 import { openSse, resumeFrom } from '../http/sse.js'
 import { roleAtLeast } from '../repos/identity.js'
 import { getJob, listUpcoming } from '../repos/jobs.js'
+import { listFailedWrites } from '../repos/backlog.js'
 import {
   appendEvent,
   createRun,
@@ -227,6 +228,7 @@ export function runsRouter(ctx: AppContext): Router {
         live: (await listRuns(q, org.id, { status: ['queued', 'running', 'waiting'], limit: 50 })).map(runSummary),
         upcoming: await listUpcoming(q, org.id),
         incidents: await listIncidents(q, org.id, { status: 'open', limit: 20 }),
+        backlogWrites: await listFailedWrites(q, org.id),
       }))
       res.json(out)
     }),

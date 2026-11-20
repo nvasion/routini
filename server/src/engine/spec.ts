@@ -16,9 +16,19 @@ import { validateRepoUrl } from '../utils/repoUrl.js'
 
 export type Trigger =
   | { kind: 'manual' }
-  | { kind: 'cron'; expr: string; tz: string }
+  | { kind: 'cron'; expr: string; tz: string; backlog?: BacklogTrigger }
   | { kind: 'webhook' }
   | { kind: 'alert'; match: AlertMatch }
+
+/** Makes a cron job also pick ready backlog items, one run each, every fire. */
+export interface BacklogTrigger {
+  /** Only these sources; omitted means any. */
+  sourceIds?: string[]
+  /** Only items with all of these labels; omitted means any. */
+  labels?: string[]
+  /** At most this many items per fire. */
+  maxPerFire: number
+}
 
 /** Which alerts start an alert-triggered job. Every given condition must hold. */
 export interface AlertMatch {
@@ -96,11 +106,27 @@ export interface ReturnField {
   description?: string
 }
 
+/** A concrete repository for an agent step; `readOnly` forbids `output: 'pr' | 'branch'`. */
+export interface AgentRepo {
+  url: string
+  baseBranch: string
+  readOnly?: boolean
+}
+/** The run's backlog item's own repository (its `repoUrl`, or its source's default); resolved by prepareStep. */
+export interface FromItemRepo {
+  fromItem: true
+  readOnly?: boolean
+}
+
+/** Narrows a possibly-unresolved `repo` to its concrete shape; `undefined` for `fromItem` (prepareStep resolves it before the engine or policy ever reads `.url`). */
+export function concreteRepo(repo: AgentRepo | FromItemRepo | undefined): AgentRepo | undefined {
+  return repo && !('fromItem' in repo) ? repo : undefined
+}
+
 export interface AgentConfig {
   agent: AgentId
   prompt: string
-  /** `readOnly` forbids `output: 'pr' | 'branch'`; the agent image never commits or pushes. */
-  repo?: { url: string; baseBranch: string; readOnly?: boolean }
+  repo?: AgentRepo | FromItemRepo
   output?: 'pr' | 'branch' | 'none'
   check?: { command: string }
   model?: string
@@ -130,6 +156,9 @@ export interface ApprovalConfig {
   minRole?: Exclude<Role, 'viewer'>
 }
 
+export const STAGES = ['planning', 'building', 'finishing'] as const
+export type Stage = (typeof STAGES)[number]
+
 interface StepBase {
   id: string
   name: string
@@ -137,6 +166,8 @@ interface StepBase {
   timeoutSec?: number
   retries: number
   if?: IfCondition
+  /** A backlog run moves its item to this state when the step starts running. */
+  stage?: Stage
 }
 export type Step =
   | (StepBase & { kind: 'action'; config: ActionConfig })
@@ -206,11 +237,35 @@ export function parseTrigger(raw: unknown): Trigger {
       const expr = str(raw['expr'], 'trigger.expr', 100)!.trim()
       const tz = raw['tz'] === undefined ? 'UTC' : str(raw['tz'], 'trigger.tz', 64)!
       nextCronTime(expr, tz, new Date()) // validates
-      return { kind: 'cron', expr, tz }
+      const backlog = raw['backlog'] !== undefined ? parseBacklogTrigger(raw['backlog']) : undefined
+      return { kind: 'cron', expr, tz, ...(backlog ? { backlog } : {}) }
     }
     default:
       return fail('trigger.kind must be one of: manual, cron, webhook, alert')
   }
+}
+
+function parseBacklogTrigger(raw: unknown): BacklogTrigger {
+  if (!isObj(raw)) return fail('trigger.backlog must be an object')
+  let sourceIds: string[] | undefined
+  if (raw['sourceIds'] !== undefined) {
+    const v = raw['sourceIds']
+    if (!Array.isArray(v) || v.length > 20 || !v.every((x) => typeof x === 'string' && UUID_RE.test(x))) {
+      fail('trigger.backlog.sourceIds must be a list of up to 20 source ids')
+    }
+    sourceIds = [...new Set(v as string[])]
+  }
+  let labels: string[] | undefined
+  if (raw['labels'] !== undefined) {
+    const v = raw['labels']
+    if (!Array.isArray(v) || v.length > 10 || !v.every((x) => typeof x === 'string' && x.length >= 1 && x.length <= 60)) {
+      fail('trigger.backlog.labels must be a list of up to 10 strings of 1 to 60 characters')
+    }
+    labels = [...new Set(v as string[])]
+  }
+  if (raw['maxPerFire'] === undefined) fail('trigger.backlog.maxPerFire must be an integer between 1 and 20')
+  const maxPerFire = int(raw['maxPerFire'], 'trigger.backlog.maxPerFire', 1, 20)!
+  return { ...(sourceIds?.length ? { sourceIds } : {}), ...(labels?.length ? { labels } : {}), maxPerFire }
 }
 
 function parseAlertMatch(raw: unknown): AlertMatch {
@@ -241,6 +296,10 @@ function parseAlertMatch(raw: unknown): AlertMatch {
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/** A Factory step's `projectId`/`repoUrl` may be exactly these, filled from the run's backlog item at render time. */
+export const ITEM_PROJECT_PLACEHOLDER = '{{item.factoryProjectId}}'
+export const ITEM_REPO_PLACEHOLDER = '{{item.repo}}'
 
 function parseAction(c: Record<string, unknown>, p: string): ActionConfig {
   switch (c['type']) {
@@ -291,8 +350,9 @@ function parseAction(c: Record<string, unknown>, p: string): ActionConfig {
     case 'factory': {
       const operation = (c['operation'] ?? 'orchestrate') as 'orchestrate' | 'prd' | 'task' | 'from-step'
       if (!['orchestrate', 'prd', 'task', 'from-step'].includes(operation)) fail(`${p}.operation must be orchestrate, prd, task or from-step`)
-      const id = (k: string) => {
+      const id = (k: string, allowItemPlaceholder?: string) => {
         const v = str(c[k], `${p}.${k}`, 64)!
+        if (allowItemPlaceholder && v === allowItemPlaceholder) return v
         if (!/^[A-Za-z0-9_-]+$/.test(v)) fail(`${p}.${k} is not a valid id`)
         return v
       }
@@ -312,8 +372,10 @@ function parseAction(c: Record<string, unknown>, p: string): ActionConfig {
       let repoUrl: string | undefined
       if (c['repoUrl'] !== undefined) {
         repoUrl = str(c['repoUrl'], `${p}.repoUrl`, 500)!
-        const check = validateRepoUrl(repoUrl)
-        if (!check.valid) fail(`${p}.repoUrl: ${check.error}`)
+        if (repoUrl !== ITEM_REPO_PLACEHOLDER) {
+          const check = validateRepoUrl(repoUrl)
+          if (!check.valid) fail(`${p}.repoUrl: ${check.error}`)
+        }
       }
 
       let maxRetries: number | undefined
@@ -334,7 +396,7 @@ function parseAction(c: Record<string, unknown>, p: string): ActionConfig {
         type: 'factory',
         operation,
         operationFrom,
-        projectId: id('projectId'),
+        projectId: id('projectId', ITEM_PROJECT_PLACEHOLDER),
         request: str(c['request'], `${p}.request`, 20_000)!,
         runtime: runtime as 'claude-code' | 'omnimancer' | undefined,
         provider: str(c['provider'], `${p}.provider`, 40, { optional: true }),
@@ -370,15 +432,15 @@ const IF_PATH_RE = /^[A-Za-z0-9_.-]{1,200}$/
 const IF_OPS = ['eq', 'ne', 'in', 'not_in', 'exists', 'missing'] as const
 
 /**
- * `if.path` must be rooted at `steps` or `trigger`; a `steps.<id>` path must
- * name a step that runs earlier in the job (`priorIds`, in order).
+ * `if.path` must be rooted at `steps`, `trigger` or `item`; a `steps.<id>`
+ * path must name a step that runs earlier in the job (`priorIds`, in order).
  */
 function parseIf(raw: unknown, p: string, stepNumber: number, priorIds: readonly string[]): IfCondition {
   if (!isObj(raw)) return fail(`${p}.if must be an object`)
   const path = str(raw['path'], `${p}.if.path`, 200)!
   if (!IF_PATH_RE.test(path)) fail(`${p}.if.path must match ^[A-Za-z0-9_.-]{1,200}$`)
   const [root, stepId] = path.split('.')
-  if (root !== 'steps' && root !== 'trigger') fail(`${p}.if.path must start with "steps." or "trigger."`)
+  if (root !== 'steps' && root !== 'trigger' && root !== 'item') fail(`${p}.if.path must start with "steps.", "trigger." or "item."`)
   if (root === 'steps' && (!stepId || !priorIds.includes(stepId))) {
     fail(`Step ${stepNumber} condition refers to step '${stepId ?? ''}', which does not run before it`)
   }
@@ -495,13 +557,18 @@ function parseAgent(c: Record<string, unknown>, p: string, priorSteps: readonly 
   if (c['repo'] !== undefined) {
     if (!isObj(c['repo'])) fail(`${p}.repo must be an object`)
     const r = c['repo'] as Record<string, unknown>
-    const branch = str(r['baseBranch'] ?? 'main', `${p}.repo.baseBranch`, 200)!
-    if (!/^[A-Za-z0-9._\/-]+$/.test(branch) || branch.includes('..')) fail(`${p}.repo.baseBranch is not a valid branch name`)
-    const url = str(r['url'], `${p}.repo.url`, 500)!
-    const check = validateRepoUrl(url)
-    if (!check.valid) fail(`${p}.repo.url: ${check.error}`)
     if (r['readOnly'] !== undefined && typeof r['readOnly'] !== 'boolean') fail(`${p}.repo.readOnly must be true or false`)
-    cfg.repo = { url, baseBranch: branch, ...(r['readOnly'] === true ? { readOnly: true } : {}) }
+    const readOnly = r['readOnly'] === true ? { readOnly: true as const } : {}
+    if (r['fromItem'] === true) {
+      cfg.repo = { fromItem: true, ...readOnly }
+    } else {
+      const branch = str(r['baseBranch'] ?? 'main', `${p}.repo.baseBranch`, 200)!
+      if (!/^[A-Za-z0-9._\/-]+$/.test(branch) || branch.includes('..')) fail(`${p}.repo.baseBranch is not a valid branch name`)
+      const url = str(r['url'], `${p}.repo.url`, 500)!
+      const check = validateRepoUrl(url)
+      if (!check.valid) fail(`${p}.repo.url: ${check.error}`)
+      cfg.repo = { url, baseBranch: branch, ...readOnly }
+    }
   }
   if (c['environmentId'] !== undefined) {
     const envId = str(c['environmentId'], `${p}.environmentId`, 36)!
@@ -558,6 +625,7 @@ export function parseSteps(raw: unknown): Step[] {
     ids.add(id)
     const when = (s['when'] ?? 'on_success') as When
     if (!['on_success', 'on_failure', 'always'].includes(when)) fail(`${p}.when must be one of: on_success, on_failure, always`)
+    if (s['stage'] !== undefined && !STAGES.includes(s['stage'] as Stage)) fail(`${p}.stage must be one of: ${STAGES.join(', ')}`)
     const base: StepBase = {
       id,
       name: str(s['name'] ?? id, `${p}.name`, 120)!,
@@ -565,6 +633,7 @@ export function parseSteps(raw: unknown): Step[] {
       timeoutSec: int(s['timeoutSec'], `${p}.timeoutSec`, 1, MAX_TIMEOUT_SEC),
       retries: int(s['retries'], `${p}.retries`, 0, MAX_RETRIES) ?? 0,
       if: s['if'] !== undefined ? parseIf(s['if'], p, i + 1, priorIds) : undefined,
+      stage: s['stage'] as Stage | undefined,
     }
     if (!isObj(s['config'])) return fail(`${p}.config must be an object`)
     const c = s['config'] as Record<string, unknown>

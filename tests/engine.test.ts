@@ -11,6 +11,7 @@ import type { StepExecutor } from '../server/src/engine/types'
 import type { FetchFn } from '../server/src/services/http'
 import type { SshExecutor } from '../server/src/services/ssh'
 import type { Run } from '../server/src/repos/runs'
+import { createSource, getItem, insertItem, setItemState, type StatusMapping } from '../server/src/repos/backlog'
 
 // ── Test doubles ─────────────────────────────────────────────────────────────
 
@@ -108,6 +109,22 @@ const until = async (cond: () => Promise<boolean> | boolean, ms = 5000) => {
   }
 }
 
+// ── Backlog helpers ──────────────────────────────────────────────────────────
+
+const MAPPING_NONE: StatusMapping = { out: {}, in: { ready: ['Ready'], dropped: ['Dropped'] } }
+let backlogSeq = 0
+async function backlogSource(extra: Partial<Parameters<typeof createSource>[2]> = {}) {
+  backlogSeq++
+  return t.ctx.db.org(u.orgId, (q) => createSource(q, u.orgId, { name: `src-${backlogSeq}`, kind: 'repo', config: {}, mapping: MAPPING_NONE, ...extra }))
+}
+async function backlogItem(sourceId: string, externalId: string, fields: Partial<Parameters<typeof insertItem>[4]> = {}) {
+  return t.ctx.db.org(u.orgId, (q) => insertItem(q, u.orgId, sourceId, externalId, { title: 'Item', ...fields }, 'ready'))
+}
+const getBacklogItem = (id: string) => t.ctx.db.org(u.orgId, (q) => getItem(q, u.orgId, id))
+async function backlogJob(steps: unknown[], backlog: { sourceIds?: string[]; labels?: string[]; maxPerFire: number }, cron = '*/5 * * * *') {
+  return makeJob(steps, { trigger: { kind: 'cron', expr: cron, tz: 'UTC', backlog } })
+}
+
 // ── Jobs ─────────────────────────────────────────────────────────────────────
 
 describe('jobs', () => {
@@ -121,7 +138,7 @@ describe('jobs', () => {
     expect(await bad({ name: 'x', steps: [{ id: 'a', ...http('a', '/ok') }, { id: 'a', ...http('b', '/ok') }] })).toMatch(/used by another step/)
     expect(await bad({ name: 'x', steps: [{ kind: 'action', config: { type: 'ssh', hostId: '00000000-0000-0000-0000-000000000000', command: 'ls' } }] })).toMatch(/does not match a host/)
     // `if`: path root, op, and a later/self step reference.
-    expect(await bad({ name: 'x', steps: [http('a', '/ok', { if: { path: 'bogus.x', op: 'eq', value: 'y' } })] })).toMatch(/must start with "steps\." or "trigger\."/)
+    expect(await bad({ name: 'x', steps: [http('a', '/ok', { if: { path: 'bogus.x', op: 'eq', value: 'y' } })] })).toMatch(/must start with "steps\.", "trigger\." or "item\."/)
     expect(await bad({ name: 'x', steps: [http('a', '/ok', { if: { path: 'trigger.kind', op: 'between', value: 'y' } })] })).toMatch(/if\.op must be one of/)
     expect(
       await bad({
@@ -167,6 +184,42 @@ describe('jobs', () => {
         ],
       }),
     ).toMatch(/A read-only step can't start from Factory's result/)
+    // Backlog trigger block: bounds on sourceIds, labels and maxPerFire.
+    expect(
+      await bad({ name: 'x', trigger: { kind: 'cron', expr: '* * * * *', backlog: { maxPerFire: 0 } }, steps: [http('a', '/ok')] }),
+    ).toMatch(/maxPerFire must be an integer between 1 and 20/)
+    expect(
+      await bad({ name: 'x', trigger: { kind: 'cron', expr: '* * * * *', backlog: { maxPerFire: 21 } }, steps: [http('a', '/ok')] }),
+    ).toMatch(/maxPerFire must be an integer between 1 and 20/)
+    expect(
+      await bad({
+        name: 'x',
+        trigger: { kind: 'cron', expr: '* * * * *', backlog: { maxPerFire: 1, sourceIds: Array.from({ length: 21 }, () => '00000000-0000-0000-0000-000000000000') } },
+        steps: [http('a', '/ok')],
+      }),
+    ).toMatch(/sourceIds must be a list of up to 20 source ids/)
+    expect(
+      await bad({ name: 'x', trigger: { kind: 'cron', expr: '* * * * *', backlog: { maxPerFire: 1, labels: Array.from({ length: 11 }, (_, i) => `l${i}`) } }, steps: [http('a', '/ok')] }),
+    ).toMatch(/labels must be a list of up to 10 strings/)
+    // `item.` is a valid `if` root.
+    expect((await u.post(`${base()}/jobs`, { name: 'x', steps: [http('a', '/ok', { if: { path: 'item.title', op: 'exists' } })] })).status).toBe(201)
+    // `stage` must be one of planning/building/finishing.
+    expect(await bad({ name: 'x', steps: [{ ...http('a', '/ok'), stage: 'nope' }] })).toMatch(/stage must be one of: planning, building, finishing/)
+    expect((await u.post(`${base()}/jobs`, { name: 'x', steps: [{ ...http('a', '/ok'), stage: 'building' }] })).status).toBe(201)
+    // `repo: { fromItem: true }` is accepted, including with `readOnly`.
+    expect((await u.post(`${base()}/jobs`, { name: 'x', steps: [{ kind: 'agent', config: { agent: 'claude', prompt: 'p', repo: { fromItem: true, readOnly: true } } }] })).status).toBe(201)
+    // Factory `projectId`/`repoUrl` accept the item placeholders exactly, but nothing else invalid.
+    expect(
+      (
+        await u.post(`${base()}/jobs`, {
+          name: 'x',
+          steps: [{ kind: 'action', config: { type: 'factory', operation: 'orchestrate', projectId: '{{item.factoryProjectId}}', repoUrl: '{{item.repo}}', request: 'go' } }],
+        })
+      ).status,
+    ).toBe(201)
+    expect(
+      await bad({ name: 'x', steps: [{ kind: 'action', config: { type: 'factory', operation: 'orchestrate', projectId: 'not a valid id!', request: 'go' } }] }),
+    ).toMatch(/projectId is not a valid id/)
   })
 
   it('computes the next cron fire time and lists jobs with their last run', async () => {
@@ -556,5 +609,250 @@ describe('hosts and ssh steps', () => {
     expect(check.body.check.ok).toBe(false)
     expect(check.body.check.error).toMatch(/private or loopback/)
     expect(sshCommands).toEqual([])
+  })
+})
+
+// ── Backlog: scheduler ───────────────────────────────────────────────────────
+
+describe('backlog scheduler', () => {
+  it('picks at most maxPerFire ready items, skipping blocked, leased and disabled-source items, one run per item', async () => {
+    const src = await backlogSource()
+    const disabledSrc = await backlogSource({ enabled: false })
+    const ready1 = await backlogItem(src.id, 'r1')
+    const ready2 = await backlogItem(src.id, 'r2')
+    const ready3 = await backlogItem(src.id, 'r3')
+    const blocked = await backlogItem(src.id, 'blocked1')
+    await t.ctx.db.org(u.orgId, (q) => setItemState(q, u.orgId, blocked.id, 'blocked', { event: 'x' }))
+    const onDisabled = await backlogItem(disabledSrc.id, 'd1')
+
+    const { job } = await backlogJob([http('a', '/ok')], { maxPerFire: 2 })
+    const due = new Date(job.nextRunAt!)
+    const claimed = await schedulerTick(t.ctx.db, new Date(due.getTime() + 1000))
+    expect(claimed).toBe(1) // one due job claimed this tick
+
+    const runsList = (await u.get(`${base()}/runs`)).body.runs
+    expect(runsList).toHaveLength(2) // maxPerFire caps it: one run per picked item
+    expect(runsList.every((r: { trigger: string }) => r.trigger === 'backlog')).toBe(true)
+
+    const after = await Promise.all([ready1, ready2, ready3].map((i) => getBacklogItem(i.id)))
+    const leased = after.filter((i) => i!.state === 'planning')
+    expect(leased).toHaveLength(2)
+    expect(new Set(leased.map((i) => i!.runId)).size).toBe(2) // a distinct run each
+
+    expect((await getBacklogItem(blocked.id))!.state).toBe('blocked')
+    expect((await getBacklogItem(onDisabled.id))!.state).toBe('ready')
+  })
+
+  it('two concurrent ticks never pick the same item', async () => {
+    const src = await backlogSource()
+    const items = await Promise.all(['c1', 'c2', 'c3', 'c4'].map((id) => backlogItem(src.id, id)))
+    const { job } = await backlogJob([http('a', '/ok')], { maxPerFire: 10 })
+    const due = new Date(job.nextRunAt!)
+    const after = new Date(due.getTime() + 1000)
+    const [n1, n2] = await Promise.all([schedulerTick(t.ctx.db, after), schedulerTick(t.ctx.db, after)])
+    expect(n1 + n2).toBe(1) // the job itself is claimed by exactly one tick
+
+    const states = await Promise.all(items.map((i) => getBacklogItem(i.id)))
+    expect(states.every((s) => s!.state === 'planning')).toBe(true)
+    expect(new Set(states.map((s) => s!.runId)).size).toBe(4) // each item leased to its own run
+  })
+
+  it('no ready items means no run, but next_run_at still advances', async () => {
+    await backlogSource() // enabled, but no items
+    const { job } = await backlogJob([http('a', '/ok')], { maxPerFire: 5 })
+    const due = new Date(job.nextRunAt!)
+    expect(await schedulerTick(t.ctx.db, new Date(due.getTime() + 1000))).toBe(1)
+    expect((await u.get(`${base()}/runs`)).body.runs).toEqual([])
+    const updated = (await u.get(`${base()}/jobs/${job.id}`)).body.job
+    expect(new Date(updated.nextRunAt).getTime()).toBeGreaterThan(due.getTime())
+  })
+})
+
+// ── Backlog: stage moves, run-end rules (§5) ─────────────────────────────────
+
+describe('backlog stage and run end', () => {
+  async function fireOneItem(steps: unknown[]) {
+    const src = await backlogSource()
+    const item = await backlogItem(src.id, 'i1')
+    const { job } = await backlogJob(steps, { maxPerFire: 1 })
+    const due = new Date(job.nextRunAt!)
+    await schedulerTick(t.ctx.db, new Date(due.getTime() + 1000))
+    const runRow = (await u.get(`${base()}/runs`)).body.runs[0] as { id: string; number: number }
+    return { item, run: runRow }
+  }
+
+  it("moves the item to a step's stage when that step starts running", async () => {
+    const { item, run } = await fireOneItem([{ name: 'build', kind: 'agent', config: { agent: 'claude', prompt: 'wait' }, stage: 'building' }])
+    expect((await getBacklogItem(item.id))!.state).toBe('planning') // leased, not yet running
+
+    await worker.tick()
+    await until(() => started === 1)
+    await until(async () => (await getBacklogItem(item.id))!.state === 'building')
+    const events = (await u.get(`${base()}/runs/${run.id}/events`)).body.events
+
+    release()
+    await worker.drain()
+    void events
+  })
+
+  it('a pull request on any step output means done, with built_by naming the Factory step that built it', async () => {
+    const prExec: StepExecutor = {
+      async execute() {
+        return { status: 'succeeded', output: { factory: { kind: 'orchestration' } } }
+      },
+    }
+    const finishExec: StepExecutor = {
+      async execute() {
+        return { status: 'succeeded', output: { pullRequest: { url: 'https://github.com/a/b/pull/9' } } }
+      },
+    }
+    let call = 0
+    const combined: StepExecutor = { execute: (ctx) => (call++ === 0 ? prExec.execute(ctx) : finishExec.execute(ctx)) }
+    const t2 = await makeTestApp({ engine: { executors: { agent: combined } } })
+    try {
+      const u2 = await t2.signup('pr@example.com')
+      const src = await t2.ctx.db.org(u2.orgId, (q) => createSource(q, u2.orgId, { name: 's', kind: 'repo', config: {}, mapping: MAPPING_NONE }))
+      const built = await t2.ctx.db.org(u2.orgId, (q) => insertItem(q, u2.orgId, src.id, 'x', { title: 'T' }, 'ready'))
+      const jobRes = await u2.post(`/api/orgs/${u2.orgSlug}/jobs`, {
+        name: 'J',
+        trigger: { kind: 'cron', expr: '*/5 * * * *', tz: 'UTC', backlog: { maxPerFire: 1 } },
+        steps: [
+          { name: 'build', kind: 'agent', config: { agent: 'claude', prompt: 'p' } },
+          { name: 'finish', kind: 'agent', config: { agent: 'claude', prompt: 'p' } },
+        ],
+      })
+      await schedulerTick(t2.ctx.db, new Date(new Date(jobRes.body.job.nextRunAt).getTime() + 1000))
+      await new Worker(t2.ctx, t2.ctx.engine, { heartbeatMs: 20, concurrency: 4 }).drain()
+      const final = await t2.ctx.db.org(u2.orgId, (q) => getItem(q, u2.orgId, built.id))
+      expect(final).toMatchObject({ state: 'done', pullRequestUrl: 'https://github.com/a/b/pull/9', builtBy: 'factory-orchestration' })
+    } finally {
+      await t2.close()
+    }
+  })
+
+  it('success without a pull request blocks the item, naming the run', async () => {
+    const { item, run } = await fireOneItem([http('a', '/ok')])
+    await worker.drain()
+    const final = await getBacklogItem(item.id)
+    expect(final).toMatchObject({ state: 'blocked', stateNote: `Run #${run.number} finished without opening a pull request`, runId: null, lastRunId: run.id })
+  })
+
+  it('failure blocks the item with the run error', async () => {
+    const { item } = await fireOneItem([http('a', '/fail')])
+    await worker.drain()
+    const final = await getBacklogItem(item.id)
+    expect(final!.state).toBe('blocked')
+    expect(final!.stateNote).toMatch(/Step "a" failed/)
+  })
+
+  it('canceling the run blocks the item, naming the run', async () => {
+    const { item, run } = await fireOneItem([blocking()])
+    await worker.tick()
+    await until(() => started === 1)
+    await u.post(`${base()}/runs/${run.number}/cancel`)
+    await worker.drain()
+    const final = await getBacklogItem(item.id)
+    expect(final).toMatchObject({ state: 'blocked', stateNote: `Canceled in run #${run.number}` })
+  })
+
+  it('drop_after_run overrides the outcome: the item is dropped, not blocked or done, and the flag clears', async () => {
+    const { item } = await fireOneItem([http('a', '/ok')])
+    await t.ctx.db.org(u.orgId, (q) => q.query('UPDATE backlog_items SET drop_after_run = true WHERE id = $1', [item.id]))
+    await worker.drain()
+    const final = await getBacklogItem(item.id)
+    expect(final).toMatchObject({ state: 'dropped', stateNote: 'Dropped at the source while a run had it', dropAfterRun: false, runId: null })
+  })
+})
+
+// ── Backlog: item templates, fromItem repos ──────────────────────────────────
+
+describe('backlog templates and fromItem repos', () => {
+  it("renders item.* into step text, same as alert labels (an approval step's message)", async () => {
+    const src = await backlogSource()
+    const item = await backlogItem(src.id, 'tmpl1', { title: "Fix it; rm -rf / # not really" })
+    const { job } = await backlogJob([{ name: 'ok?', kind: 'approval', config: { message: 'Ship "{{item.title}}"?' } }], { maxPerFire: 1 })
+    await schedulerTick(t.ctx.db, new Date(new Date(job.nextRunAt!).getTime() + 1000))
+    await worker.drain()
+    const runNumber = (await u.get(`${base()}/runs`)).body.runs[0].number
+    const detail = await getRunDetail(runNumber)
+    expect(detail.approvals[0].message).toBe(`Ship "${item.title}"?`)
+    expect(detail.run.trigger).toMatchObject({ kind: 'backlog', itemId: item.id, sourceId: src.id })
+  })
+
+  it("fails an agent step with repo.fromItem when the run was not started from a backlog item", async () => {
+    const { job } = await makeJob([{ kind: 'agent', config: { agent: 'claude', prompt: 'p', repo: { fromItem: true } } }])
+    const run = await startRun(job.id)
+    await worker.drain()
+    const d = await getRunDetail(run.number)
+    expect(d.steps[0].error).toBe("This step uses the item's repository, but the run was not started from a backlog item")
+  })
+
+  it('fails an agent step with repo.fromItem when neither the item nor its source has a repository', async () => {
+    const src = await backlogSource() // no defaultRepoUrl
+    const item = await backlogItem(src.id, 'norepo1', { title: 'No repo here' }) // no repoUrl
+    const { job } = await backlogJob([{ kind: 'agent', config: { agent: 'claude', prompt: 'p', repo: { fromItem: true } } }], { maxPerFire: 1 })
+    await schedulerTick(t.ctx.db, new Date(new Date(job.nextRunAt!).getTime() + 1000))
+    await worker.drain()
+    const runNumber = (await u.get(`${base()}/runs`)).body.runs[0].number
+    const d = await getRunDetail(runNumber)
+    expect(d.steps[0].error).toBe(`Item '${item.title}' has no repository; set one on the item or its source`)
+  })
+
+  it("resolves repo.fromItem to the item's own repository when set", async () => {
+    const src = await backlogSource({ defaultBaseBranch: 'develop' })
+    const item = await backlogItem(src.id, 'hasrepo1', { repoUrl: 'https://github.com/a/b' })
+    const { job } = await backlogJob([{ kind: 'agent', config: { agent: 'claude', prompt: 'p', repo: { fromItem: true } } }], { maxPerFire: 1 })
+    await schedulerTick(t.ctx.db, new Date(new Date(job.nextRunAt!).getTime() + 1000))
+    await worker.tick()
+    await until(() => started === 1)
+    release()
+    await worker.drain()
+    const runNumber = (await u.get(`${base()}/runs`)).body.runs[0].number
+    const d = await getRunDetail(runNumber)
+    expect(d.steps[0].status).toBe('succeeded')
+    void item
+  })
+
+  // Hardening (wave A security review, item 1): an item's repo/baseBranch come straight from
+  // the tracker (untrusted). sync.ts already drops anything unsafe to null, but prepareStep
+  // re-checks it too — in case of an older row, or `repo.fromItem` resolving a value some other
+  // way than the normal sync path.
+  it("fails an agent step with repo.fromItem when the item's own repository is not a safe git host", async () => {
+    const src = await backlogSource()
+    const item = await backlogItem(src.id, 'badrepo1', { title: 'Bad repo', repoUrl: 'ftp://evil.example.com/a/b' })
+    const { job } = await backlogJob([{ kind: 'agent', config: { agent: 'claude', prompt: 'p', repo: { fromItem: true } } }], { maxPerFire: 1 })
+    await schedulerTick(t.ctx.db, new Date(new Date(job.nextRunAt!).getTime() + 1000))
+    await worker.drain()
+    const runNumber = (await u.get(`${base()}/runs`)).body.runs[0].number
+    const d = await getRunDetail(runNumber)
+    expect(d.steps[0].error).toBe(`Item '${item.title}' has an invalid repository`)
+  })
+
+  it("fails a Factory step whose repoUrl renders from the item's repository when that repository is unsafe", async () => {
+    const src = await backlogSource({ factoryProjectId: 'proj1' })
+    const item = await backlogItem(src.id, 'badrepo2', { title: 'Bad repo for factory', repoUrl: 'ftp://evil.example.com/a/b' })
+    const { job } = await backlogJob(
+      [{ kind: 'action', config: { type: 'factory', operation: 'orchestrate', projectId: '{{item.factoryProjectId}}', repoUrl: '{{item.repo}}', request: 'go' } }],
+      { maxPerFire: 1 },
+    )
+    await schedulerTick(t.ctx.db, new Date(new Date(job.nextRunAt!).getTime() + 1000))
+    await worker.drain()
+    const runNumber = (await u.get(`${base()}/runs`)).body.runs[0].number
+    const d = await getRunDetail(runNumber)
+    expect(d.steps[0].error).toBe(`Item '${item.title}' has an invalid repository`)
+  })
+
+  it("fails a Factory step whose projectId renders empty from the item's source", async () => {
+    const src = await backlogSource() // no factoryProjectId
+    await backlogItem(src.id, 'fac1')
+    const { job } = await backlogJob(
+      [{ kind: 'action', config: { type: 'factory', operation: 'orchestrate', projectId: '{{item.factoryProjectId}}', request: 'go' } }],
+      { maxPerFire: 1 },
+    )
+    await schedulerTick(t.ctx.db, new Date(new Date(job.nextRunAt!).getTime() + 1000))
+    await worker.drain()
+    const runNumber = (await u.get(`${base()}/runs`)).body.runs[0].number
+    const d = await getRunDetail(runNumber)
+    expect(d.steps[0].error).toBe("The item's source has no Factory project")
   })
 })

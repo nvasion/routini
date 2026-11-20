@@ -43,7 +43,7 @@ export interface Background {
 /** Starts the scheduler, the queue worker, and token housekeeping. */
 export async function startBackground(ctx: AppContext): Promise<Background> {
   const worker = new Worker(ctx, ctx.engine, { concurrency: Number(process.env['ROUTINI_WORKER_CONCURRENCY'] ?? 4) })
-  const scheduler = new Scheduler(ctx.db)
+  const scheduler = new Scheduler(ctx)
   await worker.start()
   scheduler.start()
   const prune = setInterval(() => {

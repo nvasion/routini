@@ -7,7 +7,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import type { Role } from '../repos/identity.js'
-import type { Step } from './spec.js'
+import { concreteRepo, type Step } from './spec.js'
 import type { Queryable } from '../db/index.js'
 import { getHost } from '../repos/hosts.js'
 import { getEnvironment } from '../repos/environments.js'
@@ -165,7 +165,7 @@ export async function stepFacts(q: Queryable, orgId: string, step: Step): Promis
   }
   const cfg = step.config
   const env = cfg.environmentId ? await getEnvironment(q, orgId, cfg.environmentId) : null
-  const repoUrl = cfg.repo?.url ?? env?.repo?.url
+  const repoUrl = concreteRepo(cfg.repo)?.url ?? env?.repo?.url
   let repoHost: string | undefined
   try {
     repoHost = repoUrl ? new URL(repoUrl).hostname : undefined
