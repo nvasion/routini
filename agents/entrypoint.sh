@@ -6,10 +6,12 @@
 #      ROUTINI_OUTPUT = pr | branch | none, ROUTINI_COMMIT_MESSAGE,
 #      ROUTINI_OUT_FILE (config.returns: path the agent must write one JSON object to),
 #      ROUTINI_REPO_READONLY = 1 (shallow clone, never commit or push),
+#      ROUTINI_PULL_URL + ROUTINI_PULL_TOKEN + ROUTINI_PULL_LABEL (config.startFrom: pull an
+#      earlier Factory step's result into the clone, before the agent runs),
 #      GITHUB_TOKEN (used for clone/push on github.com when present).
 # Out: the agent's stdout (Claude Code stream-json, or a launcher's — see
 #      /usr/local/bin/routini-agent below) plus control lines
-#      "::routini::{json}" for check / commit / pushed / no_changes / out / error.
+#      "::routini::{json}" for check / commit / pushed / no_changes / pulled / out / error.
 # Exit: 0 success · 3 check failed · other = failure.
 set -uo pipefail
 
@@ -17,6 +19,33 @@ ctl() { printf '::routini::%s\n' "$1"; }
 fail() {
   ctl "$(jq -cn --arg m "$1" '{type: "error", message: $m}')"
   exit "${2:-1}"
+}
+
+# config.startFrom (ROUTINI_PULL_URL/TOKEN/LABEL): pull an earlier Factory step's result into the
+# clone (already on $WORK_BRANCH from origin/$BASE_BRANCH). Tries a full bundle first — a clean
+# fast-forward of the branch Factory worked on; falls back to a patch when the bundle is missing
+# or unreadable (e.g. Factory's branch has diverged in a way a bundle export can't represent).
+pull_factory() {
+  local bundle="/tmp/routini-factory.bundle" patch="/tmp/routini-factory.patch" http format headref commits files
+  http=$(curl -sS -o "$bundle" -w '%{http_code}' -H "x-routini-pull-token: ${ROUTINI_PULL_TOKEN:-}" "${ROUTINI_PULL_URL}?format=bundle")
+  if [ "$http" = "200" ] && git bundle verify "$bundle" >/dev/null 2>&1; then
+    headref=$(git bundle list-heads "$bundle" | head -n1 | awk '{print $2}')
+    [ -n "$headref" ] || fail "Factory's result does not apply to ${BASE_BRANCH:-main}"
+    git fetch --quiet "$bundle" "${headref}:refs/heads/routini-factory" 2>&1 | sed 's/^/[git] /'
+    [ "${PIPESTATUS[0]}" -eq 0 ] || fail "Factory's result does not apply to ${BASE_BRANCH:-main}"
+    git checkout --quiet -B "${WORK_BRANCH:-routini/work}" routini-factory || fail "Factory's result does not apply to ${BASE_BRANCH:-main}"
+    format=bundle
+  else
+    rm -f "$bundle"
+    http=$(curl -sS -o "$patch" -w '%{http_code}' -H "x-routini-pull-token: ${ROUTINI_PULL_TOKEN:-}" "${ROUTINI_PULL_URL}?format=patch")
+    [ "$http" = "200" ] || fail "Factory's result does not apply to ${BASE_BRANCH:-main}"
+    git apply --3way --index "$patch" || fail "Factory's result does not apply to ${BASE_BRANCH:-main}"
+    git commit --quiet -m "Factory result (${ROUTINI_PULL_LABEL:-Factory})" || fail "Factory's result does not apply to ${BASE_BRANCH:-main}"
+    format=patch
+  fi
+  commits=$(git rev-list --count "origin/${BASE_BRANCH:-main}..HEAD" 2>/dev/null || echo 0)
+  files=$(git diff --name-only "origin/${BASE_BRANCH:-main}..HEAD" | wc -l | tr -d ' ')
+  ctl "{\"type\":\"pulled\",\"format\":\"${format}\",\"commits\":${commits},\"files\":${files}}"
 }
 
 [ -n "${ROUTINI_PROMPT:-}" ] || fail "ROUTINI_PROMPT is empty"
@@ -66,14 +95,21 @@ if [ -n "${ROUTINI_REPO_DIR:-}" ]; then
   git worktree add --quiet -B "${WORK_BRANCH:-routini/work}" "$wt" "origin/${BASE_BRANCH:-main}" || fail "cannot create worktree $wt"
   cd "$wt" || fail "cannot enter $wt"
 elif [ -n "${REPO_URL:-}" ]; then
-  # Read-only steps never commit or push, so a single commit's worth of history is enough.
-  depth=50
-  [ "${ROUTINI_REPO_READONLY:-}" = "1" ] && depth=1
-  git clone --quiet --depth "$depth" --branch "${BASE_BRANCH:-main}" "$REPO_URL" repo 2>&1 | sed 's/^/[git] /' \
-    || fail "git clone of ${BASE_BRANCH:-main} failed"
+  if [ -n "${ROUTINI_PULL_URL:-}" ]; then
+    # A pull needs full history to graft Factory's bundle (or apply its patch) onto.
+    git clone --quiet --branch "${BASE_BRANCH:-main}" "$REPO_URL" repo 2>&1 | sed 's/^/[git] /' \
+      || fail "git clone of ${BASE_BRANCH:-main} failed"
+  else
+    # Read-only steps never commit or push, so a single commit's worth of history is enough.
+    depth=50
+    [ "${ROUTINI_REPO_READONLY:-}" = "1" ] && depth=1
+    git clone --quiet --depth "$depth" --branch "${BASE_BRANCH:-main}" "$REPO_URL" repo 2>&1 | sed 's/^/[git] /' \
+      || fail "git clone of ${BASE_BRANCH:-main} failed"
+  fi
   [ -d repo/.git ] || fail "git clone of ${BASE_BRANCH:-main} failed"
   cd repo || fail "cannot enter repository"
   git checkout --quiet -b "${WORK_BRANCH:-routini/work}" || fail "cannot create branch ${WORK_BRANCH:-routini/work}"
+  [ -n "${ROUTINI_PULL_URL:-}" ] && pull_factory
 fi
 
 if [ -x /usr/local/bin/routini-agent ]; then

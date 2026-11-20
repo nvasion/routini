@@ -27,6 +27,8 @@ export interface AgentFacts {
   commit?: { sha: string; files: number }
   pushed?: { branch: string }
   noChanges?: boolean
+  /** config.startFrom: set from the entrypoint's "pulled" control line when it pulled Factory's result. */
+  pulled?: { format: 'bundle' | 'patch'; commits: number; files: number }
   /** Parsed `$ROUTINI_OUT_FILE` object, from the entrypoint's "out" control line (agent returns). */
   out?: Record<string, unknown>
   /** Set when "out" arrived in pieces that could not be put back together. */
@@ -100,6 +102,13 @@ export class AgentStreamParser {
       case 'no_changes':
         this.facts.noChanges = true
         return [{ type: 'log', data: { message: 'The agent made no changes to the repository' } }]
+      case 'pulled': {
+        const format = c['format'] === 'patch' ? 'patch' : 'bundle'
+        const commits = Number(c['commits'] ?? 0)
+        const files = Number(c['files'] ?? 0)
+        this.facts.pulled = { format, commits, files }
+        return [{ type: 'log', data: { message: `Pulled Factory's result (${format}, ${commits} commits, ${files} files)` } }]
+      }
       case 'out_part': {
         // Base64 pieces of the out object (fleet output lines are cut at 4000 chars); joined on "out".
         const seq = Number(c['seq'])

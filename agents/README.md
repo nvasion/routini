@@ -65,6 +65,7 @@ Omnimancer's stream-json variant directly.
 | `ROUTINI_COMMIT_MESSAGE` | Commit message for the agent's changes. |
 | `ROUTINI_OUT_FILE` | Set when the step has `config.returns`: the path the agent must write one JSON object to before it finishes (fields and types are spelled out in `ROUTINI_SYSTEM_PROMPT`). The entrypoint checks it (exists, ≤ 64 KB, a JSON object) and prints it as base64 pieces, `{"type":"out_part","seq":0,"data":"<3000 chars>"}` ... then `{"type":"out","parts":N}`, because fleet output lines are cut at 4000 chars right after the agent exits and before `CHECK_COMMAND`, and fails the step if it's missing or malformed. |
 | `ROUTINI_REPO_READONLY` | `1` when `config.repo.readOnly` is set: the entrypoint clones with `--depth 1` and never commits or pushes, whatever `ROUTINI_OUTPUT` says (the worker already forces it to `none`). |
+| `ROUTINI_PULL_URL`, `ROUTINI_PULL_TOKEN`, `ROUTINI_PULL_LABEL` | Set when `config.startFrom` names an earlier Factory action step that produced a result: `ROUTINI_PULL_URL` is `<server>/api/agent/factory-export` (no session auth — a short-lived, run-scoped token in `ROUTINI_PULL_TOKEN`, sent as `x-routini-pull-token`); `ROUTINI_PULL_LABEL` is `<kind> <id>` (e.g. `task tk_123`), for the commit message and `ROUTINI_SYSTEM_PROMPT`. The entrypoint clones with full history and, before running the agent, downloads `?format=bundle` and grafts it onto `$WORK_BRANCH`, falling back to `?format=patch` (`git apply --3way --index`, then commits) when the bundle is missing or unreadable; either way it fails the step with *Factory's result does not apply to $BASE_BRANCH* if neither works. |
 | `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` | Model endpoint, from the org's AI settings. |
 | `CLAUDE_CODE_USE_BEDROCK` / `AWS_REGION` / `AWS_BEARER_TOKEN_BEDROCK` | Model endpoint when the org routes Claude Code through AWS Bedrock (Bedrock API key). |
 | `ROUTINI_ENDPOINT` / `ROUTINI_ENDPOINT_KEY` | Other agents (Omnimancer) instead of the vars above: the endpoint name from the AI settings (`anthropic`, `openrouter`, `aws-bedrock`, `gateway`, …) and its key. The image maps these onto the agent's own config. |
@@ -80,9 +81,15 @@ The agent's own output (Claude Code `--output-format stream-json`), plus control
 ::routini::{"type":"commit","sha":"…","files":3}
 ::routini::{"type":"pushed","branch":"routini/run-12"}
 ::routini::{"type":"no_changes"}
+::routini::{"type":"pulled","format":"bundle","commits":2,"files":4}
 ::routini::{"type":"out","data":{"summary":"...","approved":true}}
 ::routini::{"type":"error","message":"git push failed"}
 ```
+
+`pulled` is printed once, right after cloning, when `ROUTINI_PULL_URL` is set (`config.startFrom`):
+`format` is `bundle` or `patch` (whichever worked), and `commits`/`files` count the difference
+between the pulled branch and `origin/$BASE_BRANCH`. The worker logs it and puts it on the step's
+output as `pulled`.
 
 `out` carries the JSON object read back from `ROUTINI_OUT_FILE` (config.returns).
 The worker validates it against the field types (dropping unknown keys) and
