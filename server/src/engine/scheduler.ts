@@ -11,6 +11,7 @@
 import type { Db } from '../db/index.js'
 import { computeNextRunAt, getJob } from '../repos/jobs.js'
 import { createRun } from '../repos/runs.js'
+import { leaseItem, pickReadyItems } from '../repos/backlog.js'
 
 export async function schedulerTick(db: Db, now: Date = new Date()): Promise<number> {
   return db.system(async (q) => {
@@ -25,7 +26,17 @@ export async function schedulerTick(db: Db, now: Date = new Date()): Promise<num
     for (const d of due) {
       const job = await getJob(q, d.org_id, d.id)
       if (!job) continue
-      await createRun(q, job, { kind: 'cron', scheduledFor: job.nextRunAt! })
+      const backlog = job.trigger.kind === 'cron' ? job.trigger.backlog : undefined
+      if (backlog) {
+        // One run per ready item, up to maxPerFire; no ready items means no run this fire.
+        const items = await pickReadyItems(q, d.org_id, { sourceIds: backlog.sourceIds, labels: backlog.labels }, backlog.maxPerFire)
+        for (const item of items) {
+          const run = await createRun(q, job, { kind: 'backlog', itemId: item.id, sourceId: item.sourceId, scheduledFor: job.nextRunAt! })
+          await leaseItem(q, d.org_id, item.id, run.id)
+        }
+      } else {
+        await createRun(q, job, { kind: 'cron', scheduledFor: job.nextRunAt! })
+      }
       await q.query('UPDATE jobs SET next_run_at = $2 WHERE id = $1', [job.id, computeNextRunAt(job, now)])
     }
     return due.length
