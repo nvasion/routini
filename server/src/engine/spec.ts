@@ -103,6 +103,12 @@ export interface AgentConfig {
   /** Run inside this persistent environment (and its repository) instead of a fresh container. */
   environmentId?: string
   /**
+   * Pull an earlier Factory action step's result into this agent's clone before
+   * it starts. The step must be an earlier `action` step of type `factory`; needs
+   * `repo` (not `environmentId`), and `repo` must not be `readOnly`.
+   */
+  startFrom?: { step: string }
+  /**
    * Run on this fleet host (routini-runner with the agents capability)
    * instead of the Routini sandbox; `pool` picks the least busy host that
    * matches, resolved at run time (see engine/pool.ts).
@@ -428,7 +434,24 @@ function parseRunOn(raw: unknown, p: string): NonNullable<AgentConfig['runOn']> 
   return parsePool(raw['pool'], p, bad)
 }
 
-function parseAgent(c: Record<string, unknown>, p: string): AgentConfig {
+/**
+ * `startFrom.step` must name an earlier `action` step of type `factory`
+ * (`priorSteps`, in order); the agent config needs `repo` for it, and not
+ * `environmentId` or a read-only `repo`.
+ */
+function parseStartFrom(raw: unknown, p: string, cfg: AgentConfig, priorSteps: readonly Step[]): AgentConfig['startFrom'] {
+  if (!isObj(raw)) return fail(`${p}.startFrom must be an object`)
+  const stepId = str((raw as Record<string, unknown>)['step'], `${p}.startFrom.step`, 40)!
+  const source = priorSteps.find((s) => s.id === stepId)
+  if (!source) return fail(`${p}.startFrom.step "${stepId}" does not name a step that runs before it`)
+  if (source.kind !== 'action' || source.config.type !== 'factory') return fail(`${p}.startFrom.step "${stepId}" must be an earlier Factory action step`)
+  if (cfg.environmentId) return fail(`${p}.startFrom needs ${p}.repo, not ${p}.environmentId`)
+  if (!cfg.repo) return fail(`${p}.startFrom needs ${p}.repo.url`)
+  if (cfg.repo.readOnly) return fail(`A read-only step can't start from Factory's result`)
+  return { step: stepId }
+}
+
+function parseAgent(c: Record<string, unknown>, p: string, priorSteps: readonly Step[]): AgentConfig {
   if (!AGENT_IDS.includes(c['agent'] as AgentId)) fail(`${p}.agent must be one of: ${AGENT_IDS.join(', ')}`)
   const cfg: AgentConfig = { agent: c['agent'] as AgentId, prompt: str(c['prompt'], `${p}.prompt`, 50_000)! }
   if (c['repo'] !== undefined) {
@@ -476,6 +499,7 @@ function parseAgent(c: Record<string, unknown>, p: string): AgentConfig {
     const r = c['resources'] as Record<string, unknown>
     cfg.resources = { cpus: int(r['cpus'], `${p}.resources.cpus`, 1, 8), memoryMb: int(r['memoryMb'], `${p}.resources.memoryMb`, 512, 16_384) }
   }
+  if (c['startFrom'] !== undefined) cfg.startFrom = parseStartFrom(c['startFrom'], p, cfg, priorSteps)
   return cfg
 }
 
@@ -485,6 +509,8 @@ export function parseSteps(raw: unknown): Step[] {
   const ids = new Set<string>()
   // Ids of steps already parsed, in order: an `if` may only reference one of these.
   const priorIds: string[] = []
+  // Steps already parsed, in order: an agent's `startFrom` may only reference one of these.
+  const priorSteps: Step[] = []
   const steps = raw.map((s, i): Step => {
     const p = `steps[${i}]`
     if (!isObj(s)) return fail(`${p} must be an object`)
@@ -510,7 +536,7 @@ export function parseSteps(raw: unknown): Step[] {
         step = { ...base, kind: 'action', config: parseAction(c, `${p}.config`) }
         break
       case 'agent':
-        step = { ...base, kind: 'agent', config: parseAgent(c, `${p}.config`) }
+        step = { ...base, kind: 'agent', config: parseAgent(c, `${p}.config`, priorSteps) }
         break
       case 'approval': {
         const minRole = (c['minRole'] ?? 'member') as ApprovalConfig['minRole']
@@ -523,6 +549,7 @@ export function parseSteps(raw: unknown): Step[] {
         return fail(`${p}.kind must be one of: action, agent, approval`)
     }
     priorIds.push(id)
+    priorSteps.push(step)
     return step
   })
   return steps

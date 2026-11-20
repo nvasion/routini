@@ -5,7 +5,9 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { chmodSync, mkdtempSync, rmSync } from 'node:fs'
+import { chmodSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { createServer, type Server } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { makeTestApp, type TestApp, type TestUser } from './helpers/testApp'
@@ -102,6 +104,104 @@ describe.skipIf(!enabled)('agent container (real Docker)', () => {
     } finally {
       execFileSync('docker', ['run', '--rm', '-v', `${dir}:/d`, 'alpine:3.20', 'sh', '-c', 'rm -rf /d/*'], { stdio: 'pipe' })
       rmSync(dir, { recursive: true, force: true })
+    }
+  }, 120_000)
+
+  // config.startFrom: a tiny HTTP server on the host plays the role of
+  // /api/agent/factory-export, serving a real git bundle or patch. The
+  // container reaches it at routini:<port> via --add-host (host-gateway),
+  // the same trick tests/runner-docker.e2e.test.ts uses for its test server.
+  function seedBareRepo(dir: string) {
+    const sh = (cmd: string) => execFileSync('bash', ['-c', cmd], { cwd: dir, stdio: 'pipe' }).toString()
+    sh(`git init -q --bare -b main app.git && git clone -q app.git seed && cd seed && git config user.email t@t && git config user.name t \
+        && echo hi > README.md && git add . && git commit -qm init && git push -q origin main`)
+    chmodSync(dir, 0o777)
+    sh('chmod -R a+rwX app.git')
+    return sh
+  }
+  async function servePullResponses(handler: (format: string | null) => { status: number; body: string | Buffer }): Promise<{ server: Server; port: number }> {
+    const server = await new Promise<Server>((resolve) => {
+      const s = createServer((req, res) => {
+        const format = new URL(req.url ?? '/', 'http://routini').searchParams.get('format')
+        const { status, body } = handler(format)
+        res.writeHead(status)
+        res.end(body)
+      })
+      s.listen(0, () => resolve(s))
+    })
+    return { server, port: (server.address() as AddressInfo).port }
+  }
+  function cleanupPullDir(dir: string) {
+    execFileSync('docker', ['run', '--rm', '-v', `${dir}:/d`, 'alpine:3.20', 'sh', '-c', 'rm -rf /d/*'], { stdio: 'pipe' })
+    rmSync(dir, { recursive: true, force: true })
+  }
+  const runPull = (dir: string, port: number, branch: string, label: string) =>
+    execFileSync('docker', [
+      'run', '--rm', '-v', `${dir}:/remote`, '--add-host', 'routini:host-gateway',
+      '-e', 'ROUTINI_PROMPT=just look',
+      '-e', 'REPO_URL=file:///remote/app.git', '-e', 'BASE_BRANCH=main', '-e', `WORK_BRANCH=${branch}`,
+      '-e', `ROUTINI_PULL_URL=http://routini:${port}/pull`, '-e', 'ROUTINI_PULL_TOKEN=test-pull-token', '-e', `ROUTINI_PULL_LABEL=${label}`,
+      '-e', 'ROUTINI_OUTPUT=pr',
+      IMAGE,
+    ], { stdio: 'pipe' })
+
+  it('pulls a Factory bundle onto $WORK_BRANCH and reports commits/files pulled', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'routini-pull-'))
+    let server: Server | undefined
+    try {
+      const sh = seedBareRepo(dir)
+      sh(`git clone -q app.git factory && cd factory && git config user.email f@f && git config user.name factory \
+          && git checkout -q -b factory-work && echo "line from factory" >> README.md && git add -A && git commit -qm "factory work" \
+          && git bundle create ../factory.bundle factory-work`)
+      const bundle = readFileSync(join(dir, 'factory.bundle'))
+      ;({ server } = await servePullResponses((format) => (format === 'bundle' ? { status: 200, body: bundle } : { status: 404, body: 'no patch in this test' })))
+
+      const out = runPull(dir, (server.address() as AddressInfo).port, 'routini/pull-1', 'task tk_1').toString()
+      expect(out).toContain('::routini::{"type":"pulled","format":"bundle","commits":1,"files":1}')
+      expect(sh('git --git-dir=app.git show routini/pull-1:README.md')).toBe('hi\nline from factory\n')
+    } finally {
+      server?.close()
+      cleanupPullDir(dir)
+    }
+  }, 120_000)
+
+  it('falls back to a Factory patch when no bundle is available, and commits it with the pull label', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'routini-pull-'))
+    let server: Server | undefined
+    try {
+      const sh = seedBareRepo(dir)
+      sh('git clone -q app.git patchwork && cd patchwork && echo "line from a patch" >> README.md && git diff > ../factory.patch')
+      const patch = readFileSync(join(dir, 'factory.patch'), 'utf8')
+      expect(patch).toContain('README.md')
+      ;({ server } = await servePullResponses((format) => (format === 'patch' ? { status: 200, body: patch } : { status: 404, body: 'no bundle in this test' })))
+
+      const out = runPull(dir, (server.address() as AddressInfo).port, 'routini/pull-2', 'task tk_2').toString()
+      expect(out).toContain('::routini::{"type":"pulled","format":"patch","commits":1,"files":1}')
+      expect(sh('git --git-dir=app.git show routini/pull-2:README.md')).toBe('hi\nline from a patch\n')
+      expect(sh('git --git-dir=app.git log -1 --format=%s routini/pull-2')).toBe('Factory result (task tk_2)\n')
+    } finally {
+      server?.close()
+      cleanupPullDir(dir)
+    }
+  }, 120_000)
+
+  it("fails cleanly when neither Factory's bundle nor its patch apply", async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'routini-pull-'))
+    let server: Server | undefined
+    try {
+      seedBareRepo(dir)
+      ;({ server } = await servePullResponses(() => ({ status: 404, body: 'neither format exists in this test' })))
+
+      let output = ''
+      try {
+        runPull(dir, (server.address() as AddressInfo).port, 'routini/pull-3', 'task tk_3')
+      } catch (err) {
+        output = String((err as { stdout?: Buffer }).stdout ?? '') + String((err as { stderr?: Buffer }).stderr ?? '')
+      }
+      expect(output).toContain("Factory's result does not apply to main")
+    } finally {
+      server?.close()
+      cleanupPullDir(dir)
     }
   }, 120_000)
 
