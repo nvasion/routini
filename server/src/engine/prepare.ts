@@ -13,7 +13,7 @@ import type { Run, RunStep } from '../repos/runs.js'
 import { alertContext } from './alerts.js'
 import { pickPoolHost, PoolError } from './pool.js'
 import type { Step } from './spec.js'
-import { renderStep, type TemplateData } from './template.js'
+import { lookup, renderStep, type TemplateData } from './template.js'
 
 /** The template data for a run: earlier steps' outputs, the trigger, and (alerts) the alert/incident/host. */
 export async function buildTemplateData(app: AppContext, run: Run, steps: RunStep[]): Promise<TemplateData> {
@@ -63,6 +63,16 @@ export async function prepareStep(app: AppContext, run: Run, spec: Step, steps: 
       if (err instanceof PoolError) return { error: err.message }
       throw err
     }
+  }
+
+  // Factory "from-step": resolve what an earlier step chose into a concrete
+  // Factory operation. operationFrom stays on the config as a marker that this
+  // step's git checks are required, even once it resolves to 'orchestrate'.
+  if (step.kind === 'action' && step.config.type === 'factory' && step.config.operation === 'from-step') {
+    const chosen = lookup(data, step.config.operationFrom!)
+    const resolved = chosen === 'factory-task' || chosen === 'task' ? 'task' : chosen === 'factory-orchestration' || chosen === 'orchestrate' ? 'orchestrate' : null
+    if (!resolved) return { error: `Step chose '${chosen}', which is not a Factory builder` }
+    step = { ...step, config: { ...step.config, operation: resolved } }
   }
 
   step = renderStep(step, data)

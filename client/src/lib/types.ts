@@ -56,7 +56,23 @@ export type ActionConfig =
   /** A command on a host (SSH or routini-runner). host: 'alert' targets the incident's host. */
   | { type: 'ssh'; hostId?: string; host?: 'alert'; command: string }
   | { type: 'imap'; host: string; port?: number; username: string; credentialKey: string; mailbox?: string; search?: string; tls?: boolean }
-  | { type: 'factory'; operation: 'orchestrate' | 'prd'; projectId?: string; prdId?: string; request?: string; runtime?: 'claude-code' | 'omnimancer'; provider?: string; model?: string; createPr?: boolean }
+  | {
+      type: 'factory'
+      operation: 'orchestrate' | 'prd' | 'task' | 'from-step'
+      /** from-step only: a template path (no {{ }}) like steps.plan.out.builder, naming an earlier step. */
+      operationFrom?: string
+      projectId?: string
+      prdId?: string
+      request?: string
+      /** The Factory project's origin must match this repo, or the step fails before dispatch. */
+      repoUrl?: string
+      /** task only, 0-5. */
+      maxRetries?: number
+      runtime?: 'claude-code' | 'omnimancer'
+      provider?: string
+      model?: string
+      createPr?: boolean
+    }
   | { type: 'azure-boards'; project: string; query?: string; limit?: number }
   | { type: 'teams'; message: string; title?: string }
 
@@ -93,6 +109,8 @@ export interface AgentConfig {
   routini?: boolean
   /** Typed fields this step writes, for later steps to read. */
   returns?: AgentReturnField[]
+  /** Pull an earlier Factory step's result into this step's clone instead of starting clean; `step` names that earlier action step (type factory). */
+  startFrom?: { step: string }
 }
 
 export interface ApprovalConfig {

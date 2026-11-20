@@ -136,6 +136,37 @@ describe('jobs', () => {
     expect(
       await bad({ name: 'x', steps: [{ kind: 'agent', config: { agent: 'claude', prompt: 'p', repo: { url: 'https://github.com/a/b', readOnly: true }, output: 'pr' } }] }),
     ).toMatch(/A read-only repository can't produce a pull request or branch/)
+    // `startFrom`: must name an earlier Factory action step; needs `repo`, not `environmentId` or a read-only `repo`.
+    expect(
+      await bad({ name: 'x', steps: [{ kind: 'agent', config: { agent: 'claude', prompt: 'p', repo: { url: 'https://github.com/a/b' }, startFrom: { step: 'nope' } } }] }),
+    ).toMatch(/startFrom\.step "nope" does not name a step that runs before it/)
+    expect(
+      await bad({
+        name: 'x',
+        steps: [
+          { id: 'h1', ...http('a', '/ok') },
+          { kind: 'agent', config: { agent: 'claude', prompt: 'p', repo: { url: 'https://github.com/a/b' }, startFrom: { step: 'h1' } } },
+        ],
+      }),
+    ).toMatch(/startFrom\.step "h1" must be an earlier Factory action step/)
+    expect(
+      await bad({
+        name: 'x',
+        steps: [
+          { id: 'fac', kind: 'action', config: { type: 'factory', operation: 'prd', prdId: 'prd1' } },
+          { kind: 'agent', config: { agent: 'claude', prompt: 'p', environmentId: '00000000-0000-0000-0000-000000000000', startFrom: { step: 'fac' } } },
+        ],
+      }),
+    ).toMatch(/startFrom needs .*\.repo, not .*\.environmentId/)
+    expect(
+      await bad({
+        name: 'x',
+        steps: [
+          { id: 'fac', kind: 'action', config: { type: 'factory', operation: 'prd', prdId: 'prd1' } },
+          { kind: 'agent', config: { agent: 'claude', prompt: 'p', repo: { url: 'https://github.com/a/b', readOnly: true }, startFrom: { step: 'fac' } } },
+        ],
+      }),
+    ).toMatch(/A read-only step can't start from Factory's result/)
   })
 
   it('computes the next cron fire time and lists jobs with their last run', async () => {

@@ -45,10 +45,16 @@ export interface StepForm {
   imapCredential: string
   mailbox: string
   search: string
-  factoryOperation: 'orchestrate' | 'prd'
+  factoryOperation: 'orchestrate' | 'prd' | 'task' | 'from-step'
+  /** from-step only: a template path like steps.plan.out.builder, naming an earlier step. */
+  factoryOperationFrom: string
   factoryProjectId: string
   factoryPrdId: string
   factoryRequest: string
+  /** The Factory project's origin must match this repo, or the step fails before dispatch. Not used by PRD. */
+  factoryRepoUrl: string
+  /** task only: '0' to '5'. */
+  factoryMaxRetries: string
   factoryRuntime: 'claude-code' | 'omnimancer'
   factoryProvider: string
   factoryModel: string
@@ -72,6 +78,8 @@ export interface StepForm {
   model: string
   /** Typed fields this step returns; later steps read them as {{steps.<id>.out.<name>}}. */
   returns: ReturnFieldForm[]
+  /** Pull an earlier Factory step's result into this step's clone: the id of an earlier action step of type factory, or blank for "the repository". */
+  startFromStep: string
   /** Run in this environment (its repository) instead of a fresh container. */
   environmentId: string
   /** Run on a fleet host: a host id, ALERT_HOST, or POOL_HOST. Blank is the Routini sandbox. */
@@ -190,6 +198,19 @@ export function runOnOptions(opts: { hosts: Host[]; alertTrigger: boolean; selec
   return options
 }
 
+/**
+ * The earlier action steps of type factory, as `{id, name}` for an agent
+ * step's "Starts from" select — the same "earlier step" set `toPayload`'s
+ * `buildStartFrom` validates against, with ids defaulted the same way.
+ */
+export function earlierFactorySteps(steps: StepForm[], index: number): Array<{ id: string; name: string }> {
+  return steps
+    .map((s, i) => ({ s, id: s.id.trim() || `step-${i + 1}` }))
+    .slice(0, index)
+    .filter(({ s }) => s.kind === 'action' && s.actionType === 'factory')
+    .map(({ s, id }) => ({ id, name: s.name.trim() || 'Action' }))
+}
+
 let counter = 0
 const nextKey = () => `s${++counter}`
 
@@ -225,9 +246,15 @@ export function emptyStep(kind: StepKind, index: number): StepForm {
     mailbox: '',
     search: '',
     factoryOperation: 'orchestrate',
+    // Only meaningful once "Decided by an earlier step" is picked, but this is the shape
+    // every from-step hand-off needs (see the "Plan, build, ship" template), so new steps
+    // start with it filled in rather than blank.
+    factoryOperationFrom: 'steps.plan.out.builder',
     factoryProjectId: '',
     factoryPrdId: '',
     factoryRequest: '',
+    factoryRepoUrl: '',
+    factoryMaxRetries: '0',
     factoryRuntime: 'claude-code',
     factoryProvider: '',
     factoryModel: '',
@@ -246,6 +273,7 @@ export function emptyStep(kind: StepKind, index: number): StepForm {
     checkCommand: '',
     model: '',
     returns: [],
+    startFromStep: '',
     environmentId: '',
     runOnHostId: '',
     runOnPoolGroup: '',
@@ -265,7 +293,11 @@ export const PLAN_BUILD_SHIP_TEMPLATE = 'plan-build-ship'
 
 /**
  * The "Plan, build, ship" starter: a read-only planning step whose typed
- * output (what to build, and why) feeds a build step that opens a PR.
+ * output (what to build, and why) decides who builds it. When the plan picks
+ * Factory, a hand-off step sends it one task or orchestration (gated by the
+ * plan's choice via `if`); the build step then pulls Factory's result into
+ * its own clone (`startFrom`) and finishes the job, or builds it itself when
+ * Factory was skipped.
  */
 export function planBuildShipTemplate(): JobForm {
   const plan: StepForm = {
@@ -281,8 +313,28 @@ export function planBuildShipTemplate(): JobForm {
       { key: nextKey(), name: 'reason', type: 'text', choicesText: '', required: true, description: '' },
     ],
   }
-  const build: StepForm = { ...emptyStep('agent', 1), id: 'build', name: 'Build and open PR', prompt: 'Build this: {{steps.plan.out.request}}', output: 'pr' }
-  return { ...emptyJob(), steps: [plan, build] }
+  const factory: StepForm = {
+    ...emptyStep('action', 1),
+    id: 'factory',
+    name: 'Hand off to Factory',
+    actionType: 'factory',
+    factoryOperation: 'from-step',
+    factoryOperationFrom: 'steps.plan.out.builder',
+    factoryRequest: '{{steps.plan.out.request}}',
+    factoryProjectId: '',
+    ifPath: 'steps.plan.out.builder',
+    ifOp: 'in',
+    ifValue: 'factory-task, factory-orchestration',
+  }
+  const build: StepForm = {
+    ...emptyStep('agent', 2),
+    id: 'build',
+    name: 'Build and open PR',
+    prompt: "If Factory built it, merge origin/main, run the check and fix only what fails. Otherwise build it yourself: {{steps.plan.out.request}}",
+    startFromStep: 'factory',
+    output: 'pr',
+  }
+  return { ...emptyJob(), steps: [plan, factory, build] }
 }
 
 function guessTz(): string {
@@ -344,9 +396,12 @@ function fromStep(s: Step, i: number): StepForm {
     } else if (c.type === 'factory') {
       Object.assign(f, {
         factoryOperation: c.operation,
+        factoryOperationFrom: c.operationFrom ?? '',
         factoryProjectId: c.projectId ?? '',
         factoryPrdId: c.prdId ?? '',
         factoryRequest: c.request ?? '',
+        factoryRepoUrl: c.repoUrl ?? '',
+        factoryMaxRetries: c.maxRetries !== undefined ? String(c.maxRetries) : '0',
         factoryRuntime: c.runtime ?? 'claude-code',
         factoryProvider: c.provider ?? '',
         factoryModel: c.model ?? '',
@@ -371,6 +426,7 @@ function fromStep(s: Step, i: number): StepForm {
       checkCommand: c.check?.command ?? '',
       model: c.model ?? '',
       returns: fromReturns(c.returns),
+      startFromStep: c.startFrom?.step ?? '',
       environmentId: c.environmentId ?? '',
       runOnHostId: agentRunOnValue(c.runOn),
       runOnPoolGroup: c.runOn && 'pool' in c.runOn ? (c.runOn.pool.group ?? '') : '',
@@ -417,6 +473,40 @@ function buildCondition(s: StepForm, i: number, earlierIds: string[], label: str
   if (!value) errors.push(`${label}: condition needs a value.`)
   else if (value.length > 200) errors.push(`${label}: condition value must be at most 200 characters.`)
   return { path, op: s.ifOp, value }
+}
+
+/**
+ * A "Decided by an earlier step" Factory step's `operationFrom`: a template
+ * path naming an EARLIER step's output (the path shape mirrors `if`, but it
+ * is always rooted at `steps`, never `trigger`).
+ */
+function buildFactoryOperationFrom(raw: string, earlierIds: string[], label: string, errors: string[]): string {
+  const path = raw.trim()
+  if (!path || !IF_PATH_RE.test(path)) {
+    errors.push(`${label}: the step path must use only letters, numbers and "_.-" (max 200 characters).`)
+    return path
+  }
+  const [root, refId] = path.split('.')
+  if (root !== 'steps') errors.push(`${label}: the step path must start with steps.`)
+  else if (!earlierIds.includes(refId ?? '')) errors.push(`${label}: the step path must name a step that runs before this one.`)
+  return path
+}
+
+/**
+ * An agent step's `startFrom`: pulls an earlier Factory step's result into
+ * this step's own clone (Contract B, engine/spec.ts). It needs this step's
+ * own repository — not an environment, not a read-only checkout — and must
+ * name an earlier action step of type factory.
+ */
+function buildStartFrom(s: StepForm, i: number, steps: StepForm[], stepIds: string[], label: string, errors: string[]): { step: string } | undefined {
+  if (!s.startFromStep) return undefined
+  if (s.environmentId) errors.push(`${label}: starting from Factory's result needs a repository, not an environment.`)
+  else if (!s.repoUrl.trim()) errors.push(`${label}: starting from Factory's result needs a repository.`)
+  if (s.repoReadOnly) errors.push(`${label}: A read-only step can't start from Factory's result.`)
+  const j = stepIds.slice(0, i).indexOf(s.startFromStep)
+  const target = j >= 0 ? steps[j] : undefined
+  if (!target || target.kind !== 'action' || target.actionType !== 'factory') errors.push(`${label}: "Starts from" must name an earlier Factory step.`)
+  return { step: s.startFromStep }
 }
 
 const RETURN_NAME_RE = /^[a-z][a-zA-Z0-9_]{0,39}$/
@@ -504,9 +594,23 @@ export function toPayload(form: JobForm): PayloadResult {
         } else {
           if (!idOk(s.factoryProjectId)) errors.push(`${label}: enter the Factory project id.`)
           if (!s.factoryRequest.trim()) errors.push(`${label}: describe what Factory should build.`)
-          const cfg: Record<string, unknown> = { type: 'factory', operation: 'orchestrate', projectId: s.factoryProjectId.trim(), request: s.factoryRequest, runtime: s.factoryRuntime, createPr: s.factoryCreatePr }
+          const cfg: Record<string, unknown> = { type: 'factory', operation: s.factoryOperation, projectId: s.factoryProjectId.trim(), request: s.factoryRequest, runtime: s.factoryRuntime }
           if (s.factoryProvider.trim()) cfg['provider'] = s.factoryProvider.trim()
           if (s.factoryModel.trim()) cfg['model'] = s.factoryModel.trim()
+          if (s.factoryRepoUrl.trim()) cfg['repoUrl'] = s.factoryRepoUrl.trim()
+          if (s.factoryOperation === 'from-step') {
+            cfg['operationFrom'] = buildFactoryOperationFrom(s.factoryOperationFrom, stepIds.slice(0, i), label, errors)
+          } else if (s.factoryOperation === 'task') {
+            const maxRetries = s.factoryMaxRetries.trim()
+            if (maxRetries) {
+              const n = Number(maxRetries)
+              if (!Number.isInteger(n) || n < 0 || n > 5) errors.push(`${label}: max retries must be a whole number from 0 to 5.`)
+              else if (n > 0) cfg['maxRetries'] = n
+            }
+          } else {
+            // orchestrate
+            cfg['createPr'] = s.factoryCreatePr
+          }
           base['config'] = cfg
         }
       } else if (s.actionType === 'azure-boards') {
@@ -572,6 +676,8 @@ export function toPayload(form: JobForm): PayloadResult {
       if (s.routini) cfg['routini'] = true
       const returns = buildReturns(s, label, errors)
       if (returns) cfg['returns'] = returns
+      const startFrom = buildStartFrom(s, i, form.steps, stepIds, label, errors)
+      if (startFrom) cfg['startFrom'] = startFrom
       base['config'] = cfg
     } else {
       if (!s.message.trim()) errors.push(`${label}: say what is being approved.`)

@@ -11,6 +11,7 @@ import {
   ALERT_HOST,
   PLAN_BUILD_SHIP_TEMPLATE,
   POOL_HOST,
+  earlierFactorySteps,
   emptyJob,
   emptyReturnField,
   emptyStep,
@@ -229,6 +230,7 @@ export function JobEditorPage() {
               hosts={hosts.data?.hosts ?? []}
               alertTrigger={form.triggerKind === 'alert'}
               environments={environments.data?.environments ?? []}
+              earlierFactorySteps={earlierFactorySteps(form.steps, i)}
               decision={decisions.get(s.id.trim() || `step-${i + 1}`)}
               count={form.steps.length}
               onChange={(p) => setStep(s.key, p)}
@@ -294,6 +296,8 @@ function StepEditor(props: {
   /** The job is alert-triggered, so command and agent steps may target the alert's host. */
   alertTrigger: boolean
   environments: Environment[]
+  /** Earlier factory action steps this step could pull a result from ("Starts from"). */
+  earlierFactorySteps: Array<{ id: string; name: string }>
   decision?: PolicyDecision
   count: number
   onChange: (p: Partial<StepForm>) => void
@@ -387,25 +391,52 @@ function StepEditor(props: {
           )}
           {s.actionType === 'factory' && (
             <>
-              <div className="segmented" role="group" aria-label="Factory operation" style={{ alignSelf: 'flex-start' }}>
-                <button type="button" aria-pressed={s.factoryOperation === 'orchestrate'} onClick={() => set({ factoryOperation: 'orchestrate' })}>
-                  Orchestrate
-                </button>
-                <button type="button" aria-pressed={s.factoryOperation === 'prd'} onClick={() => set({ factoryOperation: 'prd' })}>
-                  Execute PRD
-                </button>
-              </div>
+              <Field label="Operation">
+                {(id) => (
+                  <select id={id} className="select" style={{ maxWidth: 280 }} value={s.factoryOperation} onChange={(e) => set({ factoryOperation: e.target.value as StepForm['factoryOperation'] })}>
+                    <option value="orchestrate">Orchestration</option>
+                    <option value="task">Single task</option>
+                    <option value="prd">PRD</option>
+                    <option value="from-step">Decided by an earlier step</option>
+                  </select>
+                )}
+              </Field>
               {s.factoryOperation === 'prd' ? (
                 <Field label="PRD id" hint="Runs every task in the PRD; the step waits for the orchestration to finish.">
                   {(id) => <input id={id} className="input mono" value={s.factoryPrdId} onChange={(e) => set({ factoryPrdId: e.target.value })} />}
                 </Field>
               ) : (
                 <>
+                  {s.factoryOperation === 'from-step' && (
+                    <Field label="Earlier step" hint="The step's value must be factory-task or factory-orchestration. Never a PRD.">
+                      {(id) => (
+                        <input id={id} className="input mono" placeholder="steps.plan.out.builder" value={s.factoryOperationFrom} onChange={(e) => set({ factoryOperationFrom: e.target.value })} />
+                      )}
+                    </Field>
+                  )}
                   <Field label="What should Factory build?">
                     {(id) => <textarea id={id} className="textarea" rows={3} value={s.factoryRequest} onChange={(e) => set({ factoryRequest: e.target.value })} />}
                   </Field>
                   <div className="row">
                     <Field label="Project id">{(id) => <input id={id} className="input mono" value={s.factoryProjectId} onChange={(e) => set({ factoryProjectId: e.target.value })} />}</Field>
+                    <Field label="Expected repository" hint="The Factory project's origin must be this repo, or the step fails before dispatch.">
+                      {(id) => <input id={id} className="input" placeholder="https://github.com/acme/app" value={s.factoryRepoUrl} onChange={(e) => set({ factoryRepoUrl: e.target.value })} />}
+                    </Field>
+                    {s.factoryOperation === 'task' && (
+                      <Field label="Max retries">
+                        {(id) => (
+                          <select id={id} className="select" value={s.factoryMaxRetries || '0'} onChange={(e) => set({ factoryMaxRetries: e.target.value })}>
+                            {[0, 1, 2, 3, 4, 5].map((n) => (
+                              <option key={n} value={String(n)}>
+                                {n}
+                              </option>
+                            ))}
+                          </select>
+                        )}
+                      </Field>
+                    )}
+                  </div>
+                  <div className="row">
                     <Field label="Runtime">
                       {(id) => (
                         <select id={id} className="select" value={s.factoryRuntime} onChange={(e) => set({ factoryRuntime: e.target.value as StepForm['factoryRuntime'] })}>
@@ -421,10 +452,12 @@ function StepEditor(props: {
                       </>
                     )}
                   </div>
-                  <label className="inline" style={{ gap: 6 }}>
-                    <input type="checkbox" checked={s.factoryCreatePr} onChange={(e) => set({ factoryCreatePr: e.target.checked })} />
-                    Open a pull request when the orchestration finishes
-                  </label>
+                  {s.factoryOperation === 'orchestrate' && (
+                    <label className="inline" style={{ gap: 6 }}>
+                      <input type="checkbox" checked={s.factoryCreatePr} onChange={(e) => set({ factoryCreatePr: e.target.checked })} />
+                      Open a pull request when the orchestration finishes
+                    </label>
+                  )}
                 </>
               )}
               <span className="hint">Uses the Factory integration. If Routini stops waiting (timeout or cancel), the orchestration keeps running in Factory.</span>
@@ -512,7 +545,7 @@ function StepEditor(props: {
               {(id) => (
                 // An environment and a fleet host are two different machines:
                 // picking one clears the other.
-                <select id={id} className="select" value={s.environmentId} onChange={(e) => set({ environmentId: e.target.value, ...(e.target.value ? { runOnHostId: '' } : {}) })}>
+                <select id={id} className="select" value={s.environmentId} onChange={(e) => set({ environmentId: e.target.value, ...(e.target.value ? { runOnHostId: '', startFromStep: '' } : {}) })}>
                   <option value="">A fresh container</option>
                   {props.environments.map((env) => (
                     <option key={env.id} value={env.id}>
@@ -583,6 +616,21 @@ function StepEditor(props: {
                   {(id) => <input id={id} className="input" value={s.repoUrl} placeholder="https://github.com/acme/app" onChange={(e) => set({ repoUrl: e.target.value })} />}
                 </Field>
                 <Field label="Base branch">{(id) => <input id={id} className="input mono" value={s.baseBranch} onChange={(e) => set({ baseBranch: e.target.value })} />}</Field>
+                {/* Only offered after a Factory step (or kept while set, so a stale choice can be fixed). */}
+                {(props.earlierFactorySteps.length > 0 || s.startFromStep) && (
+                  <Field label="Starts from" hint="Falls back to the repository when that step was skipped.">
+                    {(id) => (
+                      <select id={id} className="select" value={s.startFromStep} onChange={(e) => set({ startFromStep: e.target.value })}>
+                        <option value="">The repository</option>
+                        {props.earlierFactorySteps.map((f) => (
+                          <option key={f.id} value={f.id}>
+                            Factory&apos;s result from step {f.name}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                  </Field>
+                )}
               </>
             )}
             <Field label="Result">
@@ -606,7 +654,7 @@ function StepEditor(props: {
               <input
                 type="checkbox"
                 checked={s.repoReadOnly}
-                onChange={(e) => set({ repoReadOnly: e.target.checked, ...(e.target.checked ? { output: 'none' } : {}) })}
+                onChange={(e) => set({ repoReadOnly: e.target.checked, ...(e.target.checked ? { output: 'none', startFromStep: '' } : {}) })}
                 style={{ marginTop: 3 }}
               />
               <span style={{ flex: '1 1 0', minWidth: 0 }}>

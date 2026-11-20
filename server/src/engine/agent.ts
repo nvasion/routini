@@ -19,6 +19,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { randomBytes, randomUUID } from 'node:crypto'
+import jwt from 'jsonwebtoken'
 import { DockerService } from '../services/docker.js'
 import type { Queryable } from '../db/index.js'
 import { getOrgSettings, getEndpointKey, type AgentEndpointConfig } from '../repos/settings.js'
@@ -29,7 +30,7 @@ import { getPolicy } from '../repos/policy.js'
 import { getHost, type Host } from '../repos/hosts.js'
 import { PLACEHOLDER, type CredentialBinding, type EgressSession } from '../egress/types.js'
 import { sandboxNetworkName, sandboxNetworkPrefix } from '../egress/client.js'
-import { usageToday } from '../repos/runs.js'
+import { listSteps, usageToday } from '../repos/runs.js'
 import { createPullRequest, parseGithubRepo } from '../integrations/github.js'
 import type { FetchFn } from '../integrations/providers.js'
 import type { AgentId } from '../integrations/catalog.js'
@@ -242,6 +243,76 @@ async function agentAccess(
   }
 }
 
+/** Shape of a Factory action step's `output.factory` (engine/factory.ts), as read back from `listSteps`. */
+interface FactoryStepOutput {
+  projectId: string
+  kind: string
+  id: string
+  baseRef: string
+  headRef: string
+  /** The commit headRef pointed at when the Factory step finished; the branch may move on afterwards. */
+  headSha?: string
+}
+
+function isFactoryStepOutput(v: unknown): v is FactoryStepOutput {
+  if (!v || typeof v !== 'object') return false
+  const o = v as Record<string, unknown>
+  return typeof o['projectId'] === 'string' && typeof o['kind'] === 'string' && typeof o['id'] === 'string' && typeof o['baseRef'] === 'string' && typeof o['headRef'] === 'string'
+}
+
+interface PulledFactoryResult {
+  env: Record<string, string>
+  /** Appended to ROUTINI_SYSTEM_PROMPT. */
+  systemPromptSuffix: string
+  /** Added to the step's allowed egress hosts, so the entrypoint's pull request itself is not blocked. */
+  host: string
+}
+
+/**
+ * `config.startFrom`: pulls an earlier Factory action step's result into this
+ * agent's clone, per agents/README.md (ROUTINI_PULL_URL/TOKEN/LABEL). When the
+ * referenced step was skipped or produced no `output.factory`, logs and returns
+ * null so the agent runs against its own repo as usual.
+ */
+async function resolveStartFrom(ctx: StepContext, cfg: AgentConfig, repo: { url: string; baseBranch: string }, timeoutSec: number): Promise<PulledFactoryResult | null> {
+  const startFrom = cfg.startFrom
+  if (!startFrom) return null
+  const orgId = ctx.org.id
+  const steps = await ctx.app.db.org(orgId, (q) => listSteps(q, orgId, ctx.run.id))
+  const source = steps.find((s) => s.stepId === startFrom.step)
+  const factory = source && source.status !== 'skipped' ? (source.output as { factory?: unknown } | null)?.factory : undefined
+  if (!source || source.status === 'skipped' || !isFactoryStepOutput(factory)) {
+    await ctx.log(`Factory step skipped; starting from ${repo.url}@${repo.baseBranch}`)
+    return null
+  }
+  const label = `${factory.kind} ${factory.id}`
+  const token = jwt.sign(
+    {
+      k: 'pull',
+      org: orgId,
+      run: ctx.run.id,
+      step: ctx.idx,
+      project: factory.projectId,
+      base: factory.baseRef,
+      head: factory.headRef,
+      ...(typeof factory.headSha === 'string' ? { headSha: factory.headSha } : {}),
+      label,
+    },
+    ctx.app.config.jwtSecret,
+    { expiresIn: timeoutSec + GRACE_SEC },
+  )
+  ctx.addSecret(token)
+  return {
+    env: {
+      ROUTINI_PULL_URL: `${ctx.app.config.agentApiUrl}/api/agent/factory-export`,
+      ROUTINI_PULL_TOKEN: token,
+      ROUTINI_PULL_LABEL: label,
+    },
+    systemPromptSuffix: ` Your branch already contains Factory's work (${label}). Merge origin/${repo.baseBranch} into it, run the check, and fix only what fails.`,
+    host: new URL(ctx.app.config.agentApiUrl).hostname,
+  }
+}
+
 export function agentExecutor(opts: AgentRunnerOptions = {}): StepExecutor {
   const docker = opts.docker ?? new DockerService()
   const images = { ...defaultAgentImages(), ...opts.images }
@@ -339,6 +410,14 @@ export function agentExecutor(opts: AgentRunnerOptions = {}): StepExecutor {
         // the agent can reach are limited (proxy: GET/HEAD and the git-upload-pack POST only).
         if (cfg.repo?.readOnly) for (const b of access.bindings) if (READONLY_HOSTS.has(b.host)) b.readOnly = true
 
+        // config.startFrom: pull an earlier Factory action step's result into this clone (spec.ts
+        // validation guarantees repo is set, and is not readOnly, whenever startFrom is).
+        const pulled = repo ? await resolveStartFrom(ctx, cfg, repo, timeoutSec) : null
+        if (pulled) {
+          access.hosts.push(pulled.host)
+          Object.assign(env, pulled.env)
+        }
+
         // Agent returns: resolve each choice field's available choices for the org (its `requires`
         // integrations), and the sentence appended below. Fails before the container starts.
         let resolvedReturns: ReturnField[] | undefined
@@ -355,7 +434,7 @@ export function agentExecutor(opts: AgentRunnerOptions = {}): StepExecutor {
         const workBranch = `routini/run-${ctx.run.number}${ctx.run.jobSnapshot.steps.filter((s) => s.kind === 'agent').length > 1 ? `-${ctx.step.id}` : ''}`
         Object.assign(env, {
           ROUTINI_PROMPT: cfg.prompt,
-          ROUTINI_SYSTEM_PROMPT: (brokered ? `${SYSTEM_PROMPT} ${networkNote(access.hosts)}` : SYSTEM_PROMPT) + returnsPrompt,
+          ROUTINI_SYSTEM_PROMPT: (brokered ? `${SYSTEM_PROMPT} ${networkNote(access.hosts)}` : SYSTEM_PROMPT) + (pulled?.systemPromptSuffix ?? '') + returnsPrompt,
           ROUTINI_OUTPUT: output,
           ROUTINI_COMMIT_MESSAGE: `${ctx.run.jobSnapshot.name} (Routini run #${ctx.run.number})`,
           ...(repo ? { REPO_URL: repo.url, BASE_BRANCH: repo.baseBranch, WORK_BRANCH: workBranch } : {}),
@@ -497,6 +576,7 @@ export function agentExecutor(opts: AgentRunnerOptions = {}): StepExecutor {
           turns: facts.turns ?? null,
           summary: facts.resultText ?? null,
           ...(outResult && 'out' in outResult ? { out: outResult.out } : {}),
+          ...(facts.pulled ? { pulled: facts.pulled } : {}),
         }
         if (result.error) throw new StepFailure(result.error)
         if (result.aborted) throw new StepFailure('Agent stopped (canceled)')

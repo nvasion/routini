@@ -7,10 +7,12 @@ import { join } from 'node:path'
 import { makeTestApp, type TestApp, type TestUser } from './helpers/testApp'
 import { Worker } from '../server/src/engine/worker'
 import { agentExecutor, brokeredModelAccess, type AgentDocker } from '../server/src/engine/agent'
-import { PLACEHOLDER } from '../server/src/egress/types'
+import { PLACEHOLDER, type EgressSession, type SessionStats } from '../server/src/egress/types'
+import type { BrokerClient } from '../server/src/egress/client'
 import { AgentStreamParser } from '../server/src/engine/agentStream'
 import { createDemuxer, lineSplitter } from '../server/src/services/docker'
 import type { FetchFn } from '../server/src/integrations/providers'
+import type { StepExecutor } from '../server/src/engine/types'
 
 const TRANSCRIPT = readFileSync(join(__dirname, '../agents/fake/transcript.jsonl'), 'utf8').trim().split('\n')
 
@@ -69,6 +71,13 @@ describe('AgentStreamParser', () => {
       errors: ['git push failed'],
       tail: ['npm ERR! something', '{not json'],
     })
+  })
+
+  it('reads the "pulled" control line (config.startFrom result)', () => {
+    const p = new AgentStreamParser()
+    const events = p.line('::routini::{"type":"pulled","format":"patch","commits":1,"files":2}')
+    expect(events).toEqual([{ type: 'log', data: { message: "Pulled Factory's result (patch, 1 commits, 2 files)" } }])
+    expect(p.facts.pulled).toEqual({ format: 'patch', commits: 1, files: 2 })
   })
 
   it('clips very large tool output', () => {
@@ -259,6 +268,12 @@ describe('agent steps', () => {
     expect((await run({})).step.error).toBe('The agent reported an error: ran out of turns')
   })
 
+  it('puts a "pulled" control line (config.startFrom result) on the step output', async () => {
+    script = () => ({ lines: ['::routini::{"type":"pulled","format":"bundle","commits":2,"files":3}', ...TRANSCRIPT] })
+    const { step } = await run({})
+    expect(step.output.pulled).toEqual({ format: 'bundle', commits: 2, files: 3 })
+  })
+
   it('treats "no changes" as success without a PR', async () => {
     script = () => ({ lines: [...TRANSCRIPT, '::routini::{"type":"no_changes"}'] })
     const { step } = await run({ repo: { url: 'https://github.com/acme/app', baseBranch: 'main' } })
@@ -413,5 +428,146 @@ describe('agent steps', () => {
     await u.post(`${base()}/runs/${r.body.run.number}/cancel`)
     await worker.drain()
     expect((await u.get(`${base()}/runs/${r.body.run.number}`)).body.run.status).toBe('canceled')
+  })
+})
+
+// ── config.startFrom: pulling an earlier Factory action step's result ───────
+//
+// engine/factory.ts (the Factory action itself) is a parallel task's territory,
+// so these tests fake the 'action' executor to produce whatever `output` a
+// Factory step would have, and exercise only engine/agent.ts's own contract:
+// read the earlier step with listSteps, mint a pull token, and wire the env.
+
+/** engine/factory.ts's Factory action step output shape (Contract part A), as read back from `listSteps`. */
+const FACTORY_OUTPUT = { projectId: 'proj-1', kind: 'task', id: 'tk_42', baseRef: 'deadbeef00112233', headRef: 'routini/factory-tk_42' }
+
+/** A fake 'action' executor: every action step succeeds with the given output (by step id). */
+function fakeActionExecutor(outputs: Record<string, unknown>): StepExecutor {
+  return {
+    async execute(ctx) {
+      return { status: 'succeeded', output: outputs[ctx.step.id] ?? {} }
+    },
+  }
+}
+
+class FakeBroker {
+  sessions: EgressSession[] = []
+  cfg = { proxyHost: 'routini-egress', proxyPort: 3128 }
+  newToken() {
+    return `tok${this.sessions.length + 1}`.padEnd(32, '0')
+  }
+  async network(orgId: string) {
+    return `routini-sb-${orgId}`
+  }
+  async open(s: EgressSession) {
+    this.sessions.push(s)
+  }
+  async close(): Promise<SessionStats> {
+    return { requests: 0, intercepted: 0, blocked: [] }
+  }
+  async caPem() {
+    return '-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----'
+  }
+  async containerEnv(token: string) {
+    return { HTTPS_PROXY: `http://routini:${token}@routini-egress:3128`, ROUTINI_CA_PEM: await this.caPem() }
+  }
+}
+
+describe('config.startFrom (Factory pull-back)', () => {
+  let t2: TestApp
+  let u2: TestUser
+  let broker: FakeBroker
+  let fake2: ReturnType<typeof fakeDocker>
+  const b = () => `/api/orgs/${u2.orgSlug}`
+  const factoryStep = (extra: Record<string, unknown> = {}) => ({
+    id: 'factory',
+    name: 'factory',
+    kind: 'action',
+    config: { type: 'factory', operation: 'orchestrate', projectId: 'proj-1', request: 'build it' },
+    ...extra,
+  })
+
+  async function setup(factoryOutput: Record<string, unknown>) {
+    broker = new FakeBroker()
+    fake2 = fakeDocker(() => ({ lines: TRANSCRIPT }))
+    t2 = await makeTestApp({
+      broker: broker as unknown as BrokerClient,
+      engine: {
+        executors: {
+          action: fakeActionExecutor({ factory: { factory: factoryOutput } }),
+          agent: agentExecutor({ docker: fake2.docker, images: { claude: 'routini/agent-claude:test' } }),
+        },
+      },
+    })
+    u2 = await t2.signup('startfrom@example.com')
+    await u2.put(`${b()}/settings`, { endpointApiKeys: { anthropic: 'sk-ant-api03-REALKEY-0123456789' } })
+  }
+
+  afterEach(async () => {
+    await t2?.close()
+  })
+
+  async function runJob(agent: Record<string, unknown>, factory: Record<string, unknown> = {}) {
+    const job = await u2.post(`${b()}/jobs`, {
+      name: 'pull-back',
+      steps: [
+        factoryStep(factory),
+        { id: 'build', name: 'build', kind: 'agent', config: { agent: 'claude', prompt: 'continue', repo: { url: 'https://github.com/acme/app', baseBranch: 'main' }, startFrom: { step: 'factory' }, ...agent } },
+      ],
+    })
+    expect(job.status, JSON.stringify(job.body)).toBe(201)
+    const r = await u2.post(`${b()}/jobs/${job.body.job.id}/run`)
+    await new Worker(t2.ctx, t2.ctx.engine, { heartbeatMs: 20 }).drain()
+    const detail = (await u2.get(`${b()}/runs/${r.body.run.number}`)).body
+    const events = (await u2.get(`${b()}/runs/${r.body.run.id}/events`)).body.events as Array<{ type: string; data: Record<string, unknown> }>
+    return { detail, events }
+  }
+
+  const pullLog = (events: Array<{ type: string; data: Record<string, unknown> }>) =>
+    events.some((e) => e.type === 'log' && e.data['message'] === "Factory step skipped; starting from https://github.com/acme/app@main")
+
+  it('a skipped Factory step: the agent runs as usual, and the run logs it', async () => {
+    await setup({})
+    const { detail, events } = await runJob({}, { if: { path: 'trigger.kind', op: 'ne', value: 'manual' } })
+    expect(detail.steps[0].status).toBe('skipped')
+    expect(detail.steps[1].status, JSON.stringify(detail.steps[1])).toBe('succeeded')
+    expect(fake2.spawned[0]!.env).not.toHaveProperty('ROUTINI_PULL_URL')
+    expect(pullLog(events)).toBe(true)
+  })
+
+  it('a Factory step with no output.factory: the agent runs as usual, and the run logs it', async () => {
+    await setup({}) // the fake action step succeeds but its output has no `factory` key
+    const { detail, events } = await runJob({})
+    expect(detail.steps[0].status).toBe('succeeded')
+    expect(detail.steps[1].status, JSON.stringify(detail.steps[1])).toBe('succeeded')
+    expect(fake2.spawned[0]!.env).not.toHaveProperty('ROUTINI_PULL_URL')
+    expect(pullLog(events)).toBe(true)
+  })
+
+  it('output.factory: sets the pull env vars, the prompt sentence, and allows the agent-api host', async () => {
+    await setup(FACTORY_OUTPUT)
+    const { detail } = await runJob({})
+    expect(detail.steps[1].status, JSON.stringify(detail.steps[1])).toBe('succeeded')
+    const env = fake2.spawned[0]!.env
+    expect(env['ROUTINI_PULL_URL']).toBe(`${t2.ctx.config.agentApiUrl}/api/agent/factory-export`)
+    expect(env['ROUTINI_PULL_LABEL']).toBe('task tk_42')
+    expect(env['ROUTINI_SYSTEM_PROMPT']).toContain(
+      "Your branch already contains Factory's work (task tk_42). Merge origin/main into it, run the check, and fix only what fails.",
+    )
+    const host = new URL(t2.ctx.config.agentApiUrl).hostname
+    expect(broker.sessions[0]!.allowedHosts).toContain(host)
+
+    // Decode without verifying the signature (jsonwebtoken is a server-only dependency); the
+    // agent-export route tests cover signature/expiry verification end to end.
+    const payload = JSON.parse(Buffer.from(env['ROUTINI_PULL_TOKEN']!.split('.')[1]!, 'base64url').toString('utf8')) as Record<string, unknown>
+    expect(payload).toMatchObject({
+      k: 'pull',
+      org: u2.orgId,
+      run: detail.run.id,
+      project: 'proj-1',
+      base: FACTORY_OUTPUT.baseRef,
+      head: FACTORY_OUTPUT.headRef,
+      label: 'task tk_42',
+    })
   })
 })
