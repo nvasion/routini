@@ -9,9 +9,12 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import type { Db } from '../db/index.js'
+import type { AppContext } from '../http/common.js'
 import { computeNextRunAt, getJob } from '../repos/jobs.js'
 import { createRun } from '../repos/runs.js'
 import { leaseItem, pickReadyItems } from '../repos/backlog.js'
+import { syncTick } from '../backlog/sync.js'
+import { writesTick } from '../backlog/writes.js'
 
 export async function schedulerTick(db: Db, now: Date = new Date()): Promise<number> {
   return db.system(async (q) => {
@@ -48,17 +51,33 @@ export class Scheduler {
   private ticking: Promise<unknown> = Promise.resolve()
 
   constructor(
-    private readonly db: Db,
+    private readonly ctx: AppContext,
     private readonly intervalMs = 15_000,
   ) {}
 
   start(): void {
     if (this.timer) return
-    const run = () => {
-      this.ticking = schedulerTick(this.db).catch((err) => console.error('[scheduler] tick failed:', (err as Error).message))
+    const run = async () => {
+      try {
+        await schedulerTick(this.ctx.db)
+      } catch (err) {
+        console.error('[scheduler] scheduler tick failed:', (err as Error).message)
+      }
+      try {
+        await syncTick(this.ctx)
+      } catch (err) {
+        console.error('[scheduler] backlog sync tick failed:', (err as Error).message)
+      }
+      try {
+        await writesTick(this.ctx)
+      } catch (err) {
+        console.error('[scheduler] backlog writes tick failed:', (err as Error).message)
+      }
     }
-    run()
-    this.timer = setInterval(run, this.intervalMs)
+    this.ticking = run()
+    this.timer = setInterval(() => {
+      this.ticking = run()
+    }, this.intervalMs)
   }
 
   async stop(): Promise<void> {

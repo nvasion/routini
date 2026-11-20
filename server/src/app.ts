@@ -16,6 +16,7 @@ import { settingsRouter } from './routes/settings.js'
 import { integrationsRouter } from './routes/integrations.js'
 import { jobsRouter } from './routes/jobs.js'
 import { runsRouter } from './routes/runs.js'
+import { backlogRouter } from './routes/backlog.js'
 import { hostsRouter } from './routes/hosts.js'
 import { hooksRouter } from './routes/hooks.js'
 import { environmentsRouter } from './routes/environments.js'
@@ -109,6 +110,7 @@ export function createApp(ctx: AppContext, opts: AppOptions = {}): Express {
   org.use(integrationsRouter(ctx, opts.providerCtx))
   org.use(jobsRouter(ctx))
   org.use(runsRouter(ctx))
+  org.use(backlogRouter(ctx))
   org.use(hostsRouter(ctx))
   org.use(environmentsRouter(ctx))
   org.use(policyRouter(ctx))

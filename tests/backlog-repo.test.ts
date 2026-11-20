@@ -96,6 +96,15 @@ describe('sources', () => {
     expect(after!.lastSyncError).toBe('board not found')
     expect(after!.lastSyncAt).not.toBeNull()
   })
+
+  // Hardening (wave A security review, item 3): a verbose upstream error can't bloat the row.
+  it('caps a stored sync error at 2000 characters', async () => {
+    const s = await source()
+    const huge = 'x'.repeat(5000)
+    await t.ctx.db.org(u.orgId, (q) => recordSync(q, u.orgId, s.id, huge))
+    const after = await t.ctx.db.org(u.orgId, (q) => getSource(q, u.orgId, s.id))
+    expect(after!.lastSyncError).toHaveLength(2000)
+  })
 })
 
 // ── Items: CRUD ──────────────────────────────────────────────────────────────
@@ -119,6 +128,25 @@ describe('items: CRUD', () => {
 
     const byState = await t.ctx.db.org(u.orgId, (q) => listItems(q, u.orgId, { state: 'ready' }))
     expect(byState).toHaveLength(2)
+  })
+
+  // Hardening (wave A security review, item 4): a search term's own ILIKE wildcards (% and _)
+  // are escaped, so they match literally instead of acting as "any characters" / "any character".
+  it('escapes % and _ in the search term instead of treating them as ILIKE wildcards', async () => {
+    const s = await source()
+    const underscore = await item(s.id, 'u.md', { title: 'a_b item' })
+    const wouldWildcardMatch = await item(s.id, 'w.md', { title: 'axb item' })
+    const found = await t.ctx.db.org(u.orgId, (q) => listItems(q, u.orgId, { q: 'a_b' }))
+    expect(found.map((x) => x.id)).toEqual([underscore.id])
+    void wouldWildcardMatch
+  })
+
+  // Hardening (wave A security review, item 2): insertItem refuses a sourceId that
+  // belongs to a different org, even when called with that org's own orgId.
+  it('insertItem refuses a sourceId belonging to another org', async () => {
+    const s = await source()
+    const other = await t.signup('other-insert@example.com')
+    await expect(t.ctx.db.org(other.orgId, (q) => insertItem(q, other.orgId, s.id, 'x', { title: 'nope' }, 'ready'))).rejects.toThrow()
   })
 
   it('orders listings by pipeline stage, then position, then creation', async () => {
@@ -211,6 +239,23 @@ describe('setItemState', () => {
     const s = await source()
     expect(await t.ctx.db.org(u.orgId, (q) => setItemState(q, u.orgId, '00000000-0000-0000-0000-000000000099', 'blocked', { event: 'x' }))).toBeNull()
     void s
+  })
+
+  // Hardening (wave A security review, item 2): the source mapping lookup is scoped to the
+  // item's own org, so it can never queue a write using another org's mapping — even if an
+  // item's source_id somehow pointed outside its org (insertItem now refuses to create that
+  // state; this guards the read path too, in case of an older row or a bug elsewhere).
+  it("queues a write using only the item's own org's source mapping, never another org's", async () => {
+    const otherOrg = await t.signup('other-mapping@example.com')
+    const otherSource = await t.ctx.db.org(otherOrg.orgId, (q) =>
+      createSource(q, otherOrg.orgId, { name: 'other', kind: 'repo', config: {}, mapping: MAPPING_BLOCKED }),
+    )
+    const mySource = await source(MAPPING_NONE)
+    const a = await item(mySource.id, 'a.md')
+    await t.ctx.db.system((q) => q.query('UPDATE backlog_items SET source_id = $1 WHERE id = $2', [otherSource.id, a.id]))
+
+    await t.ctx.db.org(u.orgId, (q) => setItemState(q, u.orgId, a.id, 'blocked', { event: 'x' }))
+    expect(await t.ctx.db.system((q) => claimDueWrites(q, 10))).toHaveLength(0)
   })
 })
 
@@ -398,6 +443,17 @@ describe('status writes', () => {
     const reclaimed = await t.ctx.db.system((q) => claimDueWrites(q, 10))
     expect(reclaimed.map((x) => x.id)).toEqual([w!.id])
     expect(reclaimed[0]!.attempts).toBe(0)
+  })
+
+  // Hardening (wave A security review, item 3): a verbose upstream error can't bloat the row.
+  it('caps a stored write error at 2000 characters', async () => {
+    const s = await source(MAPPING_BLOCKED)
+    const a = await item(s.id)
+    await t.ctx.db.org(u.orgId, (q) => setItemState(q, u.orgId, a.id, 'blocked', { event: 'x' }))
+    const [w] = await t.ctx.db.system((q) => claimDueWrites(q, 10))
+    await t.ctx.db.org(u.orgId, (q) => retryWrite(q, u.orgId, w!.id, 'x'.repeat(5000)))
+    const [row] = await t.ctx.db.org(u.orgId, (q) => q.query<{ last_error: string }>('SELECT last_error FROM backlog_writes WHERE id = $1', [w!.id]))
+    expect(row!.last_error).toHaveLength(2000)
   })
 
   it('writes a comment payload end to end through setItemState', async () => {

@@ -70,3 +70,16 @@ export function validateRepoUrl(rawUrl: string): UrlValidResult {
   return { valid: true, url: parsed }
 }
 
+/**
+ * Validates a branch name from untrusted data (tracker items, backlog
+ * sources): a restricted charset, bounded length, and no `..` (which could
+ * otherwise be used to escape a ref path). Shared by the backlog sync and
+ * `engine/prepare.ts`, which both resolve a repository from tracker-reported
+ * data.
+ */
+const BRANCH_NAME_RE = /^[A-Za-z0-9._/-]{1,200}$/
+
+export function isValidBranchName(branch: string): boolean {
+  return BRANCH_NAME_RE.test(branch) && !branch.includes('..')
+}
+

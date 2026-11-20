@@ -11,9 +11,10 @@ import { getHost } from '../repos/hosts.js'
 import { getIncident } from '../repos/incidents.js'
 import { getItem, getSource } from '../repos/backlog.js'
 import type { Run, RunStep } from '../repos/runs.js'
+import { isValidBranchName, validateRepoUrl } from '../utils/repoUrl.js'
 import { alertContext } from './alerts.js'
 import { pickPoolHost, PoolError } from './pool.js'
-import type { Step } from './spec.js'
+import { ITEM_REPO_PLACEHOLDER, type Step } from './spec.js'
 import { lookup, renderStep, type TemplateData } from './template.js'
 
 /** The template data for a run: earlier steps' outputs, the trigger, and (alerts) the alert/incident/host. */
@@ -78,8 +79,14 @@ export async function prepareStep(app: AppContext, run: Run, spec: Step, steps: 
   }
   if (step.kind === 'agent' && step.config.repo && 'fromItem' in step.config.repo) {
     if (t.kind !== 'backlog') return { error: "This step uses the item's repository, but the run was not started from a backlog item" }
-    const item = data.item as { title: string; repo: string | null; baseBranch: string } | undefined
+    const item = data.item as { title: string; externalId: string; repo: string | null; baseBranch: string } | undefined
     if (!item || !item.repo) return { error: `Item '${item?.title ?? ''}' has no repository; set one on the item or its source` }
+    // The item's repo/branch came from the tracker (sync already dropped anything invalid to
+    // null), but re-check here too: defense in depth against a bad value reaching this point
+    // some other way (a direct DB edit, an older row from before this check existed).
+    if (!validateRepoUrl(item.repo).valid || !isValidBranchName(item.baseBranch)) {
+      return { error: `Item '${item.title || item.externalId}' has an invalid repository` }
+    }
     const { fromItem: _fromItem, ...rest } = step.config.repo
     step = { ...step, config: { ...step.config, repo: { url: item.repo, baseBranch: item.baseBranch, ...rest } } }
   }
@@ -104,10 +111,22 @@ export async function prepareStep(app: AppContext, run: Run, spec: Step, steps: 
     step = { ...step, config: { ...step.config, operation: resolved } }
   }
 
+  // Captured before rendering: a Factory step's repoUrl is validated at spec-parse time unless
+  // it is exactly this placeholder, in which case the real value only appears after rendering
+  // (from untrusted item/source data) and must be checked here instead.
+  const repoFromItem = step.kind === 'action' && step.config.type === 'factory' && step.config.repoUrl === ITEM_REPO_PLACEHOLDER
+
   step = renderStep(step, data)
 
   if (step.kind === 'action' && step.config.type === 'factory' && step.config.projectId === '') {
     return { error: "The item's source has no Factory project" }
+  }
+  if (repoFromItem && step.kind === 'action' && step.config.type === 'factory') {
+    const url = step.config.repoUrl ?? ''
+    if (!url || !validateRepoUrl(url).valid) {
+      const item = data.item as { title?: string; externalId?: string } | undefined
+      return { error: `Item '${item?.title || item?.externalId || ''}' has an invalid repository` }
+    }
   }
 
   if (step.kind === 'agent' && t.kind === 'alert' && incident) {

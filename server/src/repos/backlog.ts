@@ -171,7 +171,11 @@ export async function claimDueSources(q: Queryable, limit: number): Promise<Back
 }
 
 export async function recordSync(q: Queryable, orgId: string, id: string, error: string | null): Promise<void> {
-  await q.query(`UPDATE backlog_sources SET last_sync_at = now(), last_sync_error = $3 WHERE org_id = $1 AND id = $2`, [orgId, id, error])
+  await q.query(`UPDATE backlog_sources SET last_sync_at = now(), last_sync_error = $3 WHERE org_id = $1 AND id = $2`, [
+    orgId,
+    id,
+    error === null ? null : capError(error),
+  ])
 }
 
 // ── Items ────────────────────────────────────────────────────────────────────
@@ -259,6 +263,13 @@ const capBody = (v: string) => v.slice(0, BODY_MAX)
 const capLabels = (v: string[]) => v.slice(0, LABELS_MAX).map((l) => l.slice(0, LABEL_MAX))
 const capNote = (v: string | null | undefined) => (v == null ? null : v.slice(0, STATE_NOTE_MAX))
 
+/** Stored sync/write errors (source or write service messages) are capped so a verbose upstream failure can't bloat a row. */
+export const SYNC_ERROR_MAX = 2000
+const capError = (v: string) => v.slice(0, SYNC_ERROR_MAX)
+
+/** `title ILIKE` search terms are user input: escape ILIKE's own wildcards so a search for "100%" or "a_b" matches literally. */
+const escapeLikeTerm = (v: string) => v.replace(/[\\%_]/g, (c) => `\\${c}`)
+
 function toItem(r: ItemRow): BacklogItem {
   return {
     id: r.id,
@@ -298,7 +309,7 @@ export async function listItems(
        AND ($4::text IS NULL OR title ILIKE '%' || $4 || '%')
      ORDER BY array_position(${STATE_ORDER}, state), position NULLS LAST, created_at
      LIMIT $5`,
-    [orgId, f.state ?? null, f.sourceId ?? null, f.q ?? null, Math.min(f.limit ?? 100, 500)],
+    [orgId, f.state ?? null, f.sourceId ?? null, f.q ? escapeLikeTerm(f.q) : null, Math.min(f.limit ?? 100, 500)],
   )
   return rows.map(toItem)
 }
@@ -316,6 +327,13 @@ export async function listItemEvents(q: Queryable, orgId: string, itemId: string
   return rows.map((r) => ({ id: Number(r.id), at: iso(r.at)!, kind: r.kind, data: r.data }))
 }
 
+/**
+ * Inserts a new item under `sourceId`. The source must belong to `orgId` —
+ * enforced in the same statement (an INSERT ... SELECT gated on that match)
+ * rather than a separate lookup, so a caller can never race its way around
+ * the check, and a source id from another org fails loudly instead of
+ * silently creating a cross-tenant row.
+ */
 export async function insertItem(
   q: Queryable,
   orgId: string,
@@ -326,7 +344,9 @@ export async function insertItem(
 ): Promise<BacklogItem> {
   const [row] = await q.query<ItemRow>(
     `INSERT INTO backlog_items (org_id, source_id, external_id, title, body, url, repo_url, base_branch, labels, external_state, position, state)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING ${ITEM_COLS}`,
+     SELECT $1, bs.id, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
+     FROM backlog_sources bs WHERE bs.id = $2 AND bs.org_id = $1
+     RETURNING ${ITEM_COLS}`,
     [
       orgId,
       sourceId,
@@ -342,7 +362,8 @@ export async function insertItem(
       state,
     ],
   )
-  return toItem(row!)
+  if (!row) throw new Error(`Backlog source ${sourceId} does not belong to this org`)
+  return toItem(row)
 }
 
 export async function updateItemFields(q: Queryable, orgId: string, itemId: string, fields: Partial<BacklogItemFields>): Promise<BacklogItem | null> {
@@ -403,7 +424,7 @@ export async function setItemState(
   const item = toItem(row)
   await addItemEvent(q, orgId, itemId, opts.event, opts.data ?? {})
 
-  const [source] = await q.query<{ mapping: StatusMapping }>(`SELECT mapping FROM backlog_sources WHERE id = $1`, [item.sourceId])
+  const [source] = await q.query<{ mapping: StatusMapping }>(`SELECT mapping FROM backlog_sources WHERE id = $1 AND org_id = $2`, [item.sourceId, orgId])
   if (source?.mapping.out[state]) {
     await q.query(
       `INSERT INTO backlog_writes (org_id, item_id, source_id, state, note)
@@ -420,6 +441,11 @@ export async function setItemState(
 export async function leaseItem(q: Queryable, orgId: string, itemId: string, runId: string): Promise<BacklogItem | null> {
   await q.query(`UPDATE backlog_items SET run_id = $3, updated_at = now() WHERE org_id = $1 AND id = $2`, [orgId, itemId, runId])
   return setItemState(q, orgId, itemId, 'planning', { event: 'picked', data: { runId } })
+}
+
+/** Marks a leased item to drop once its run finishes (engine/engine.ts finishItemRun reads this flag). */
+export async function markDropAfterRun(q: Queryable, orgId: string, itemId: string): Promise<void> {
+  await q.query(`UPDATE backlog_items SET drop_after_run = true, updated_at = now() WHERE org_id = $1 AND id = $2`, [orgId, itemId])
 }
 
 /** System context: ready items (not leased, enabled source, matching filters), locked for the scheduler. */
@@ -592,7 +618,7 @@ export async function retryWrite(q: Queryable, orgId: string, id: string, error:
        next_attempt_at = CASE WHEN attempts + 1 >= $4 THEN next_attempt_at ELSE now() + make_interval(mins => LEAST($5, power(2, attempts))::int) END,
        failed_at = CASE WHEN attempts + 1 >= $4 THEN now() ELSE failed_at END
      WHERE org_id = $1 AND id = $2`,
-    [orgId, id, error, MAX_WRITE_ATTEMPTS, MAX_RETRY_DELAY_MIN],
+    [orgId, id, capError(error), MAX_WRITE_ATTEMPTS, MAX_RETRY_DELAY_MIN],
   )
 }
 

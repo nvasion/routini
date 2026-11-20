@@ -813,6 +813,35 @@ describe('backlog templates and fromItem repos', () => {
     void item
   })
 
+  // Hardening (wave A security review, item 1): an item's repo/baseBranch come straight from
+  // the tracker (untrusted). sync.ts already drops anything unsafe to null, but prepareStep
+  // re-checks it too — in case of an older row, or `repo.fromItem` resolving a value some other
+  // way than the normal sync path.
+  it("fails an agent step with repo.fromItem when the item's own repository is not a safe git host", async () => {
+    const src = await backlogSource()
+    const item = await backlogItem(src.id, 'badrepo1', { title: 'Bad repo', repoUrl: 'ftp://evil.example.com/a/b' })
+    const { job } = await backlogJob([{ kind: 'agent', config: { agent: 'claude', prompt: 'p', repo: { fromItem: true } } }], { maxPerFire: 1 })
+    await schedulerTick(t.ctx.db, new Date(new Date(job.nextRunAt!).getTime() + 1000))
+    await worker.drain()
+    const runNumber = (await u.get(`${base()}/runs`)).body.runs[0].number
+    const d = await getRunDetail(runNumber)
+    expect(d.steps[0].error).toBe(`Item '${item.title}' has an invalid repository`)
+  })
+
+  it("fails a Factory step whose repoUrl renders from the item's repository when that repository is unsafe", async () => {
+    const src = await backlogSource({ factoryProjectId: 'proj1' })
+    const item = await backlogItem(src.id, 'badrepo2', { title: 'Bad repo for factory', repoUrl: 'ftp://evil.example.com/a/b' })
+    const { job } = await backlogJob(
+      [{ kind: 'action', config: { type: 'factory', operation: 'orchestrate', projectId: '{{item.factoryProjectId}}', repoUrl: '{{item.repo}}', request: 'go' } }],
+      { maxPerFire: 1 },
+    )
+    await schedulerTick(t.ctx.db, new Date(new Date(job.nextRunAt!).getTime() + 1000))
+    await worker.drain()
+    const runNumber = (await u.get(`${base()}/runs`)).body.runs[0].number
+    const d = await getRunDetail(runNumber)
+    expect(d.steps[0].error).toBe(`Item '${item.title}' has an invalid repository`)
+  })
+
   it("fails a Factory step whose projectId renders empty from the item's source", async () => {
     const src = await backlogSource() // no factoryProjectId
     await backlogItem(src.id, 'fac1')
