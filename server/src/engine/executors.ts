@@ -13,7 +13,7 @@ import { runFactoryAction } from './factory.js'
 import { runAzureBoardsAction } from './boards.js'
 import { runTeamsAction } from './teamsAction.js'
 import { execOnRunner, STDOUT_TAIL_BYTES } from '../runner/exec.js'
-import { shellExports } from './template.js'
+import { fillCredentials, shellExports } from './template.js'
 import { emitPlacement } from './placement.js'
 import type { EngineOptions, StepContext, StepExecutor, StepResult } from './types.js'
 
@@ -41,7 +41,13 @@ export function actionExecutor(opts: EngineOptions['actions'] = {}): StepExecuto
           const config: Record<string, string> = { url: cfg.url, method: cfg.method ?? 'GET' }
           if (cfg.expectStatus !== undefined) config['expectedStatus'] = String(cfg.expectStatus)
           if (cfg.timeoutMs !== undefined) config['timeout'] = String(cfg.timeoutMs)
-          if (cfg.headers) config['headers'] = JSON.stringify(cfg.headers)
+          const headers = { ...(cfg.headers ?? {}) }
+          for (const [name, value] of Object.entries(cfg.credentialHeaders ?? {})) {
+            const filled = await fillCredentials(value, (key) => ctx.secret(key))
+            if ('missing' in filled) return { status: 'failed', error: `Credential "${filled.missing}" is missing` }
+            headers[name] = filled.value
+          }
+          if (cfg.headers || cfg.credentialHeaders) config['headers'] = JSON.stringify(headers)
           if (cfg.body !== undefined) config['body'] = cfg.body
           const r = await runHttpTask({ ...task, config }, { ...opts.http, allowPrivateHosts })
           return finish(ctx, r, r.statusCode !== undefined ? { statusCode: r.statusCode } : {})
