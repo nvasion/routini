@@ -15,8 +15,8 @@ import type { AppContext } from '../http/common.js'
 import {
   addItemEvent,
   claimDueSources,
+  getItemsByExternalIds,
   insertItem,
-  listItems,
   markDropAfterRun,
   recordSync,
   setItemState,
@@ -25,7 +25,7 @@ import {
   type BacklogSource,
 } from '../repos/backlog.js'
 import { isValidBranchName, validateRepoUrl } from '../utils/repoUrl.js'
-import { adapterCtx } from './context.js'
+import { adapterCtx, requireConnected } from './context.js'
 import { getAdapter } from './index.js'
 import { matchesAny } from './mapping.js'
 import type { SourceItem } from './types.js'
@@ -61,7 +61,14 @@ function itemFields(sourceItem: SourceItem, repoUrl: string | null, baseBranch: 
 }
 
 async function applyFetchedItems(q: Queryable, source: BacklogSource, fetched: SourceItem[]): Promise<{ imported: number; updated: number }> {
-  const known = await listItems(q, source.orgId, { sourceId: source.id, limit: 500 })
+  // Look up exactly what was fetched: a capped listing would miss older items once a
+  // source has more than its cap, and re-inserting them would hit the unique key.
+  const known = await getItemsByExternalIds(
+    q,
+    source.orgId,
+    source.id,
+    fetched.map((f) => f.externalId),
+  )
   const byExternalId = new Map(known.map((item) => [item.externalId, item]))
 
   let imported = 0
@@ -109,7 +116,10 @@ export async function syncSource(app: AppContext, source: BacklogSource): Promis
   let updated = 0
   let error: string | null = null
   try {
-    const fetched = await getAdapter(source.kind).fetch(adapterCtx(app, source.orgId), source.config)
+    const adapter = getAdapter(source.kind)
+    const ctx = adapterCtx(app, source.orgId)
+    await requireConnected(ctx, adapter.integration)
+    const fetched = await adapter.fetch(ctx, source.config)
     ;({ imported, updated } = await app.db.org(source.orgId, (q) => applyFetchedItems(q, source, fetched)))
   } catch (err) {
     error = err instanceof Error ? err.message : String(err)

@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { baseRoutes, mockFetch, renderAt } from '../test/harness'
 import type { BacklogItem, BacklogSource, Job } from '../lib/types'
+import { eventLabel, httpUrl } from './BacklogPage'
 
 beforeEach(() => {
   localStorage.clear()
@@ -126,5 +127,26 @@ describe('backlog page', () => {
     fireEvent.click(within(main).getByRole('button', { name: 'Sync now' }))
     await waitFor(() => expect(log.calls.some((c) => c.method === 'POST' && c.url === '/api/orgs/acme/backlog/sources/src1/sync')).toBe(true))
     await within(main).findByText('No items match these filters.')
+  })
+})
+
+describe('httpUrl', () => {
+  it('only lets http(s) tracker URLs become links', () => {
+    expect(httpUrl('https://northwind.monday.com/boards/1/pulses/2')).toBe('https://northwind.monday.com/boards/1/pulses/2')
+    expect(httpUrl('javascript:alert(1)')).toBeNull()
+    expect(httpUrl('data:text/html,hi')).toBeNull()
+    expect(httpUrl('not a url')).toBeNull()
+    expect(httpUrl(null)).toBeNull()
+  })
+})
+
+describe('eventLabel', () => {
+  it('puts item events in words', () => {
+    expect(eventLabel({ kind: 'imported', data: {} }, 'Northwind shop board')).toBe('Imported from Northwind shop board')
+    expect(eventLabel({ kind: 'run.finished', data: { number: 12, status: 'failed' } }, 's')).toBe('Run #12 failed')
+    expect(eventLabel({ kind: 'run.finished', data: { number: 13, status: 'succeeded' } }, 's')).toBe('Run #13 finished')
+    expect(eventLabel({ kind: 'ready.source', data: {} }, 'northwind/roadmap')).toBe('Set ready in northwind/roadmap')
+    expect(eventLabel({ kind: 'dropped.manual', data: {} }, 's')).toBe('Dropped in Routini')
+    expect(eventLabel({ kind: 'something.new', data: {} }, 's')).toBe('something.new')
   })
 })

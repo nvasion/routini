@@ -39,7 +39,7 @@ import {
   type ItemState,
   type SourceInput,
 } from '../repos/backlog.js'
-import { ITEM_STATES } from '../backlog/types.js'
+import { ITEM_STATES, SOURCE_KINDS, type SourceKind } from '../backlog/types.js'
 import { isValidBranchName } from '../utils/repoUrl.js'
 import { adapterCtx } from '../backlog/context.js'
 import { getAdapter } from '../backlog/index.js'
@@ -53,7 +53,7 @@ function isObj(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === 'object' && !Array.isArray(v)
 }
 
-function parseConfigOr400(kind: 'monday' | 'repo', raw: unknown): Record<string, unknown> {
+function parseConfigOr400(kind: SourceKind, raw: unknown): Record<string, unknown> {
   try {
     return getAdapter(kind).parseConfig(raw) as Record<string, unknown>
   } catch (err) {
@@ -84,8 +84,8 @@ function parseSourceFields(raw: unknown, mode: 'create' | 'update'): Partial<Sou
   }
   if (mode === 'create' || raw['kind'] !== undefined) {
     const kind = raw['kind']
-    if (kind !== 'monday' && kind !== 'repo') throw badRequest('kind must be "monday" or "repo"')
-    out.kind = kind
+    if (!(SOURCE_KINDS as readonly unknown[]).includes(kind)) throw badRequest(`kind must be one of: ${SOURCE_KINDS.join(', ')}`)
+    out.kind = kind as SourceKind
   }
   if (raw['defaultRepoUrl'] !== undefined) {
     const v = raw['defaultRepoUrl']
@@ -122,7 +122,7 @@ export function backlogRouter(ctx: AppContext): Router {
 
   r.get(
     '/backlog/sources',
-    requireRole('member'),
+    // Reads are open to every org member, viewers included, like the rest of the console.
     ah(async (req, res) => {
       const org = currentOrg(req)
       const sources = await db.org(org.id, (q) => listSources(q, org.id))
@@ -206,18 +206,20 @@ export function backlogRouter(ctx: AppContext): Router {
 
   r.get(
     '/backlog/items',
-    requireRole('member'),
     ah(async (req, res) => {
       const org = currentOrg(req)
       const stateRaw = req.query['state']
       const state = typeof stateRaw === 'string' ? (stateRaw as ItemState) : undefined
       if (state && !(ITEM_STATES as readonly string[]).includes(state)) throw badRequest(`state must be among: ${ITEM_STATES.join(', ')}`)
       const sourceIdRaw = req.query['sourceId']
-      const sourceId = typeof sourceIdRaw === 'string' ? sourceIdRaw : undefined
+      const sourceId = typeof sourceIdRaw === 'string' && sourceIdRaw !== '' ? sourceIdRaw : undefined
+      if (sourceId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(sourceId)) throw badRequest('sourceId must be a source id')
       const qRaw = req.query['q']
-      const search = typeof qRaw === 'string' ? qRaw : undefined
+      const search = typeof qRaw === 'string' && qRaw !== '' ? qRaw.slice(0, 200) : undefined
       const limitRaw = req.query['limit']
-      const limit = typeof limitRaw === 'string' ? Number(limitRaw) : undefined
+      const limitNum = typeof limitRaw === 'string' ? Number(limitRaw) : undefined
+      if (limitNum !== undefined && (!Number.isInteger(limitNum) || limitNum < 1)) throw badRequest('limit must be a positive integer')
+      const limit = limitNum
       const items = await db.org(org.id, (q) => listItems(q, org.id, { state, sourceId, q: search, limit }))
       res.json({ items })
     }),
@@ -225,7 +227,6 @@ export function backlogRouter(ctx: AppContext): Router {
 
   r.get(
     '/backlog/items/:id',
-    requireRole('member'),
     ah(async (req, res) => {
       const org = currentOrg(req)
       const out = await db.org(org.id, async (q) => {

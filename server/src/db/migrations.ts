@@ -642,6 +642,15 @@ CREATE UNIQUE INDEX backlog_writes_pending_idx ON backlog_writes (item_id) WHERE
 SELECT routini_tenant('backlog_writes');
 `,
   },
+  {
+    version: 12,
+    name: 'Backlog sources: Jira, Linear, Azure Boards, GitHub Issues',
+    sql: `
+ALTER TABLE backlog_sources DROP CONSTRAINT backlog_sources_kind_check;
+ALTER TABLE backlog_sources ADD CONSTRAINT backlog_sources_kind_check
+  CHECK (kind IN ('monday', 'repo', 'jira', 'linear', 'azure-boards', 'github-issues'));
+`,
+  },
 ]
 
 /** Grants the app role access to everything a migration created. Runs after every migration. */

@@ -10,6 +10,11 @@
 //   URLs      → percent-encoded.
 //   elsewhere → as is (prompts, messages, bodies, headers).
 // Unknown paths render as an empty string.
+//
+// An http header may instead reference stored credentials, `Bearer
+// {{credentials.<key>}}`, and nothing else. Such a header is never rendered
+// with data: it moves to `credentialHeaders`, which the executor fills from the
+// credential store. So text from a trigger can never name a credential.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import type { Step } from './spec.js'
@@ -45,6 +50,31 @@ export function hasPlaceholders(s: string): boolean {
   return PLACEHOLDER.test(s)
 }
 
+/** The paths a string's placeholders name, in order. */
+export function placeholderPaths(s: string): string[] {
+  return [...s.matchAll(PLACEHOLDER)].map((m) => m[1]!)
+}
+
+const CREDENTIALS = 'credentials.'
+
+/** The credential keys a string references as `{{credentials.<key>}}`. */
+export function credentialKeys(s: string): string[] {
+  return placeholderPaths(s)
+    .filter((p) => p.startsWith(CREDENTIALS))
+    .map((p) => p.slice(CREDENTIALS.length))
+}
+
+/** Fills `{{credentials.<key>}}` placeholders, or names the first key `resolve` has no value for. */
+export async function fillCredentials(s: string, resolve: (key: string) => Promise<string | null>): Promise<{ value: string } | { missing: string }> {
+  const values = new Map<string, string>()
+  for (const key of credentialKeys(s)) {
+    const v = await resolve(key)
+    if (v === null) return { missing: key }
+    values.set(key, v)
+  }
+  return { value: s.replace(PLACEHOLDER, (_, path: string) => values.get(path.slice(CREDENTIALS.length)) ?? '') }
+}
+
 export function renderText(s: string, data: TemplateData, mode: 'raw' | 'url' = 'raw'): string {
   return s.replace(PLACEHOLDER, (_, path: string) => {
     const v = lookup(data, path)
@@ -77,13 +107,17 @@ export function renderStep(step: Step, data: TemplateData): Step {
     case 'action': {
       const c = step.config
       if (c.type === 'http') {
+        const headers = Object.entries(c.headers ?? {})
+        const withCredentials = headers.filter(([, v]) => credentialKeys(v).length > 0)
+        const plain = headers.filter(([, v]) => credentialKeys(v).length === 0)
         return {
           ...step,
           config: {
             ...c,
             url: renderText(c.url, data, 'url'),
             body: c.body === undefined ? undefined : renderText(c.body, data),
-            headers: c.headers ? Object.fromEntries(Object.entries(c.headers).map(([k, v]) => [k, renderText(v, data)])) : undefined,
+            headers: c.headers ? Object.fromEntries(plain.map(([k, v]) => [k, renderText(v, data)])) : undefined,
+            credentialHeaders: withCredentials.length ? Object.fromEntries(withCredentials) : undefined,
           },
         }
       }

@@ -158,6 +158,15 @@ describe('sources', () => {
     expect((await u.get(`${base()}/backlog/items`)).body.items).toEqual([])
   })
 
+  it('says which integration to connect when the source has none, instead of the tracker\'s auth error', async () => {
+    const other = await t.signup('no-monday@example.com')
+    const src = await createMondaySource(other)
+    board = [{ id: '1', name: 'Ready one', status: 'Ready' }]
+    const res = await other.post(`/api/orgs/${other.orgSlug}/backlog/sources/${src.id}/sync`)
+    expect(res.status).toBe(200)
+    expect(res.body.source.lastSyncError).toBe('The monday.com integration is not connected (Integrations → monday.com)')
+  })
+
   it('imports only items matching in.ready on first sync', async () => {
     const src = await createMondaySource(u)
     board = [

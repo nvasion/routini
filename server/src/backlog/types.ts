@@ -31,10 +31,19 @@ export interface SourceItem {
   position?: number | null
 }
 
+/** Where a backlog source's items come from. */
+export type SourceKind = 'monday' | 'repo' | 'jira' | 'linear' | 'azure-boards' | 'github-issues'
+export const SOURCE_KINDS: readonly SourceKind[] = ['monday', 'repo', 'jira', 'linear', 'azure-boards', 'github-issues']
+
+/** The integration (integrations/catalog.ts id) whose credentials a source kind uses. */
+export type SourceIntegration = 'monday' | 'github' | 'jira' | 'linear' | 'azure-devops'
+
 export interface AdapterCtx {
   fetch: FetchFn
   /** The org's credentials for an integration (empty when not connected). */
-  credentials(integration: 'monday' | 'github'): Promise<Record<string, string>>
+  credentials(integration: SourceIntegration): Promise<Record<string, string>>
+  /** Self-hosted servers may reach private addresses (a Jira on the LAN); hosted ones never do. */
+  allowPrivateHosts: boolean
   signal?: AbortSignal
 }
 
@@ -44,8 +53,8 @@ export interface StatusWrite {
 }
 
 export interface SourceAdapter<C = unknown> {
-  kind: 'monday' | 'repo'
-  integration: 'monday' | 'github'
+  kind: SourceKind
+  integration: SourceIntegration
   /** Validates a source's config; throws SpecError naming the exact field. */
   parseConfig(raw: unknown): C
   /** At most 500 items. */

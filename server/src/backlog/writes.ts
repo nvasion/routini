@@ -16,7 +16,7 @@ import {
   type BacklogItem,
   type BacklogWrite,
 } from '../repos/backlog.js'
-import { adapterCtx } from './context.js'
+import { adapterCtx, requireConnected } from './context.js'
 import { getAdapter } from './index.js'
 
 /** `<publicUrl>/o/<org slug>/runs/<n>` for the item's last run, or null when there is none (or the org/run has gone). */
@@ -57,13 +57,17 @@ async function processWrite(app: AppContext, write: BacklogWrite): Promise<void>
 
   try {
     const comment = mapped.comment ? await buildComment(app, write, item) : undefined
-    await getAdapter(source.kind).write(
-      adapterCtx(app, write.orgId),
+    const adapter = getAdapter(source.kind)
+    const ctx = adapterCtx(app, write.orgId)
+    await requireConnected(ctx, adapter.integration)
+    await adapter.write(
+      ctx,
       source.config,
       { externalId: item.externalId, title: item.title, url: item.url },
       { value: mapped.value, comment },
     )
-    await app.db.org(write.orgId, (q) => completeWrite(q, write.orgId, write.id))
+    // Only if the item didn't move on meanwhile; otherwise the row now holds the newer state and stays due.
+    await app.db.org(write.orgId, (q) => completeWrite(q, write.orgId, write.id, write.state))
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     await app.db.org(write.orgId, (q) => retryWrite(q, write.orgId, write.id, message))

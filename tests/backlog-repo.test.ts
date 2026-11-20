@@ -390,6 +390,20 @@ describe('status writes', () => {
     expect(await t.ctx.db.system((q) => claimDueWrites(q, 10))).toHaveLength(0)
   })
 
+  it('completeWrite with the sent state leaves the write pending when the item moved on meanwhile', async () => {
+    const both: StatusMapping = { out: { blocked: { value: 'Blocked' }, ready: { value: 'Ready' } }, in: { ready: ['Todo'], dropped: ['Dropped'] } }
+    const s = await source(both)
+    const a = await item(s.id)
+    await t.ctx.db.org(u.orgId, (q) => setItemState(q, u.orgId, a.id, 'blocked', { event: 'x' }))
+    const [w] = await t.ctx.db.system((q) => claimDueWrites(q, 10))
+    // While "Blocked" is being sent, a person sets the item ready: the same pending row now holds ready.
+    await t.ctx.db.org(u.orgId, (q) => setItemState(q, u.orgId, a.id, 'ready', { event: 'y' }))
+    expect(await t.ctx.db.org(u.orgId, (q) => completeWrite(q, u.orgId, w!.id, 'blocked'))).toBe(false)
+    const again = await t.ctx.db.system((q) => claimDueWrites(q, 10))
+    expect(again.map((x) => [x.id, x.state])).toEqual([[w!.id, 'ready']])
+    expect(await t.ctx.db.org(u.orgId, (q) => completeWrite(q, u.orgId, w!.id, 'ready'))).toBe(true)
+  })
+
   it('retryWrite backs off exponentially, capped at 60 minutes, and fails at 8 attempts', async () => {
     const s = await source(MAPPING_BLOCKED)
     const a = await item(s.id)

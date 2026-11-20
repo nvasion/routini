@@ -3,7 +3,7 @@
 // section 9). The HTTP API (section 8) ships in wave B; this page is built
 // and tested against it with a mocked fetch.
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { Empty, ErrorBanner, Field, Icon, StatusDot } from '../components/ui'
 import { api } from '../lib/api'
@@ -46,6 +46,46 @@ function StatePill({ state }: { state: ItemState }) {
       {STATE_LABELS[state]}
     </span>
   )
+}
+
+/** An item event in words (docs/work-intake-backlog.md names the kinds). Unknown kinds show as is. */
+export function eventLabel(e: { kind: string; data: Record<string, unknown> }, sourceName: string): string {
+  const d = e.data ?? {}
+  switch (e.kind) {
+    case 'imported':
+      return `Imported from ${sourceName}`
+    case 'picked':
+      return 'Picked up by a run'
+    case 'stage':
+      return d['step'] ? `Moved on at step ${String(d['step'])}` : 'Moved to the next stage'
+    case 'run.finished':
+      return `Run${d['number'] ? ` #${String(d['number'])}` : ''} ${d['status'] === 'succeeded' ? 'finished' : String(d['status'] ?? 'finished')}`
+    case 'ready.source':
+      return `Set ready in ${sourceName}`
+    case 'ready.manual':
+    case 'ready':
+      return 'Set ready in Routini'
+    case 'dropped.source':
+      return `Dropped in ${sourceName}`
+    case 'dropped.manual':
+    case 'drop':
+      return 'Dropped in Routini'
+    case 'repo.ignored':
+      return `Ignored an invalid repository: ${String(d['value'] ?? '')}`
+    default:
+      return e.kind
+  }
+}
+
+/** Item links come from tracker data: only http(s) URLs become links (no javascript: or data:). */
+export function httpUrl(raw: string | null | undefined): string | null {
+  if (!raw) return null
+  try {
+    const u = new URL(raw)
+    return u.protocol === 'https:' || u.protocol === 'http:' ? u.toString() : null
+  } catch {
+    return null
+  }
 }
 
 /** A job whose cron trigger picks backlog items (the job editor's "Run once per backlog item" switch). */
@@ -234,6 +274,12 @@ function ItemPanel({ itemId, backlogJobs, onClose, onChanged }: { itemId: string
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [jobId, setJobId] = useState('')
+  const panel = useRef<HTMLDivElement | null>(null)
+  const loaded = detail.data !== undefined
+  // The panel opens below the table: bring it into view, or a click on a row looks like nothing happened.
+  useEffect(() => {
+    if (loaded) panel.current?.scrollIntoView?.({ behavior: 'smooth', block: 'start' })
+  }, [itemId, loaded])
 
   async function act(fn: () => Promise<unknown>) {
     setBusy(true)
@@ -257,7 +303,7 @@ function ItemPanel({ itemId, backlogJobs, onClose, onChanged }: { itemId: string
   const canSetReady = (item.state === 'blocked' || item.state === 'dropped') && !leased
 
   return (
-    <div className="card" aria-label="Item" style={{ marginTop: 16 }}>
+    <div ref={panel} className="card" aria-label="Item" style={{ marginTop: 16, scrollMarginTop: 16 }}>
       <div className="inline" style={{ justifyContent: 'space-between' }}>
         <h2 style={{ margin: 0 }}>{item.title}</h2>
         <button type="button" className="btn small" onClick={onClose}>
@@ -267,13 +313,13 @@ function ItemPanel({ itemId, backlogJobs, onClose, onChanged }: { itemId: string
       <div className="inline meta">
         <StatePill state={item.state} />
         <span>{source.name}</span>
-        {item.url && (
-          <a href={item.url} target="_blank" rel="noreferrer">
+        {httpUrl(item.url) && (
+          <a href={httpUrl(item.url)!} target="_blank" rel="noreferrer">
             source
           </a>
         )}
-        {item.pullRequestUrl && (
-          <a href={item.pullRequestUrl} target="_blank" rel="noreferrer">
+        {httpUrl(item.pullRequestUrl) && (
+          <a href={httpUrl(item.pullRequestUrl)!} target="_blank" rel="noreferrer">
             pull request
           </a>
         )}
@@ -316,7 +362,7 @@ function ItemPanel({ itemId, backlogJobs, onClose, onChanged }: { itemId: string
         {d.events.map((e) => (
           <li key={e.id} className="list-row" style={{ cursor: 'default' }}>
             <span className="grow">
-              <span className="title">{e.kind}</span>
+              <span className="title">{eventLabel(e, source.name)}</span>
               <span className="sub">{relativeTime(e.at)}</span>
             </span>
           </li>

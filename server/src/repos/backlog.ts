@@ -7,7 +7,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import type { Queryable } from '../db/index.js'
-import { ITEM_STATES, type ItemState, type StatusMapping } from '../backlog/types.js'
+import { ITEM_STATES, type ItemState, type SourceKind, type StatusMapping } from '../backlog/types.js'
 
 export type { ItemState, StatusMapping }
 
@@ -19,7 +19,7 @@ export interface BacklogSource {
   id: string
   orgId: string
   name: string
-  kind: 'monday' | 'repo'
+  kind: SourceKind
   config: Record<string, unknown>
   mapping: StatusMapping
   defaultRepoUrl: string | null
@@ -36,7 +36,7 @@ export interface BacklogSource {
 
 export type SourceInput = {
   name: string
-  kind: 'monday' | 'repo'
+  kind: SourceKind
   config: Record<string, unknown>
   mapping: StatusMapping
   defaultRepoUrl?: string | null
@@ -50,7 +50,7 @@ interface SourceRow {
   id: string
   org_id: string
   name: string
-  kind: 'monday' | 'repo'
+  kind: SourceKind
   config: Record<string, unknown>
   mapping: StatusMapping
   default_repo_url: string | null
@@ -311,6 +311,17 @@ export async function listItems(
      LIMIT $5`,
     [orgId, f.state ?? null, f.sourceId ?? null, f.q ? escapeLikeTerm(f.q) : null, Math.min(f.limit ?? 100, 500)],
   )
+  return rows.map(toItem)
+}
+
+/** A source's items with these external ids (sync looks items up by what it fetched, not by a capped list). */
+export async function getItemsByExternalIds(q: Queryable, orgId: string, sourceId: string, externalIds: string[]): Promise<BacklogItem[]> {
+  if (externalIds.length === 0) return []
+  const rows = await q.query<ItemRow>(`SELECT ${ITEM_COLS} FROM backlog_items WHERE org_id = $1 AND source_id = $2 AND external_id = ANY($3::text[])`, [
+    orgId,
+    sourceId,
+    externalIds,
+  ])
   return rows.map(toItem)
 }
 
@@ -605,8 +616,17 @@ export async function claimDueWrites(q: Queryable, limit: number): Promise<Backl
   return rows.map(toWrite)
 }
 
-export async function completeWrite(q: Queryable, orgId: string, id: string): Promise<void> {
-  await q.query(`UPDATE backlog_writes SET done_at = now() WHERE org_id = $1 AND id = $2`, [orgId, id])
+/**
+ * Marks a write done. With `sentState`, only when the write still holds that state: if the item
+ * moved on while the write was in flight, setItemState updated this same pending row in place,
+ * and the newer state must still be sent, so the row stays pending. Returns whether it completed.
+ */
+export async function completeWrite(q: Queryable, orgId: string, id: string, sentState?: ItemState): Promise<boolean> {
+  const rows = await q.query<{ id: string }>(
+    `UPDATE backlog_writes SET done_at = now() WHERE org_id = $1 AND id = $2 AND ($3::text IS NULL OR state = $3) RETURNING id`,
+    [orgId, id, sentState ?? null],
+  )
+  return rows.length > 0
 }
 
 /** Bumps attempts with exponential backoff (capped at 60 minutes); fails the write at 8 attempts. */

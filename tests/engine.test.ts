@@ -15,12 +15,19 @@ import { createSource, getItem, insertItem, setItemState, type StatusMapping } f
 
 // ── Test doubles ─────────────────────────────────────────────────────────────
 
-/** http actions: /ok → 200, /fail → 500, /flaky-N → fails the first N calls. */
+/**
+ * http actions: /ok → 200, /fail → 500, /flaky-N → fails the first N calls,
+ * /echo → 200 with the request headers as the body. Headers sent are kept per path.
+ */
 const calls = new Map<string, number>()
-const fakeFetch: FetchFn = async (url) => {
+const sentHeaders = new Map<string, Record<string, string>>()
+const fakeFetch: FetchFn = async (url, init) => {
   const path = new URL(url).pathname
   const n = (calls.get(path) ?? 0) + 1
   calls.set(path, n)
+  const headers = (init.headers ?? {}) as Record<string, string>
+  sentHeaders.set(path, headers)
+  if (path === '/echo') return new Response(JSON.stringify(headers), { status: 200 })
   const flaky = /^\/flaky-(\d+)$/.exec(path)
   const status = path === '/ok' ? 200 : flaky ? (n <= Number(flaky[1]) ? 503 : 200) : 500
   return new Response(`body for ${path}`, { status })
@@ -62,6 +69,7 @@ const base = () => `/api/orgs/${u.orgSlug}`
 
 beforeEach(async () => {
   calls.clear()
+  sentHeaders.clear()
   sshCommands.length = 0
   finished.length = 0
   started = 0
@@ -558,6 +566,55 @@ describe('webhooks', () => {
     const r = supertest(t.app)
     expect((await r.post(job.webhookUrl!).set('Authorization', `Bearer ${webhookSecret}`).send('{}')).status).toBe(404)
     expect((await r.post(job.webhookUrl!).set('Authorization', `Bearer ${rotated.body.webhookSecret}`).send('{}')).status).toBe(202)
+  })
+})
+
+// ── Credentials in http headers ──────────────────────────────────────────────
+
+describe('credentials in http headers', () => {
+  const TOKEN = 'runner-token-do-not-leak'
+  const echo = (headers: Record<string, string>) => ({ id: 'report', name: 'report', kind: 'action', config: { type: 'http', url: 'https://example.test/echo', method: 'POST', headers } })
+
+  it('sends the stored credential and redacts it from the timeline', async () => {
+    await u.put(`${base()}/credentials/progeny.runner`, { value: TOKEN })
+    const { job } = await makeJob([echo({ Authorization: 'Bearer {{credentials.progeny.runner}}' })])
+    const run = await startRun(job.id)
+    await worker.drain()
+    expect((await getRunDetail(run.number)).run.status).toBe('succeeded')
+    expect(sentHeaders.get('/echo')?.['Authorization']).toBe(`Bearer ${TOKEN}`)
+    const events = JSON.stringify((await u.get(`${base()}/runs/${run.id}/events`)).body.events)
+    expect(events).not.toContain(TOKEN)
+    expect(events).toContain('[REDACTED]')
+    expect(JSON.stringify((await u.get(`${base()}/jobs/${job.id}`)).body)).toContain('{{credentials.progeny.runner}}')
+  })
+
+  it('fails the step when the credential is missing', async () => {
+    const { job } = await makeJob([echo({ Authorization: 'Bearer {{credentials.progeny.runner}}' })])
+    const run = await startRun(job.id)
+    await worker.drain()
+    const detail = await getRunDetail(run.number)
+    expect(detail.run.status).toBe('failed')
+    expect(JSON.stringify(detail)).toMatch(/Credential \\"progeny.runner\\" is missing/)
+    expect(sentHeaders.has('/echo')).toBe(false)
+  })
+
+  it("never resolves a credential reference that came from the trigger's data", async () => {
+    await u.put(`${base()}/credentials/progeny.runner`, { value: TOKEN })
+    const { job, webhookSecret } = await makeJob([echo({ 'X-Note': '{{trigger.payload.note}}' })], { trigger: { kind: 'webhook' } })
+    const res = await supertest(t.app)
+      .post(job.webhookUrl!)
+      .set('Authorization', `Bearer ${webhookSecret}`)
+      .set('Content-Type', 'application/json')
+      .send(JSON.stringify({ note: '{{credentials.progeny.runner}}' }))
+    expect(res.status).toBe(202)
+    await worker.drain()
+    expect(sentHeaders.get('/echo')?.['X-Note']).toBe('{{credentials.progeny.runner}}')
+  })
+
+  it('rejects credential references it cannot keep safe', async () => {
+    const bad = async (headers: Record<string, string>) => (await u.post(`${base()}/jobs`, { name: 'x', steps: [echo(headers)] })).body.error as string
+    expect(await bad({ Authorization: 'Bearer {{credentials.progeny.runner}} {{trigger.kind}}' })).toMatch(/can't mix a credential with other placeholders/)
+    expect(await bad({ Authorization: '{{credentials.webhook.abc}}' })).toMatch(/managed by Routini/)
   })
 })
 

@@ -119,6 +119,46 @@ Functions (tenant ones take `(q, orgId, ...)` and filter by org_id; `system` one
     4. If there was no PR, open one: title `Routini: <title> -> <value>`, body with the comment text.
     One PR per item; later writes update it.
 
+## 6b. More sources (P4)
+
+Each adapter lives in its own file under `server/src/backlog/` (a placeholder exists; replace it, keep the export name). Same rules as section 6:
+- parseConfig throws SpecError naming the field;
+- every request goes through `ctx.fetch` with `redirect: 'manual'`;
+- at most 500 items per fetch (page as needed);
+- tracker error bodies become short messages without credentials;
+- position = the order the tracker returned.
+
+The kinds, integrations and "not connected" labels are already wired (`types.ts`, `index.ts`, `context.ts`, migration 12).
+
+- **`jira.ts`** (`jiraAdapter`, kind `jira`, integration `jira`: `siteUrl`, `email`, `apiToken`; HTTP Basic `email:apiToken`).
+  - Config `{ jql: string /* 1-2000 */, repoField?: string /* custom field id like customfield_10050 */ }`.
+  - The site URL must be https, without embedded credentials. Unless `ctx.allowPrivateHosts`, check its hostname with `isSsrfSafeHostname` and `resolvedIpIsSsrfSafe` (utils/network.ts), otherwise "The Jira site URL points at a private address".
+  - Fetch: GET `{siteUrl}/rest/api/3/search/jql?jql=…&fields=summary,description,status,labels[,repoField]&maxResults=100`, paging with `nextPageToken`. externalId = issue key, title = summary, body = the description's Atlassian Document Format flattened to plain text (paragraphs on new lines), url = `{siteUrl}/browse/{key}`, state = `status.name`, labels = labels, repoUrl = the repoField value when it is a string.
+  - Write:
+    - If the status already equals the value (case-insensitive), skip.
+    - Otherwise GET `/rest/api/3/issue/{key}/transitions` and pick the transition whose `to.name` (or failing that its `name`) equals the value case-insensitively, then POST it. If none matches: "No transition to '<value>' from '<current>'".
+    - Comment: POST `/rest/api/3/issue/{key}/comment` with an ADF doc, one paragraph per line.
+- **`linear.ts`** (`linearAdapter`, kind `linear`, integration `linear`: `apiKey` sent raw in `authorization`; POST `https://api.linear.app/graphql`).
+  - Config `{ teamKey: string /* ^[A-Z][A-Z0-9]{0,9}$ */, labels?: string[] /* all must be present */ }`.
+  - Fetch: `issues(filter: { team: { key: { eq } } [, labels: { name: { in } }] }, first: 100, after)`, paged, keeping only issues that carry every configured label. externalId = issue `id`, title, body = description, url, state = `state.name`, labels = label names.
+  - Write:
+    - Read the team's `states`, find the one named like the value (case-insensitive), then `issueUpdate(id, input: { stateId })`. If none matches: "No workflow state '<value>' in team <teamKey>".
+    - Comment: `commentCreate(input: { issueId, body })`.
+    - GraphQL `errors`: throw the first message.
+- **`azureBoards.ts`** (`azureBoardsAdapter`, kind `azure-boards`, integration `azure-devops`: `organization`, `pat`). Reuse `integrations/azureDevops.ts` (adoBaseUrl, adoAuthHeader, ADO_API_VERSION) and follow engine/boards.ts for WIQL and its "HTML sign-in page instead of JSON" check.
+  - Config `{ project: string /* same rule as the azure-boards action's project */, wiql?: string /* max 2000; default: the project's work items not in Closed, Done or Removed */, repoField?: string /* e.g. Custom.Repository */ }`.
+  - Fetch: WIQL `$top=500`, then `workitemsbatch` in chunks of 200 with System.Title, System.Description, System.State, System.Tags[, repoField]. externalId = the id as a string, body = the description with HTML tags removed, url = `https://dev.azure.com/{org}/{project}/_workitems/edit/{id}`, state = System.State, labels = System.Tags split on `;` and trimmed.
+  - Write:
+    - PATCH `{org}/_apis/wit/workitems/{id}?api-version=7.1`, content-type `application/json-patch+json`, body `[{ op: 'add', path: '/fields/System.State', value }]`.
+    - Comment: POST `{org}/{project}/_apis/wit/workItems/{id}/comments?api-version=7.1-preview.4` with `{ text }`.
+- **`githubIssues.ts`** (`githubIssuesAdapter`, kind `github-issues`, integration `github`: `token`, Bearer, fixed host `https://api.github.com`).
+  - Config `{ repoUrl /* parseGithubRepo, same message as the repo source */, labels?: string[] /* filter */, statusPrefix?: string /* default "status:" */ }`.
+  - Fetch: GET `/repos/{o}/{r}/issues?state=all&per_page=100&page=N[&labels=a,b]`, skipping pull requests (items with `pull_request`). externalId = the issue number as a string, title, body, url = `html_url`. state = the rest of the first label starting with statusPrefix (trimmed), else `open` or `closed`. labels = the other label names.
+  - Write:
+    - Value `open` or `closed` (case-insensitive): PATCH the issue state.
+    - Anything else: DELETE each label starting with statusPrefix, then POST labels `[<statusPrefix><value>]`, so `status:` + `In progress` becomes `status:In progress`.
+    - Comment: POST `/issues/{n}/comments` with `{ body }`.
+
 ## 7. Sync and writes (scheduler, one timer)
 
 `Scheduler.start` runs three ticks each interval, each in its own try/catch: due jobs (as today), `syncTick` (backlog/sync.ts), `writesTick` (backlog/writes.ts). Network calls happen outside transactions.

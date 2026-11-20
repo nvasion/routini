@@ -62,6 +62,7 @@ function ctxWith(fetch: FetchFn, creds: Record<string, Record<string, string>>):
   return {
     fetch,
     credentials: async (integration) => creds[integration] ?? {},
+    allowPrivateHosts: false,
   }
 }
 
