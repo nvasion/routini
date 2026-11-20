@@ -63,6 +63,8 @@ Omnimancer's stream-json variant directly.
 | `CHECK_COMMAND` | Done-check run after the agent; non-zero fails the step. |
 | `ROUTINI_OUTPUT` | `pr`, `branch` or `none`. |
 | `ROUTINI_COMMIT_MESSAGE` | Commit message for the agent's changes. |
+| `ROUTINI_OUT_FILE` | Set when the step has `config.returns`: the path the agent must write one JSON object to before it finishes (fields and types are spelled out in `ROUTINI_SYSTEM_PROMPT`). The entrypoint checks it (exists, ≤ 64 KB, a JSON object) right after the agent exits and before `CHECK_COMMAND`, and fails the step if it's missing or malformed. |
+| `ROUTINI_REPO_READONLY` | `1` when `config.repo.readOnly` is set: the entrypoint clones with `--depth 1` and never commits or pushes, whatever `ROUTINI_OUTPUT` says (the worker already forces it to `none`). |
 | `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` | Model endpoint, from the org's AI settings. |
 | `CLAUDE_CODE_USE_BEDROCK` / `AWS_REGION` / `AWS_BEARER_TOKEN_BEDROCK` | Model endpoint when the org routes Claude Code through AWS Bedrock (Bedrock API key). |
 | `ROUTINI_ENDPOINT` / `ROUTINI_ENDPOINT_KEY` | Other agents (Omnimancer) instead of the vars above: the endpoint name from the AI settings (`anthropic`, `openrouter`, `aws-bedrock`, `gateway`, …) and its key. The image maps these onto the agent's own config. |
@@ -78,8 +80,14 @@ The agent's own output (Claude Code `--output-format stream-json`), plus control
 ::routini::{"type":"commit","sha":"…","files":3}
 ::routini::{"type":"pushed","branch":"routini/run-12"}
 ::routini::{"type":"no_changes"}
+::routini::{"type":"out","data":{"summary":"...","approved":true}}
 ::routini::{"type":"error","message":"git push failed"}
 ```
+
+`out` carries the JSON object read back from `ROUTINI_OUT_FILE` (config.returns).
+The worker validates it against the field types (dropping unknown keys) and
+puts the result on the step's output as `out`, readable by later steps as
+`{{steps.<id>.out.<name>}}`; a value that fails validation fails the step.
 
 **Exit code:** `0` success, `3` check failed, anything else failure.
 

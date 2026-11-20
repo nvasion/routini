@@ -36,7 +36,8 @@ import type { AgentId } from '../integrations/catalog.js'
 import { AgentStreamParser } from './agentStream.js'
 import { EnvError, type EnvPlacement } from './environments.js'
 import { addEnvironmentEvent, getEnvironment, type Environment } from '../repos/environments.js'
-import type { AgentConfig } from './spec.js'
+import { promptForReturns, validateReturns } from './returns.js'
+import type { AgentConfig, ReturnField } from './spec.js'
 import type { StepContext, StepExecutor, StepResult } from './types.js'
 import { emitPlacement } from './placement.js'
 import { dockerHostLabel, sandboxHostConfig } from '../services/dockerClient.js'
@@ -52,6 +53,10 @@ const DEFAULT_MEMORY_MB = 4096
 const AGENT_USER = '1000:1000'
 /** How long the run-scoped token and the egress session outlive the step's own timeout. */
 const GRACE_SEC = 600
+/** Where the agent writes its typed return fields (config.returns), per agents/README.md. */
+const OUT_FILE = '/tmp/routini-out.json'
+/** Hosts bound read-only (GET/HEAD and the git-upload-pack POST only) for a `repo.readOnly` step. */
+const READONLY_HOSTS = new Set(['github.com', 'api.github.com'])
 
 export const SYSTEM_PROMPT = [
   'You are running unattended inside Routini, an automation platform. No human is watching this session.',
@@ -330,17 +335,34 @@ export function agentExecutor(opts: AgentRunnerOptions = {}): StepExecutor {
         const access = await db.org(orgId, (q) => agentAccess(q, ctx, cfg, { brokered, routiniMcp, repoUrl: repo?.url }))
         for (const s of access.secrets) ctx.addSecret(s)
         const env = access.env
+        // A read-only step's repo is only ever fetched, never pushed to: the GitHub bindings
+        // the agent can reach are limited (proxy: GET/HEAD and the git-upload-pack POST only).
+        if (cfg.repo?.readOnly) for (const b of access.bindings) if (READONLY_HOSTS.has(b.host)) b.readOnly = true
 
-        const output = repo ? (cfg.output ?? 'pr') : 'none'
+        // Agent returns: resolve each choice field's available choices for the org (its `requires`
+        // integrations), and the sentence appended below. Fails before the container starts.
+        let resolvedReturns: ReturnField[] | undefined
+        let returnsPrompt = ''
+        if (cfg.returns?.length) {
+          const resolved = await db.org(orgId, (q) => promptForReturns(q, orgId, cfg.returns!))
+          if ('error' in resolved) throw new StepFailure(resolved.error)
+          resolvedReturns = resolved.fields
+          returnsPrompt = ` ${resolved.prompt}`
+        }
+
+        // Belt and suspenders on top of spec.ts's own validation: a read-only repo is never pushed to.
+        const output = cfg.repo?.readOnly ? 'none' : repo ? (cfg.output ?? 'pr') : 'none'
         const workBranch = `routini/run-${ctx.run.number}${ctx.run.jobSnapshot.steps.filter((s) => s.kind === 'agent').length > 1 ? `-${ctx.step.id}` : ''}`
         Object.assign(env, {
           ROUTINI_PROMPT: cfg.prompt,
-          ROUTINI_SYSTEM_PROMPT: brokered ? `${SYSTEM_PROMPT} ${networkNote(access.hosts)}` : SYSTEM_PROMPT,
+          ROUTINI_SYSTEM_PROMPT: (brokered ? `${SYSTEM_PROMPT} ${networkNote(access.hosts)}` : SYSTEM_PROMPT) + returnsPrompt,
           ROUTINI_OUTPUT: output,
           ROUTINI_COMMIT_MESSAGE: `${ctx.run.jobSnapshot.name} (Routini run #${ctx.run.number})`,
           ...(repo ? { REPO_URL: repo.url, BASE_BRANCH: repo.baseBranch, WORK_BRANCH: workBranch } : {}),
+          ...(cfg.repo?.readOnly ? { ROUTINI_REPO_READONLY: '1' } : {}),
           ...(environment?.repo ? { ROUTINI_REPO_DIR: `/workspace/${environment.repo.dir}` } : {}),
           ...(cfg.check ? { CHECK_COMMAND: cfg.check.command } : {}),
+          ...(resolvedReturns ? { ROUTINI_OUT_FILE: OUT_FILE } : {}),
         })
 
         // ── Run ─────────────────────────────────────────────────────────
@@ -467,7 +489,15 @@ export function agentExecutor(opts: AgentRunnerOptions = {}): StepExecutor {
         await ctx.addUsage({ costUsd: facts.costUsd, ...(fleet || envPlacement?.host ? {} : { agentSeconds: (Date.now() - started) / 1000 }) })
 
         // ── Outcome ─────────────────────────────────────────────────────
-        const base = { costUsd: facts.costUsd, model: facts.model ?? null, turns: facts.turns ?? null, summary: facts.resultText ?? null }
+        // Validated agent-returns output, attached to every outcome below that has it (success or failure).
+        const outResult = resolvedReturns && facts.out !== undefined ? validateReturns(resolvedReturns, facts.out) : null
+        const base = {
+          costUsd: facts.costUsd,
+          model: facts.model ?? null,
+          turns: facts.turns ?? null,
+          summary: facts.resultText ?? null,
+          ...(outResult && 'out' in outResult ? { out: outResult.out } : {}),
+        }
         if (result.error) throw new StepFailure(result.error)
         if (result.aborted) throw new StepFailure('Agent stopped (canceled)')
         // A refused host is not itself a failure (the agent is told and carries on), but when
@@ -480,6 +510,7 @@ export function agentExecutor(opts: AgentRunnerOptions = {}): StepExecutor {
           return { status: 'failed', error: `Agent exited with code ${result.exitCode}: ${why}${blockedHint}`, output: base }
         }
         if (facts.resultIsError) return { status: 'failed', error: `The agent reported an error: ${facts.resultText ?? 'unknown'}${blockedHint}`, output: base }
+        if (outResult && 'error' in outResult) return { status: 'failed', error: outResult.error, output: base }
 
         if (facts.noChanges || !facts.pushed) return { status: 'succeeded', output: { ...base, changes: false } }
         const withBranch = { ...base, changes: true, branch: facts.pushed.branch, commit: facts.commit?.sha ?? null }

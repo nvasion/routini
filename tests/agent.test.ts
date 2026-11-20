@@ -334,6 +334,69 @@ describe('agent steps', () => {
     expect(dump).toContain('[REDACTED]')
   })
 
+  it('resolves `returns`, puts the field prompt in ROUTINI_SYSTEM_PROMPT and sets ROUTINI_OUT_FILE', async () => {
+    script = () => ({ lines: [...TRANSCRIPT, '::routini::{"type":"out","data":{"summary":"Looked at the disk usage","approved":true}}'] })
+    const { step } = await run({
+      returns: [
+        { name: 'summary', type: 'text', description: 'What you found' },
+        { name: 'approved', type: 'boolean' },
+      ],
+    })
+    expect(step.status).toBe('succeeded')
+    expect(step.output.out).toEqual({ summary: 'Looked at the disk usage', approved: true })
+    const env = fake.spawned[0]!.env
+    expect(env['ROUTINI_OUT_FILE']).toBe('/tmp/routini-out.json')
+    expect(env['ROUTINI_SYSTEM_PROMPT']).toContain(
+      'Before you finish, write one JSON object to $ROUTINI_OUT_FILE with these fields: summary (text) - What you found; approved (boolean).',
+    )
+  })
+
+  it('fails the step when the agent never writes its output file', async () => {
+    script = () => ({ lines: [...TRANSCRIPT, '::routini::{"type":"error","message":"The agent did not write a JSON object to $ROUTINI_OUT_FILE"}'], exitCode: 1 })
+    const { step } = await run({ returns: [{ name: 'summary', type: 'text' }] })
+    expect(step.status).toBe('failed')
+    expect(step.error).toMatch(/The agent did not write a JSON object to \$ROUTINI_OUT_FILE/)
+  })
+
+  it('fails the step when the written output does not validate, even though the agent exited 0', async () => {
+    script = () => ({ lines: [...TRANSCRIPT, '::routini::{"type":"out","data":{"approved":"yes-ish"}}'] })
+    const { step } = await run({ returns: [{ name: 'approved', type: 'boolean' }] })
+    expect(step.status).toBe('failed')
+    expect(step.error).toBe('approved must be a boolean')
+  })
+
+  it('templates a later step\'s prompt from an earlier agent step\'s `out`', async () => {
+    script = () => ({ lines: [...TRANSCRIPT, '::routini::{"type":"out","data":{"request":"add a cache"}}'] })
+    const job = await u.post(`${base()}/jobs`, {
+      name: 'Plan then build',
+      steps: [
+        { id: 'plan', name: 'plan', kind: 'agent', config: { agent: 'claude', prompt: 'Plan it', returns: [{ name: 'request', type: 'text' }] } },
+        { id: 'build', name: 'build', kind: 'agent', config: { agent: 'claude', prompt: 'Now do: {{steps.plan.out.request}}' } },
+      ],
+    })
+    expect(job.status, JSON.stringify(job.body)).toBe(201)
+    await u.post(`${base()}/jobs/${job.body.job.id}/run`)
+    await worker.drain()
+    expect(fake.spawned[1]!.env['ROUTINI_PROMPT']).toBe('Now do: add a cache')
+  })
+
+  it('fails before the container starts when a returns choice field has no available choices', async () => {
+    const { step } = await run({ returns: [{ name: 'action', type: 'choice', choices: [{ value: 'escalate', requires: 'github' }] }] })
+    expect(step.status).toBe('failed')
+    expect(step.error).toBe('Field action has no available choices (needs: github)')
+    expect(fake.spawned).toHaveLength(0)
+  })
+
+  it('marks a read-only repo: ROUTINI_REPO_READONLY, output forced to none, no PR attempted', async () => {
+    // The entrypoint never commits or pushes for a read-only repo (ROUTINI_OUTPUT=none skips that block
+    // entirely), so the transcript here has no commit/pushed control lines, same as any other 'none' step.
+    const { detail, step } = await run({ repo: { url: 'https://github.com/acme/app', baseBranch: 'main', readOnly: true } })
+    expect(detail.run.status).toBe('succeeded')
+    expect(fake.spawned[0]!.env).toMatchObject({ ROUTINI_REPO_READONLY: '1', ROUTINI_OUTPUT: 'none' })
+    expect(prCalls).toHaveLength(0)
+    expect(step.output.changes).toBe(false)
+  })
+
   it('stops the container on cancel', async () => {
     script = () => ({ lines: ['working…'], hang: true })
     const job = await u.post(`${base()}/jobs`, { name: 'Long', steps: [{ name: 'agent', kind: 'agent', config: { agent: 'claude', prompt: 'SLOW' } }] })
