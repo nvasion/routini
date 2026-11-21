@@ -35,7 +35,7 @@ describe('policy settings', () => {
     renderAt('/o/acme/settings/policy')
     const main = await screen.findByRole('main')
     expect(await within(main).findByText('Credential broker off')).toBeTruthy()
-    expect((within(main).getByLabelText('Host tags') as HTMLInputElement).value).toBe('prod')
+    expect((await within(main).findByLabelText('Host tags') as HTMLInputElement).value).toBe('prod')
 
     fireEvent.click(within(main).getByRole('button', { name: 'Rule' }))
     const names = within(main).getAllByLabelText('Rule name')
@@ -76,6 +76,10 @@ describe('policy settings', () => {
     await within(main).findByText(/Policy saved/)
     const matchOf = (i: number) => (log.calls.filter((c) => c.method === 'PUT')[i]!.body as { rules: PolicyRule[] }).rules[0]!.match
     expect(matchOf(0)).toEqual({ kinds: ['agent'], agentPlacements: ['fleet', 'sandbox'], hostTags: ['prod'] })
+    // The rule re-derives (and remounts) from the saved policy once it comes back from the
+    // mocked PUT; wait for that round-trip to settle before driving more input, or a click can
+    // land on the about-to-be-replaced checkbox and get lost.
+    await waitFor(() => expect(box('Sandbox').checked).toBe(true))
 
     // Clearing both checkboxes drops the condition: the rule then matches agents anywhere.
     fireEvent.click(box('Sandbox'))

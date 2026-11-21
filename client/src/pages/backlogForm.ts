@@ -8,6 +8,26 @@ import { ITEM_STATES, type BacklogSource, type ItemState, type SourceInput, type
 
 export type SourceKind = BacklogSource['kind']
 
+/** Kind select labels, in words (docs/work-intake-backlog.md section 9). */
+export const KIND_LABELS: Record<SourceKind, string> = {
+  monday: 'monday.com',
+  repo: 'Tracking repo',
+  jira: 'Jira',
+  linear: 'Linear',
+  'azure-boards': 'Azure Boards',
+  'github-issues': 'GitHub Issues',
+}
+
+/** The integration a kind reads credentials from (server/src/backlog/context.ts: INTEGRATION_LABEL), named in the editor's one-line note under the kind select. */
+export const KIND_INTEGRATION: Record<SourceKind, string> = {
+  monday: 'monday.com',
+  repo: 'GitHub',
+  jira: 'Jira',
+  linear: 'Linear',
+  'azure-boards': 'Azure DevOps',
+  'github-issues': 'GitHub',
+}
+
 /** One row of the status-mapping editor: the value written at the source for this Routini state, and whether to post it as a comment too. */
 export interface MappingRow {
   state: ItemState
@@ -39,6 +59,22 @@ export interface SourceForm {
   repoStatusKey: string
   repoStatusPrefix: string
   repoKey: string
+  // jira config
+  jiraJql: string
+  jiraRepoField: string
+  // linear config
+  linearTeamKey: string
+  /** Comma separated label names; an issue must carry every one to be imported. */
+  linearLabels: string
+  // azure-boards config
+  azureProject: string
+  azureWiql: string
+  azureRepoField: string
+  // github-issues config
+  githubIssuesRepoUrl: string
+  /** Comma separated label names filtered on fetch. */
+  githubIssuesLabels: string
+  githubIssuesStatusPrefix: string
   // status mapping
   mapping: MappingRow[]
   /** Comma separated external values that mean "ready". */
@@ -73,16 +109,32 @@ export function emptySourceForm(kind: SourceKind = 'monday'): SourceForm {
     repoStatusKey: 'status',
     repoStatusPrefix: 'Status:',
     repoKey: '',
+    jiraJql: '',
+    jiraRepoField: '',
+    linearTeamKey: '',
+    linearLabels: '',
+    azureProject: '',
+    azureWiql: '',
+    azureRepoField: '',
+    githubIssuesRepoUrl: '',
+    githubIssuesLabels: '',
+    githubIssuesStatusPrefix: 'status:',
     mapping: emptyMapping(),
     readyList: '',
     droppedList: '',
   }
 }
 
-/** A monday config field (`BoardConfig` in server/src/backlog/monday.ts), read as a string for the form. */
+/** A config field (`BoardConfig` in server/src/backlog/monday.ts, and the other adapters' config types), read as a string for the form. */
 function str(config: Record<string, unknown>, key: string): string {
   const v = config[key]
   return typeof v === 'string' ? v : v === undefined || v === null ? '' : String(v)
+}
+
+/** A config field holding a string array (Jira's repoField is not one of these; Linear's and GitHub Issues' label filters are), read as a comma separated list for the form. */
+function strArrayList(config: Record<string, unknown>, key: string): string {
+  const v = config[key]
+  return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string').join(', ') : ''
 }
 
 export function fromSource(source: BacklogSource): SourceForm {
@@ -94,21 +146,43 @@ export function fromSource(source: BacklogSource): SourceForm {
   f.defaultBaseBranch = source.defaultBaseBranch
   f.factoryProjectId = source.factoryProjectId ?? ''
   f.syncEveryMin = String(source.syncEveryMin)
-  if (source.kind === 'monday') {
-    f.mondayBoardId = str(source.config, 'boardId')
-    f.mondayGroupId = str(source.config, 'groupId')
-    f.mondayStatusColumnId = str(source.config, 'statusColumnId')
-    f.mondayRepoColumnId = str(source.config, 'repoColumnId')
-    f.mondayLabelsColumnId = str(source.config, 'labelsColumnId')
-  } else {
-    f.repoUrl = str(source.config, 'repoUrl')
-    f.repoBranch = str(source.config, 'branch') || 'main'
-    f.repoGlob = str(source.config, 'glob')
-    const status = source.config['status'] as { kind?: string; key?: string; prefix?: string } | undefined
-    f.repoStatusKind = status?.kind === 'line' ? 'line' : 'frontmatter'
-    f.repoStatusKey = status?.key ?? ''
-    f.repoStatusPrefix = status?.prefix ?? ''
-    f.repoKey = str(source.config, 'repoKey')
+  switch (source.kind) {
+    case 'monday':
+      f.mondayBoardId = str(source.config, 'boardId')
+      f.mondayGroupId = str(source.config, 'groupId')
+      f.mondayStatusColumnId = str(source.config, 'statusColumnId')
+      f.mondayRepoColumnId = str(source.config, 'repoColumnId')
+      f.mondayLabelsColumnId = str(source.config, 'labelsColumnId')
+      break
+    case 'repo': {
+      f.repoUrl = str(source.config, 'repoUrl')
+      f.repoBranch = str(source.config, 'branch') || 'main'
+      f.repoGlob = str(source.config, 'glob')
+      const status = source.config['status'] as { kind?: string; key?: string; prefix?: string } | undefined
+      f.repoStatusKind = status?.kind === 'line' ? 'line' : 'frontmatter'
+      f.repoStatusKey = status?.key ?? ''
+      f.repoStatusPrefix = status?.prefix ?? ''
+      f.repoKey = str(source.config, 'repoKey')
+      break
+    }
+    case 'jira':
+      f.jiraJql = str(source.config, 'jql')
+      f.jiraRepoField = str(source.config, 'repoField')
+      break
+    case 'linear':
+      f.linearTeamKey = str(source.config, 'teamKey')
+      f.linearLabels = strArrayList(source.config, 'labels')
+      break
+    case 'azure-boards':
+      f.azureProject = str(source.config, 'project')
+      f.azureWiql = str(source.config, 'wiql')
+      f.azureRepoField = str(source.config, 'repoField')
+      break
+    case 'github-issues':
+      f.githubIssuesRepoUrl = str(source.config, 'repoUrl')
+      f.githubIssuesLabels = strArrayList(source.config, 'labels')
+      f.githubIssuesStatusPrefix = str(source.config, 'statusPrefix') || 'status:'
+      break
   }
   f.mapping = ITEM_STATES.map((state) => {
     const out = source.mapping.out[state]
@@ -169,17 +243,22 @@ function buildMapping(form: SourceForm, errors: string[]): StatusMapping {
 }
 
 const DIGITS_RE = /^[0-9]+$/
+/** Linear team key (server/src/backlog/linear.ts: parseConfig). */
+const TEAM_KEY_RE = /^[A-Z][A-Z0-9]{0,9}$/
+/** Same rule as the azure-boards action's project (server/src/engine/spec.ts): ADO forbids these characters and a leading dot. */
+const AZURE_PROJECT_RE = /^[^/\\?#%*:|"<>.\x00-\x1f\x7f][^/\\?#%*:|"<>\x00-\x1f\x7f]*$/
 
-function buildConfig(form: SourceForm, errors: string[]): Record<string, unknown> {
-  if (form.kind === 'monday') {
-    if (!DIGITS_RE.test(form.mondayBoardId.trim())) errors.push('Monday: enter the board id (digits only).')
-    if (!form.mondayStatusColumnId.trim()) errors.push('Monday: enter the status column id.')
-    const config: Record<string, unknown> = { boardId: form.mondayBoardId.trim(), statusColumnId: form.mondayStatusColumnId.trim() }
-    if (form.mondayGroupId.trim()) config['groupId'] = form.mondayGroupId.trim()
-    if (form.mondayRepoColumnId.trim()) config['repoColumnId'] = form.mondayRepoColumnId.trim()
-    if (form.mondayLabelsColumnId.trim()) config['labelsColumnId'] = form.mondayLabelsColumnId.trim()
-    return config
-  }
+function buildMondayConfig(form: SourceForm, errors: string[]): Record<string, unknown> {
+  if (!DIGITS_RE.test(form.mondayBoardId.trim())) errors.push('Monday: enter the board id (digits only).')
+  if (!form.mondayStatusColumnId.trim()) errors.push('Monday: enter the status column id.')
+  const config: Record<string, unknown> = { boardId: form.mondayBoardId.trim(), statusColumnId: form.mondayStatusColumnId.trim() }
+  if (form.mondayGroupId.trim()) config['groupId'] = form.mondayGroupId.trim()
+  if (form.mondayRepoColumnId.trim()) config['repoColumnId'] = form.mondayRepoColumnId.trim()
+  if (form.mondayLabelsColumnId.trim()) config['labelsColumnId'] = form.mondayLabelsColumnId.trim()
+  return config
+}
+
+function buildRepoConfig(form: SourceForm, errors: string[]): Record<string, unknown> {
   if (!form.repoUrl.trim()) errors.push('Repository: enter the GitHub repository URL (https://github.com/<owner>/<repo>).')
   if (!form.repoGlob.trim()) errors.push('Repository: enter a glob to match files.')
   const branch = form.repoBranch.trim() || 'main'
@@ -192,6 +271,67 @@ function buildConfig(form: SourceForm, errors: string[]): Record<string, unknown
   const config: Record<string, unknown> = { repoUrl: form.repoUrl.trim(), branch, glob: form.repoGlob.trim(), status }
   if (form.repoKey.trim()) config['repoKey'] = form.repoKey.trim()
   return config
+}
+
+/** server/src/backlog/jira.ts: parseConfig — jql 1-2000 characters, repoField an optional custom field id. */
+function buildJiraConfig(form: SourceForm, errors: string[]): Record<string, unknown> {
+  const jql = form.jiraJql.trim()
+  if (!jql) errors.push('Jira: enter the JQL query.')
+  else if (jql.length > 2000) errors.push('Jira: the JQL query must be at most 2000 characters.')
+  const config: Record<string, unknown> = { jql }
+  if (form.jiraRepoField.trim()) config['repoField'] = form.jiraRepoField.trim()
+  return config
+}
+
+/** server/src/backlog/linear.ts: parseConfig — teamKey matches TEAM_KEY_RE, labels all required on import. */
+function buildLinearConfig(form: SourceForm, errors: string[]): Record<string, unknown> {
+  const teamKey = form.linearTeamKey.trim()
+  if (!teamKey) errors.push('Linear: enter the team key.')
+  else if (!TEAM_KEY_RE.test(teamKey)) errors.push('Linear: team key must start with a letter and contain only uppercase letters and digits, up to 10 characters (e.g. ENG).')
+  const config: Record<string, unknown> = { teamKey }
+  const labels = list(form.linearLabels)
+  if (labels.length) config['labels'] = labels
+  return config
+}
+
+/** server/src/backlog/azureBoards.ts: parseConfig — project as the azure-boards action validates it, wiql optional up to 2000 characters. */
+function buildAzureBoardsConfig(form: SourceForm, errors: string[]): Record<string, unknown> {
+  const project = form.azureProject.trim()
+  if (!project) errors.push('Azure Boards: enter the project name.')
+  else if (project.length > 64) errors.push('Azure Boards: project name must be at most 64 characters.')
+  else if (!AZURE_PROJECT_RE.test(project)) errors.push(`Azure Boards: '${project}' is not a valid Azure DevOps project name.`)
+  const wiql = form.azureWiql.trim()
+  if (wiql.length > 2000) errors.push('Azure Boards: WIQL must be at most 2000 characters.')
+  const config: Record<string, unknown> = { project }
+  if (wiql) config['wiql'] = wiql
+  if (form.azureRepoField.trim()) config['repoField'] = form.azureRepoField.trim()
+  return config
+}
+
+/** server/src/backlog/githubIssues.ts: parseConfig — repoUrl as the repo source's message, labels filter the fetch, statusPrefix defaults to "status:". */
+function buildGithubIssuesConfig(form: SourceForm, errors: string[]): Record<string, unknown> {
+  if (!form.githubIssuesRepoUrl.trim()) errors.push('GitHub Issues: enter the GitHub repository URL (https://github.com/<owner>/<repo>).')
+  const config: Record<string, unknown> = { repoUrl: form.githubIssuesRepoUrl.trim(), statusPrefix: form.githubIssuesStatusPrefix.trim() || 'status:' }
+  const labels = list(form.githubIssuesLabels)
+  if (labels.length) config['labels'] = labels
+  return config
+}
+
+function buildConfig(form: SourceForm, errors: string[]): Record<string, unknown> {
+  switch (form.kind) {
+    case 'monday':
+      return buildMondayConfig(form, errors)
+    case 'repo':
+      return buildRepoConfig(form, errors)
+    case 'jira':
+      return buildJiraConfig(form, errors)
+    case 'linear':
+      return buildLinearConfig(form, errors)
+    case 'azure-boards':
+      return buildAzureBoardsConfig(form, errors)
+    case 'github-issues':
+      return buildGithubIssuesConfig(form, errors)
+  }
 }
 
 export type SourcePayloadResult = { ok: true; payload: SourceInput } | { ok: false; errors: string[] }

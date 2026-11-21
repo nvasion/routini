@@ -7,7 +7,7 @@ import { ErrorBanner, Field, Modal } from '../components/ui'
 import { api } from '../lib/api'
 import type { BacklogSource, SourceItem } from '../lib/types'
 import { useOrg } from '../shell/OrgContext'
-import { emptySourceForm, fromSource, toPayload, type SourceForm } from './backlogForm'
+import { emptySourceForm, fromSource, KIND_INTEGRATION, KIND_LABELS, toPayload, type SourceForm } from './backlogForm'
 
 const STATE_LABELS: Record<string, string> = { ready: 'Ready', planning: 'Planning', building: 'Building', finishing: 'Finishing', done: 'Done', blocked: 'Blocked', dropped: 'Dropped' }
 
@@ -73,8 +73,11 @@ export function BacklogSourceEditor({ source, onClose, onSaved }: { source: Back
                 disabled={form.id !== null}
                 onChange={(e) => setForm((f) => ({ ...emptySourceForm(e.target.value as SourceForm['kind']), id: f.id, name: f.name, enabled: f.enabled }))}
               >
-                <option value="monday">Monday</option>
-                <option value="repo">Repo of spec files</option>
+                {(Object.keys(KIND_LABELS) as SourceForm['kind'][]).map((k) => (
+                  <option key={k} value={k}>
+                    {KIND_LABELS[k]}
+                  </option>
+                ))}
               </select>
             )}
           </Field>
@@ -88,7 +91,9 @@ export function BacklogSourceEditor({ source, onClose, onSaved }: { source: Back
           </Field>
         </div>
 
-        {form.kind === 'monday' ? (
+        <p className="meta">{KIND_LABELS[form.kind]} sources need the {KIND_INTEGRATION[form.kind]} integration connected.</p>
+
+        {form.kind === 'monday' && (
           <div className="row">
             <Field label="Board id" hint="Digits only.">{(id) => <input id={id} className="input mono" value={form.mondayBoardId} onChange={(e) => set({ mondayBoardId: e.target.value })} />}</Field>
             <Field label="Group id (optional)">{(id) => <input id={id} className="input mono" value={form.mondayGroupId} onChange={(e) => set({ mondayGroupId: e.target.value })} />}</Field>
@@ -96,7 +101,9 @@ export function BacklogSourceEditor({ source, onClose, onSaved }: { source: Back
             <Field label="Repository column id (optional)">{(id) => <input id={id} className="input mono" value={form.mondayRepoColumnId} onChange={(e) => set({ mondayRepoColumnId: e.target.value })} />}</Field>
             <Field label="Labels column id (optional)">{(id) => <input id={id} className="input mono" value={form.mondayLabelsColumnId} onChange={(e) => set({ mondayLabelsColumnId: e.target.value })} />}</Field>
           </div>
-        ) : (
+        )}
+
+        {form.kind === 'repo' && (
           <>
             <div className="row">
               <Field label="Repository URL" hint="https://github.com/<owner>/<repo>">{(id) => <input id={id} className="input" value={form.repoUrl} onChange={(e) => set({ repoUrl: e.target.value })} />}</Field>
@@ -122,6 +129,52 @@ export function BacklogSourceEditor({ source, onClose, onSaved }: { source: Back
               </Field>
             </div>
           </>
+        )}
+
+        {form.kind === 'jira' && (
+          <div className="row">
+            <Field label="JQL" hint="Any JQL, e.g. project = SHOP AND labels = agent-ok">
+              {(id) => <input id={id} className="input mono" value={form.jiraJql} onChange={(e) => set({ jiraJql: e.target.value })} />}
+            </Field>
+            <Field label="Repository field (optional)" hint="A custom field id holding each item's repository, e.g. customfield_10050">
+              {(id) => <input id={id} className="input mono" value={form.jiraRepoField} onChange={(e) => set({ jiraRepoField: e.target.value })} />}
+            </Field>
+          </div>
+        )}
+
+        {form.kind === 'linear' && (
+          <div className="row">
+            <Field label="Team key" hint="e.g. ENG">{(id) => <input id={id} className="input mono" value={form.linearTeamKey} onChange={(e) => set({ linearTeamKey: e.target.value })} />}</Field>
+            <Field label="Labels (optional)" hint="Comma separated; an issue must carry every one to be imported.">
+              {(id) => <input id={id} className="input mono" value={form.linearLabels} onChange={(e) => set({ linearLabels: e.target.value })} />}
+            </Field>
+          </div>
+        )}
+
+        {form.kind === 'azure-boards' && (
+          <div className="row">
+            <Field label="Project">{(id) => <input id={id} className="input" value={form.azureProject} onChange={(e) => set({ azureProject: e.target.value })} />}</Field>
+            <Field label="WIQL (optional)" hint="Default: the project's work items not in Closed, Done or Removed.">
+              {(id) => <textarea id={id} className="textarea mono" rows={3} value={form.azureWiql} onChange={(e) => set({ azureWiql: e.target.value })} />}
+            </Field>
+            <Field label="Repository field (optional)" hint="A work item field naming each item's repository, e.g. Custom.Repository">
+              {(id) => <input id={id} className="input mono" value={form.azureRepoField} onChange={(e) => set({ azureRepoField: e.target.value })} />}
+            </Field>
+          </div>
+        )}
+
+        {form.kind === 'github-issues' && (
+          <div className="row">
+            <Field label="Repository URL" hint="https://github.com/<owner>/<repo>">
+              {(id) => <input id={id} className="input" value={form.githubIssuesRepoUrl} onChange={(e) => set({ githubIssuesRepoUrl: e.target.value })} />}
+            </Field>
+            <Field label="Labels (optional)" hint="Comma separated; filters which issues are imported.">
+              {(id) => <input id={id} className="input mono" value={form.githubIssuesLabels} onChange={(e) => set({ githubIssuesLabels: e.target.value })} />}
+            </Field>
+            <Field label="Status label prefix" hint="Status comes from labels like status:Ready">
+              {(id) => <input id={id} className="input mono" value={form.githubIssuesStatusPrefix} onChange={(e) => set({ githubIssuesStatusPrefix: e.target.value })} />}
+            </Field>
+          </div>
         )}
 
         <div className="row">

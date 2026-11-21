@@ -94,6 +94,104 @@ describe('backlog source form: round trip', () => {
     if (!r.ok) return
     expect(r.payload.config['status']).toEqual({ kind: 'line', prefix: 'Status:' })
   })
+
+  it('reads a Jira source into the form and back', () => {
+    const source = mondaySource({ kind: 'jira', config: { jql: 'project = SHOP AND labels = agent-ok', repoField: 'customfield_10050' }, defaultRepoUrl: null, factoryProjectId: null })
+    const form = fromSource(source)
+    expect(form).toMatchObject({ kind: 'jira', jiraJql: 'project = SHOP AND labels = agent-ok', jiraRepoField: 'customfield_10050' })
+    const r = toPayload(form)
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.payload.config).toEqual({ jql: 'project = SHOP AND labels = agent-ok', repoField: 'customfield_10050' })
+  })
+
+  it('reads a Jira source with no repo field', () => {
+    const source = mondaySource({ kind: 'jira', config: { jql: 'project = SHOP' }, defaultRepoUrl: null, factoryProjectId: null })
+    const form = fromSource(source)
+    expect(form).toMatchObject({ jiraJql: 'project = SHOP', jiraRepoField: '' })
+    const r = toPayload(form)
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.payload.config).toEqual({ jql: 'project = SHOP' })
+  })
+
+  it('reads a Linear source into the form and back', () => {
+    const source = mondaySource({ kind: 'linear', config: { teamKey: 'ENG', labels: ['agent-ok', 'ready'] }, defaultRepoUrl: null, factoryProjectId: null })
+    const form = fromSource(source)
+    expect(form).toMatchObject({ kind: 'linear', linearTeamKey: 'ENG', linearLabels: 'agent-ok, ready' })
+    const r = toPayload(form)
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.payload.config).toEqual({ teamKey: 'ENG', labels: ['agent-ok', 'ready'] })
+  })
+
+  it('reads a Linear source with no labels', () => {
+    const source = mondaySource({ kind: 'linear', config: { teamKey: 'ENG' }, defaultRepoUrl: null, factoryProjectId: null })
+    const form = fromSource(source)
+    expect(form).toMatchObject({ linearTeamKey: 'ENG', linearLabels: '' })
+    const r = toPayload(form)
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.payload.config).toEqual({ teamKey: 'ENG' })
+  })
+
+  it('reads an Azure Boards source into the form and back', () => {
+    const source = mondaySource({
+      kind: 'azure-boards',
+      config: { project: 'Shop', wiql: 'SELECT [System.Id] FROM WorkItems', repoField: 'Custom.Repository' },
+      defaultRepoUrl: null,
+      factoryProjectId: null,
+    })
+    const form = fromSource(source)
+    expect(form).toMatchObject({ kind: 'azure-boards', azureProject: 'Shop', azureWiql: 'SELECT [System.Id] FROM WorkItems', azureRepoField: 'Custom.Repository' })
+    const r = toPayload(form)
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.payload.config).toEqual({ project: 'Shop', wiql: 'SELECT [System.Id] FROM WorkItems', repoField: 'Custom.Repository' })
+  })
+
+  it('reads an Azure Boards source with the default WIQL', () => {
+    const source = mondaySource({ kind: 'azure-boards', config: { project: 'Shop' }, defaultRepoUrl: null, factoryProjectId: null })
+    const form = fromSource(source)
+    expect(form).toMatchObject({ azureProject: 'Shop', azureWiql: '', azureRepoField: '' })
+    const r = toPayload(form)
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.payload.config).toEqual({ project: 'Shop' })
+  })
+
+  it('reads a GitHub Issues source into the form and back', () => {
+    const source = mondaySource({
+      kind: 'github-issues',
+      config: { repoUrl: 'https://github.com/acme/app', labels: ['bug'], statusPrefix: 'status:' },
+      defaultRepoUrl: null,
+      factoryProjectId: null,
+    })
+    const form = fromSource(source)
+    expect(form).toMatchObject({ kind: 'github-issues', githubIssuesRepoUrl: 'https://github.com/acme/app', githubIssuesLabels: 'bug', githubIssuesStatusPrefix: 'status:' })
+    const r = toPayload(form)
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.payload.config).toEqual({ repoUrl: 'https://github.com/acme/app', labels: ['bug'], statusPrefix: 'status:' })
+  })
+
+  it('reads a GitHub Issues source with a custom status prefix and no labels', () => {
+    const source = mondaySource({ kind: 'github-issues', config: { repoUrl: 'https://github.com/acme/app', statusPrefix: 'state:' }, defaultRepoUrl: null, factoryProjectId: null })
+    const form = fromSource(source)
+    expect(form).toMatchObject({ githubIssuesRepoUrl: 'https://github.com/acme/app', githubIssuesLabels: '', githubIssuesStatusPrefix: 'state:' })
+    const r = toPayload(form)
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.payload.config).toEqual({ repoUrl: 'https://github.com/acme/app', statusPrefix: 'state:' })
+  })
+
+  it('a new GitHub Issues source defaults the status prefix to "status:"', () => {
+    const form = { ...emptySourceForm('github-issues'), name: 'Issues', githubIssuesRepoUrl: 'https://github.com/acme/app', readyList: 'open' }
+    const r = toPayload(form)
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.payload.config).toEqual({ repoUrl: 'https://github.com/acme/app', statusPrefix: 'status:' })
+  })
 })
 
 describe('backlog source form: validation', () => {
@@ -137,6 +235,47 @@ describe('backlog source form: validation', () => {
 
     const line: SourceForm = { ...emptySourceForm('repo'), name: 'Specs', repoUrl: 'https://github.com/acme/specs', repoGlob: '*.md', repoStatusKind: 'line', repoStatusPrefix: '', readyList: 'Ready' }
     expect((toPayload(line) as { ok: false; errors: string[] }).errors).toContain('Repository: enter the line prefix that holds the status.')
+  })
+
+  it('Jira: needs a JQL query, capped at 2000 characters', () => {
+    const base = { ...emptySourceForm('jira'), name: 'Issues', readyList: 'Ready' }
+    expect((toPayload({ ...base, jiraJql: '' }) as { ok: false; errors: string[] }).errors).toContain('Jira: enter the JQL query.')
+    expect((toPayload({ ...base, jiraJql: 'x'.repeat(2001) }) as { ok: false; errors: string[] }).errors).toContain('Jira: the JQL query must be at most 2000 characters.')
+    const r = toPayload({ ...base, jiraJql: 'project = SHOP' })
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.payload.config).toEqual({ jql: 'project = SHOP' })
+  })
+
+  it('Linear: needs a team key matching the uppercase pattern', () => {
+    const base = { ...emptySourceForm('linear'), name: 'Issues', readyList: 'Ready' }
+    expect((toPayload({ ...base, linearTeamKey: '' }) as { ok: false; errors: string[] }).errors).toContain('Linear: enter the team key.')
+    expect((toPayload({ ...base, linearTeamKey: 'eng' }) as { ok: false; errors: string[] }).errors).toContain(
+      'Linear: team key must start with a letter and contain only uppercase letters and digits, up to 10 characters (e.g. ENG).',
+    )
+    expect((toPayload({ ...base, linearTeamKey: '1ENG' }) as { ok: false; errors: string[] }).errors.length).toBeGreaterThan(0)
+    expect(toPayload({ ...base, linearTeamKey: 'ENG' }).ok).toBe(true)
+  })
+
+  it('Azure Boards: needs a valid project name, and caps WIQL at 2000 characters', () => {
+    const base = { ...emptySourceForm('azure-boards'), name: 'Boards', readyList: 'Ready' }
+    expect((toPayload({ ...base, azureProject: '' }) as { ok: false; errors: string[] }).errors).toContain('Azure Boards: enter the project name.')
+    expect((toPayload({ ...base, azureProject: 'x'.repeat(65) }) as { ok: false; errors: string[] }).errors).toContain('Azure Boards: project name must be at most 64 characters.')
+    expect((toPayload({ ...base, azureProject: 'Shop/Items' }) as { ok: false; errors: string[] }).errors).toContain("Azure Boards: 'Shop/Items' is not a valid Azure DevOps project name.")
+    expect((toPayload({ ...base, azureProject: 'Shop', azureWiql: 'x'.repeat(2001) }) as { ok: false; errors: string[] }).errors).toContain('Azure Boards: WIQL must be at most 2000 characters.')
+    const r = toPayload({ ...base, azureProject: 'Shop' })
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.payload.config).toEqual({ project: 'Shop' })
+  })
+
+  it('GitHub Issues: needs a repository URL', () => {
+    const base = { ...emptySourceForm('github-issues'), name: 'Issues', readyList: 'open' }
+    expect((toPayload({ ...base, githubIssuesRepoUrl: '' }) as { ok: false; errors: string[] }).errors).toContain('GitHub Issues: enter the GitHub repository URL (https://github.com/<owner>/<repo>).')
+    const r = toPayload({ ...base, githubIssuesRepoUrl: 'https://github.com/acme/app' })
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.payload.config).toEqual({ repoUrl: 'https://github.com/acme/app', statusPrefix: 'status:' })
   })
 
   it('a mapping value over 100 characters is rejected', () => {
