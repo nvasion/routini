@@ -11,6 +11,7 @@ import { relativeTime } from '../lib/format'
 import { useApi } from '../lib/hooks'
 import type { BacklogItem, BacklogItemEvent, BacklogSource, ItemState, Job, RunStatus, StepStatus } from '../lib/types'
 import { useOrg } from '../shell/OrgContext'
+import { KIND_LABELS } from './backlogForm'
 import { BacklogSourceEditor } from './BacklogSourceEditor'
 
 const STATE_LABELS: Record<ItemState, string> = { ready: 'Ready', planning: 'Planning', building: 'Building', finishing: 'Finishing', done: 'Done', blocked: 'Blocked', dropped: 'Dropped' }
@@ -156,7 +157,7 @@ export function BacklogPage() {
               <button type="button" style={{ background: 'none', border: 0, padding: 0, font: 'inherit', fontWeight: 600, color: 'inherit', cursor: 'pointer' }} onClick={() => setEditingSource(s)}>
                 {s.name}
               </button>
-              <span className="meta">{s.kind}</span>
+              <span className="meta">{KIND_LABELS[s.kind]}</span>
             </div>
             {s.lastSyncError ? (
               <span style={{ color: 'var(--fail)' }}>{s.lastSyncError}</span>

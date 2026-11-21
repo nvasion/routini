@@ -7,7 +7,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import type { Queryable } from '../db/index.js'
-import { ITEM_STATES, type ItemState, type StatusMapping } from '../backlog/types.js'
+import { ITEM_STATES, type ItemState, type SourceKind, type StatusMapping } from '../backlog/types.js'
 
 export type { ItemState, StatusMapping }
 
@@ -19,7 +19,7 @@ export interface BacklogSource {
   id: string
   orgId: string
   name: string
-  kind: 'monday' | 'repo'
+  kind: SourceKind
   config: Record<string, unknown>
   mapping: StatusMapping
   defaultRepoUrl: string | null
@@ -36,7 +36,7 @@ export interface BacklogSource {
 
 export type SourceInput = {
   name: string
-  kind: 'monday' | 'repo'
+  kind: SourceKind
   config: Record<string, unknown>
   mapping: StatusMapping
   defaultRepoUrl?: string | null
@@ -50,7 +50,7 @@ interface SourceRow {
   id: string
   org_id: string
   name: string
-  kind: 'monday' | 'repo'
+  kind: SourceKind
   config: Record<string, unknown>
   mapping: StatusMapping
   default_repo_url: string | null

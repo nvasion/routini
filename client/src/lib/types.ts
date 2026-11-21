@@ -90,7 +90,7 @@ export interface BacklogSource {
   id: string
   orgId: string
   name: string
-  kind: 'monday' | 'repo'
+  kind: 'monday' | 'repo' | 'jira' | 'linear' | 'azure-boards' | 'github-issues'
   config: Record<string, unknown>
   mapping: StatusMapping
   defaultRepoUrl: string | null
@@ -107,7 +107,7 @@ export interface BacklogSource {
 
 export type SourceInput = {
   name: string
-  kind: 'monday' | 'repo'
+  kind: 'monday' | 'repo' | 'jira' | 'linear' | 'azure-boards' | 'github-issues'
   config: Record<string, unknown>
   mapping: StatusMapping
   defaultRepoUrl?: string | null
