@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { BacklogSource } from '../lib/types'
-import { emptySourceForm, fromSource, matchesAny, toPayload, type SourceForm } from './backlogForm'
+import { emptySourceForm, fromSource, matchesAny, setStatusRole, statusRole, toPayload, type SourceForm } from './backlogForm'
 
 function mondaySource(over: Partial<BacklogSource> = {}): BacklogSource {
   return {
@@ -289,18 +289,19 @@ describe('backlog source form: validation', () => {
     expect(!r.ok && r.errors).toContain('Done: the value written at the source must be at most 100 characters.')
   })
 
-  it('"Counts as ready" needs 1 to 20 values, each 1 to 20 characters', () => {
+  it('"Counts as ready" needs 1 to 20 values, each at most 60 characters', () => {
     const base = { ...emptySourceForm('monday'), name: 'Board', mondayBoardId: '1', mondayStatusColumnId: 'status' }
     expect((toPayload({ ...base, readyList: '' }) as { ok: false; errors: string[] }).errors).toContain('Counts as ready: enter 1 to 20 values.')
     expect((toPayload({ ...base, readyList: Array.from({ length: 21 }, (_, i) => `r${i}`).join(', ') }) as { ok: false; errors: string[] }).errors).toContain('Counts as ready: enter 1 to 20 values.')
-    expect((toPayload({ ...base, readyList: 'x'.repeat(21) }) as { ok: false; errors: string[] }).errors).toContain('Counts as ready: each value must be 1 to 20 characters.')
+    expect(toPayload({ ...base, readyList: 'Ready for Development' }).ok).toBe(true)
+    expect((toPayload({ ...base, readyList: 'x'.repeat(61) }) as { ok: false; errors: string[] }).errors).toContain('Counts as ready: each value must be at most 60 characters.')
   })
 
-  it('"Counts as dropped" allows zero but caps at 20, each 1 to 20 characters', () => {
+  it('"Counts as dropped" allows zero but caps at 20, each at most 60 characters', () => {
     const base = { ...emptySourceForm('monday'), name: 'Board', mondayBoardId: '1', mondayStatusColumnId: 'status', readyList: 'Ready' }
     expect(toPayload({ ...base, droppedList: '' }).ok).toBe(true)
     expect((toPayload({ ...base, droppedList: Array.from({ length: 21 }, (_, i) => `d${i}`).join(', ') }) as { ok: false; errors: string[] }).errors).toContain('Counts as dropped: at most 20 values.')
-    expect((toPayload({ ...base, droppedList: 'x'.repeat(21) }) as { ok: false; errors: string[] }).errors).toContain('Counts as dropped: each value must be 1 to 20 characters.')
+    expect((toPayload({ ...base, droppedList: 'x'.repeat(61) }) as { ok: false; errors: string[] }).errors).toContain('Counts as dropped: each value must be at most 60 characters.')
   })
 
   it('rejects an out value that would read back as ready, naming the value and state', () => {
@@ -337,5 +338,30 @@ describe('matchesAny', () => {
 
   it('is false against an empty list', () => {
     expect(matchesAny('Ready', [])).toBe(false)
+  })
+})
+
+describe('statusRole / setStatusRole (the Test preview)', () => {
+  const lists = { readyList: 'New, Approved', droppedList: 'Removed' }
+
+  it('classifies a status the way a sync does: prefix, case-insensitive, ready before dropped', () => {
+    expect(statusRole('new', lists)).toBe('ready')
+    expect(statusRole('Approved (by PM)', lists)).toBe('ready')
+    expect(statusRole('Removed', lists)).toBe('dropped')
+    expect(statusRole('Active', lists)).toBe('ignored')
+    expect(statusRole('', lists)).toBe('ignored')
+    expect(statusRole('New', { readyList: 'New', droppedList: 'New' })).toBe('ready')
+  })
+
+  it('adds a status to the chosen list and takes it out of the other', () => {
+    expect(setStatusRole(lists, 'Active', 'ready')).toEqual({ readyList: 'New, Approved, Active', droppedList: 'Removed' })
+    expect(setStatusRole(lists, 'New', 'dropped')).toEqual({ readyList: 'Approved', droppedList: 'Removed, New' })
+    expect(setStatusRole(lists, 'Removed', 'ignored')).toEqual({ readyList: 'New, Approved', droppedList: '' })
+  })
+
+  it('removes the prefix entry that made a status match, so "Ignored" really ignores it', () => {
+    const r = setStatusRole({ readyList: 'Ready', droppedList: '' }, 'Ready for Dev', 'ignored')
+    expect(r).toEqual({ readyList: '', droppedList: '' })
+    expect(statusRole('Ready for Dev', r)).toBe('ignored')
   })
 })

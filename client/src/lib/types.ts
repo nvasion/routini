@@ -73,17 +73,21 @@ export interface StatusMapping {
   in: { ready: string[]; dropped: string[] }
 }
 
-/** One item as read from a source adapter, before Routini has a row for it. */
-export interface SourceItem {
+/** One item as a source's Test returns it (server/src/backlog/types.ts SourceItem): `state` is the tracker's own status, as is. */
+export interface SourcePreviewItem {
   externalId: string
   title: string
   body: string
-  url?: string | null
-  repoUrl?: string | null
-  baseBranch?: string | null
-  labels?: string[]
-  externalState: string
-  position?: number | null
+  url: string | null
+  state: string
+  labels: string[]
+}
+
+/** POST /backlog/sources/:id/test: up to 20 items, the total fetched, and every distinct status with its count. */
+export interface SourceTestResult {
+  items: SourcePreviewItem[]
+  total: number
+  states: Array<{ value: string; count: number }>
 }
 
 export interface BacklogSource {

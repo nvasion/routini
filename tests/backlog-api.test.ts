@@ -154,8 +154,29 @@ describe('sources', () => {
     board = [{ id: '1', name: 'Preview me', status: 'Ready' }]
     const res = await u.post(`${base()}/backlog/sources/${src.id}/test`)
     expect(res.status).toBe(200)
-    expect(res.body).toEqual({ items: [expect.objectContaining({ externalId: '1', title: 'Preview me' })], total: 1 })
+    expect(res.body).toEqual({
+      items: [expect.objectContaining({ externalId: '1', title: 'Preview me', state: 'Ready' })],
+      total: 1,
+      states: [{ value: 'Ready', count: 1 }],
+    })
     expect((await u.get(`${base()}/backlog/items`)).body.items).toEqual([])
+  })
+
+  it('counts every status in the preview, including items past the 20 shown', async () => {
+    const src = await createMondaySource(u)
+    board = [
+      ...Array.from({ length: 22 }, (_, i) => ({ id: String(i + 1), name: `New ${i + 1}`, status: 'New' })),
+      { id: '100', name: 'Doing', status: 'Active' },
+      { id: '101', name: 'Also doing', status: 'Active' },
+    ]
+    const res = await u.post(`${base()}/backlog/sources/${src.id}/test`)
+    expect(res.status).toBe(200)
+    expect(res.body.items).toHaveLength(20)
+    expect(res.body.total).toBe(24)
+    expect(res.body.states).toEqual([
+      { value: 'New', count: 22 },
+      { value: 'Active', count: 2 },
+    ])
   })
 
   it('says which integration to connect when the source has none, instead of the tracker\'s auth error', async () => {

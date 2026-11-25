@@ -5,18 +5,25 @@
 import { useState } from 'react'
 import { ErrorBanner, Field, Modal } from '../components/ui'
 import { api } from '../lib/api'
-import type { BacklogSource, SourceItem } from '../lib/types'
+import type { BacklogSource, SourceTestResult } from '../lib/types'
 import { useOrg } from '../shell/OrgContext'
-import { emptySourceForm, fromSource, KIND_INTEGRATION, KIND_LABELS, toPayload, type SourceForm } from './backlogForm'
+import { emptySourceForm, fromSource, KIND_INTEGRATION, KIND_LABELS, setStatusRole, statusRole, toPayload, type SourceForm, type StatusRole } from './backlogForm'
 
 const STATE_LABELS: Record<string, string> = { ready: 'Ready', planning: 'Planning', building: 'Building', finishing: 'Finishing', done: 'Done', blocked: 'Blocked', dropped: 'Dropped' }
+
+/** How the Test preview labels what a sync would do with an item in a given status. */
+const ROLE_BADGE: Record<StatusRole, { label: string; className: string }> = {
+  ready: { label: 'Imports as ready', className: 'badge ok' },
+  dropped: { label: 'Counts as dropped', className: 'badge warn' },
+  ignored: { label: 'Ignored', className: 'badge' },
+}
 
 export function BacklogSourceEditor({ source, onClose, onSaved }: { source: BacklogSource | null; onClose: () => void; onSaved: (source: BacklogSource) => void }) {
   const org = useOrg()
   const [form, setForm] = useState<SourceForm>(() => (source ? fromSource(source) : emptySourceForm()))
   const [errors, setErrors] = useState<string[]>([])
   const [saving, setSaving] = useState(false)
-  const [test, setTest] = useState<{ items: SourceItem[]; total: number } | null>(null)
+  const [test, setTest] = useState<SourceTestResult | null>(null)
   const [testError, setTestError] = useState<string | null>(null)
   const [testing, setTesting] = useState(false)
 
@@ -50,7 +57,7 @@ export function BacklogSourceEditor({ source, onClose, onSaved }: { source: Back
     setTesting(true)
     setTestError(null)
     try {
-      setTest(await api<{ items: SourceItem[]; total: number }>(org.api(`/backlog/sources/${form.id}/test`), { method: 'POST', body: {} }))
+      setTest(await api<SourceTestResult>(org.api(`/backlog/sources/${form.id}/test`), { method: 'POST', body: {} }))
     } catch (err) {
       setTestError((err as Error).message)
     } finally {
@@ -186,6 +193,33 @@ export function BacklogSourceEditor({ source, onClose, onSaved }: { source: Back
 
         <div className="section">
           <h3 className="section-title">Status mapping</h3>
+          <p className="meta">
+            Routini reads each item's status from the source to decide what to pick up, and writes a status back as it works on the item. Statuses match by how they start, ignoring case: "Ready" also matches "Ready for Dev".
+          </p>
+          <div className="row">
+            <Field
+              label="Counts as ready"
+              hint={
+                <>
+                  Statuses that mean "pick this up". Only items in one of these are imported; everything else is left alone. An imported item that is moved back to one of these becomes Ready again. Example for Azure Boards: <span className="mono">New, Approved</span>.
+                </>
+              }
+            >
+              {(id) => <input id={id} className="input" value={form.readyList} onChange={(e) => set({ readyList: e.target.value })} placeholder="New, Approved" />}
+            </Field>
+            <Field
+              label="Counts as dropped (optional)"
+              hint={
+                <>
+                  Statuses that mean "stop". An imported item that moves to one of these becomes Dropped; a run in progress finishes first. Example: <span className="mono">Removed, Won't Do</span>.
+                </>
+              }
+            >
+              {(id) => <input id={id} className="input" value={form.droppedList} onChange={(e) => set({ droppedList: e.target.value })} placeholder="Removed" />}
+            </Field>
+          </div>
+          <p className="meta">Comma separated. Not sure what your source calls them? Save, then press Test: it lists every status it finds and lets you pick.</p>
+          <h4 className="section-title" style={{ fontSize: 13 }}>Written back as Routini works</h4>
           <div className="table-wrap">
             <table className="table">
               <thead>
@@ -213,10 +247,6 @@ export function BacklogSourceEditor({ source, onClose, onSaved }: { source: Back
               </tbody>
             </table>
           </div>
-          <div className="row">
-            <Field label="Counts as ready" hint="Comma separated external values.">{(id) => <input id={id} className="input" value={form.readyList} onChange={(e) => set({ readyList: e.target.value })} />}</Field>
-            <Field label="Counts as dropped" hint="Comma separated external values.">{(id) => <input id={id} className="input" value={form.droppedList} onChange={(e) => set({ droppedList: e.target.value })} />}</Field>
-          </div>
         </div>
 
         <div className="inline" style={{ justifyContent: 'space-between' }}>
@@ -236,22 +266,99 @@ export function BacklogSourceEditor({ source, onClose, onSaved }: { source: Back
         </div>
 
         <ErrorBanner error={testError} />
-        {test && (
-          <div className="stack" style={{ gap: 6 }}>
-            <span className="meta">{test.total} item(s) found; showing {test.items.length}</span>
-            <div className="list">
-              {test.items.map((it) => (
+        {test && <TestResult test={test} form={form} saved={source} onLists={set} />}
+      </div>
+    </Modal>
+  )
+}
+
+/**
+ * The Test preview: every status the source returned with what a sync does
+ * with it (editable right here: it rewrites "Counts as ready" / "dropped"),
+ * then the first items with the same verdict. Uses the form's current lists,
+ * so it updates as they change; the next sync uses the saved ones.
+ */
+function TestResult({
+  test,
+  form,
+  saved,
+  onLists,
+}: {
+  test: SourceTestResult
+  form: SourceForm
+  saved: BacklogSource | null
+  onLists: (patch: Pick<SourceForm, 'readyList' | 'droppedList'>) => void
+}) {
+  const readyCount = test.states.reduce((n, s) => (statusRole(s.value, form) === 'ready' ? n + s.count : n), 0)
+  const unsaved = !!saved && (form.readyList !== saved.mapping.in.ready.join(', ') || form.droppedList !== saved.mapping.in.dropped.join(', '))
+
+  return (
+    <div className="stack" style={{ gap: 10 }} aria-label="Test result">
+      <span className="meta">
+        {test.total} item(s) found. <strong>{readyCount}</strong> {readyCount === 1 ? 'has a status' : 'have a status'} that counts as ready
+        {readyCount === 0 && test.total > 0 ? ', so a sync imports nothing yet: set at least one status below to Ready.' : ' and will be imported on the next sync.'}
+        {unsaved && ' Save to apply your changes.'}
+      </span>
+
+      {test.states.length > 0 && (
+        <div className="table-wrap">
+          <table className="table">
+            <thead>
+              <tr>
+                <th>Status in the source</th>
+                <th>Items</th>
+                <th>Counts as</th>
+              </tr>
+            </thead>
+            <tbody>
+              {test.states.map((s) => {
+                const role = statusRole(s.value, form)
+                return (
+                  <tr key={s.value}>
+                    <td className="mono">{s.value || <span className="meta">(no status)</span>}</td>
+                    <td>{s.count}</td>
+                    <td>
+                      <select
+                        className="select"
+                        aria-label={`What "${s.value || 'no status'}" counts as`}
+                        value={role}
+                        disabled={!s.value}
+                        onChange={(e) => onLists(setStatusRole(form, s.value, e.target.value as StatusRole))}
+                      >
+                        <option value="ready">Ready (import)</option>
+                        <option value="dropped">Dropped</option>
+                        <option value="ignored">Ignored</option>
+                      </select>
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {test.items.length > 0 && (
+        <>
+          <span className="meta">
+            First {test.items.length} of {test.total}:
+          </span>
+          <div className="list">
+            {test.items.map((it) => {
+              const badge = ROLE_BADGE[statusRole(it.state, form)]
+              return (
                 <div key={it.externalId} className="list-row" style={{ cursor: 'default' }}>
                   <span className="grow">
                     <span className="title">{it.title}</span>
-                    <span className="sub">{it.externalState}</span>
+                    <span className="sub">{it.state || '(no status)'}</span>
                   </span>
+                  <span className={badge.className}>{badge.label}</span>
                 </div>
-              ))}
-            </div>
+              )
+            })}
           </div>
-        )}
-      </div>
-    </Modal>
+        </>
+      )}
+    </div>
   )
 }

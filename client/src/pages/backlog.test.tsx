@@ -126,7 +126,46 @@ describe('backlog page', () => {
     await within(main).findByText('boom')
     fireEvent.click(within(main).getByRole('button', { name: 'Sync now' }))
     await waitFor(() => expect(log.calls.some((c) => c.method === 'POST' && c.url === '/api/orgs/acme/backlog/sources/src1/sync')).toBe(true))
-    await within(main).findByText('No items match these filters.')
+    await within(main).findByText(/No items yet\. A source imports an item only when its status counts as ready/)
+  })
+})
+
+describe('Backlog source editor: Test preview', () => {
+  it('shows each item\'s status and what a sync would do, and lets you pick what a status counts as', async () => {
+    mockFetch(
+      baseRoutes({
+        'GET /api/orgs/acme/backlog/sources': () => ({ sources: [{ ...SOURCE, kind: 'azure-boards', config: { project: 'Shop' }, mapping: { out: {}, in: { ready: ['Ready'], dropped: [] } } }] }),
+        'GET /api/orgs/acme/backlog/items': () => ({ items: [] }),
+        'POST /api/orgs/acme/backlog/sources/src1/test': () => ({
+          items: [
+            { externalId: '1', title: 'Checkout story', body: '', url: null, state: 'New', labels: [] },
+            { externalId: '2', title: 'Search story', body: '', url: null, state: 'Active', labels: [] },
+          ],
+          total: 2,
+          states: [
+            { value: 'Active', count: 1 },
+            { value: 'New', count: 1 },
+          ],
+        }),
+      }),
+    )
+    renderAt('/o/acme/backlog')
+    const main = await screen.findByRole('main')
+    fireEvent.click(await within(main).findByRole('button', { name: 'Product board' }))
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Test' }))
+
+    const result = await within(dialog).findByLabelText('Test result')
+    // The status shows on each item (it used to come back blank).
+    expect(within(result).getAllByText('New').length).toBeGreaterThan(0)
+    expect(within(result).getAllByText('Ignored').length).toBeGreaterThan(0)
+    expect(result.textContent).toContain('so a sync imports nothing yet')
+
+    fireEvent.change(within(result).getByLabelText('What "New" counts as'), { target: { value: 'ready' } })
+    expect((within(dialog).getByLabelText('Counts as ready') as HTMLInputElement).value).toBe('Ready, New')
+    expect(within(result).getByText('Imports as ready')).toBeTruthy()
+    expect(result.textContent).toContain('will be imported on the next sync')
+    expect(result.textContent).toContain('Save to apply your changes.')
   })
 })
 
