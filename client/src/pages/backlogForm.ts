@@ -205,6 +205,30 @@ export function matchesAny(external: string, values: string[]): boolean {
   return values.some((v) => e.startsWith(v.toLowerCase()))
 }
 
+/** What a sync does with an item in this status (server/src/backlog/sync.ts): ready wins over dropped; anything else is ignored. */
+export type StatusRole = 'ready' | 'dropped' | 'ignored'
+
+export function statusRole(status: string, form: Pick<SourceForm, 'readyList' | 'droppedList'>): StatusRole {
+  if (matchesAny(status, list(form.readyList))) return 'ready'
+  if (matchesAny(status, list(form.droppedList))) return 'dropped'
+  return 'ignored'
+}
+
+/**
+ * Makes `status` count as `role`: drops every entry of both lists that
+ * matches it (a prefix entry like "Ready" also matches "Ready for Dev", so
+ * other statuses can change too, and the editor shows that), then appends
+ * the status itself to the chosen list.
+ */
+export function setStatusRole(form: Pick<SourceForm, 'readyList' | 'droppedList'>, status: string, role: StatusRole): { readyList: string; droppedList: string } {
+  const keep = (values: string[]) => values.filter((v) => !matchesAny(status, [v]))
+  const ready = keep(list(form.readyList))
+  const dropped = keep(list(form.droppedList))
+  if (role === 'ready') ready.push(status)
+  if (role === 'dropped') dropped.push(status)
+  return { readyList: ready.join(', '), droppedList: dropped.join(', ') }
+}
+
 const STATE_LABELS: Record<ItemState, string> = { ready: 'Ready', planning: 'Planning', building: 'Building', finishing: 'Finishing', done: 'Done', blocked: 'Blocked', dropped: 'Dropped' }
 
 /** States whose out value loops back to ready if it also matches in.ready (mapping.ts: parseMapping). */
@@ -213,7 +237,8 @@ const LOOP_CHECK_STATES: ItemState[] = ['planning', 'building', 'finishing', 'do
 /**
  * The status mapping from the editor's rows and lists, or validation errors.
  * Mirrors server/src/backlog/mapping.ts's parseMapping: out values 1-100
- * characters, in.ready 1-20 values, in.dropped 0-20, and the loop check that
+ * characters, in.ready 1-20 values, in.dropped 0-20 (each at most 60
+ * characters), and the loop check that
  * rejects a planning/building/finishing/done/blocked value that would also
  * read back as ready.
  */
@@ -228,11 +253,11 @@ function buildMapping(form: SourceForm, errors: string[]): StatusMapping {
 
   const ready = list(form.readyList)
   if (ready.length < 1 || ready.length > 20) errors.push('Counts as ready: enter 1 to 20 values.')
-  for (const v of ready) if (v.length < 1 || v.length > 20) errors.push('Counts as ready: each value must be 1 to 20 characters.')
+  if (ready.some((v) => v.length > 60)) errors.push('Counts as ready: each value must be at most 60 characters.')
 
   const dropped = list(form.droppedList)
   if (dropped.length > 20) errors.push('Counts as dropped: at most 20 values.')
-  for (const v of dropped) if (v.length < 1 || v.length > 20) errors.push('Counts as dropped: each value must be 1 to 20 characters.')
+  if (dropped.some((v) => v.length > 60)) errors.push('Counts as dropped: each value must be at most 60 characters.')
 
   for (const state of LOOP_CHECK_STATES) {
     const value = out[state]?.value

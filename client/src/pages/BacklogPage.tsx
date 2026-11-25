@@ -242,7 +242,13 @@ export function BacklogPage() {
             ))}
           </tbody>
         </table>
-        {items.data && items.data.items.length === 0 && <Empty>No items match these filters.</Empty>}
+        {items.data && items.data.items.length === 0 && (
+          <Empty>
+            {state === 'all' && !sourceId && !q.trim() && (sources.data?.sources.length ?? 0) > 0
+              ? 'No items yet. A source imports an item only when its status counts as ready: open the source and press Test to see what it would pick up.'
+              : 'No items match these filters.'}
+          </Empty>
+        )}
       </div>
 
       {selectedId && (

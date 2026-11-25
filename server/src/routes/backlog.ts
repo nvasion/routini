@@ -185,7 +185,14 @@ export function backlogRouter(ctx: AppContext): Router {
       const source = await db.org(org.id, (q) => getSource(q, org.id, String(req.params['id'])))
       if (!source) throw notFound('Backlog source not found')
       const items = await getAdapter(source.kind).fetch(adapterCtx(ctx, org.id), source.config)
-      res.json({ items: items.slice(0, 20), total: items.length })
+      // Every distinct status across the whole fetch (not just the 20 shown), so
+      // the editor can show which values "Counts as ready" / "dropped" would catch.
+      const counts = new Map<string, number>()
+      for (const it of items) counts.set(it.state, (counts.get(it.state) ?? 0) + 1)
+      const states = [...counts]
+        .map(([value, count]) => ({ value, count }))
+        .sort((a, b) => b.count - a.count || a.value.localeCompare(b.value))
+      res.json({ items: items.slice(0, 20), total: items.length, states })
     }),
   )
 
